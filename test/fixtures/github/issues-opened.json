@@ -1,0 +1,15 @@
+{
+  "action": "opened",
+  "issue": {
+    "number": 42,
+    "title": "Build is broken on main",
+    "html_url": "https://github.com/octo-org/example-repo/issues/42",
+    "body": "After commit abc123 the build fails."
+  },
+  "repository": {
+    "full_name": "octo-org/example-repo"
+  },
+  "sender": {
+    "login": "octocat"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "name": "DDoS Attack Detected",
+  "text": "A DDoS attack was detected on zone status.example.com.",
+  "data": { "zone_name": "status.example.com", "attack_id": "atk-123" },
+  "ts": 1717689600,
+  "account_id": "acc-1",
+  "policy_id": "pol-1",
+  "policy_name": "Example DDoS",
+  "alert_type": "dos_attack_l7",
+  "alert_correlation_id": "corr-1",
+  "alert_event": "ALERT_STATE_EVENT_START"
+}

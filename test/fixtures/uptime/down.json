@@ -1,0 +1,10 @@
+{
+  "monitorID": "789",
+  "monitorURL": "https://status.example.com",
+  "monitorFriendlyName": "status.example.com",
+  "alertType": "1",
+  "alertTypeFriendlyName": "Down",
+  "alertDetails": "HTTP 502",
+  "alertDuration": "0",
+  "alertDateTime": "1717689600"
+}

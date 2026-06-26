@@ -1,0 +1,10 @@
+{
+  "monitorID": "789",
+  "monitorURL": "https://status.example.com",
+  "monitorFriendlyName": "status.example.com",
+  "alertType": "2",
+  "alertTypeFriendlyName": "Up",
+  "alertDetails": "HTTP 200",
+  "alertDuration": "180",
+  "alertDateTime": "1717689780"
+}

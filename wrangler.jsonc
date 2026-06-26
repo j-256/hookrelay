@@ -1,0 +1,68 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "hookrelay",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-06-01",
+  "compatibility_flags": ["nodejs_compat"],
+
+  // Opt out of Wrangler's anonymous usage telemetry for all deploys (local + Workers
+  // Builds), so it travels with the repo rather than relying on a WRANGLER_SEND_METRICS
+  // env var per environment. https://github.com/cloudflare/workers-sdk/tree/main/packages/wrangler/telemetry.md
+  "send_metrics": false,
+
+  // account_id is intentionally omitted: wrangler reads it from the
+  // CLOUDFLARE_ACCOUNT_ID environment variable (set locally and in CI/Workers Builds).
+  // The custom domain (route) is managed in the Cloudflare dashboard, not here, so
+  // this file carries no account- or domain-identifying values.
+  "workers_dev": false,
+
+  // Replace these binding ids with your own after running the `wrangler ... create`
+  // commands in the README. They are opaque resource handles, not secrets.
+  "kv_namespaces": [
+    { "binding": "SUBS", "id": "00000000000000000000000000000000" },
+    { "binding": "SINKS", "id": "00000000000000000000000000000000" }
+  ],
+  "d1_databases": [
+    {
+      "binding": "EVENTS_DB",
+      "database_name": "hookrelay-events",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+  "r2_buckets": [
+    { "binding": "EVENTS_RAW", "bucket_name": "hookrelay-events-raw" }
+  ],
+
+  // Observability (stored Workers Logs) is DISABLED ON PURPOSE.
+  //
+  // hookrelay's webhook URLs carry the per-subscription slug in the path
+  // (/hook/<source>/<slug>), and slugs are bearer tokens (spec sec 9). When Workers
+  // Logs is enabled, Cloudflare enriches every stored log event -- including our own
+  // console.log lines -- with the full request URL and path. That writes slugs into
+  // the log store, and on the Free plan there is no knob to strip it (invocation_logs:
+  // false only drops the standalone invocation log, not the URL enrichment on custom
+  // logs -- verified empirically). So we keep stored logs off entirely.
+  //
+  // Failure visibility without stored logs:
+  //   - Sink/delivery failures are persisted to D1 (events.fanout_results) and shown
+  //     at /admin/events -- this is the "did my notification go out?" signal.
+  //   - Live debugging: `npx wrangler tail` streams our console.log lines to your
+  //     terminal in real time (ephemeral, not stored). Our log objects never contain
+  //     the slug (Subscription has no slug field; adapters must not log path values),
+  //     so tail output is slug-free.
+  //
+  // If you later move to the Workers Paid plan, the clean way to get stored telemetry
+  // is a Tail Worker that redacts the slug from the URL before forwarding. Until then,
+  // do not enable this block, and do not configure Logpush "Destinations" -- both
+  // would store the slug-bearing URL.
+  "observability": {
+    "enabled": false
+  },
+
+  // CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are set as Wrangler secrets, not vars,
+  // so they never live in source:
+  //   npx wrangler secret put CF_ACCESS_TEAM_DOMAIN
+  //   npx wrangler secret put CF_ACCESS_AUD
+  // For local `wrangler dev`, put them in .dev.vars (gitignored).
+}

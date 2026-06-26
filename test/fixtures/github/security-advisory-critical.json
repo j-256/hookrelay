@@ -1,0 +1,10 @@
+{
+  "action": "published",
+  "security_advisory": {
+    "ghsa_id": "GHSA-xxxx-yyyy-zzzz",
+    "summary": "Remote code execution in foo",
+    "description": "Affects versions <1.2.3",
+    "severity": "critical",
+    "html_url": "https://github.com/advisories/GHSA-xxxx-yyyy-zzzz"
+  }
+}

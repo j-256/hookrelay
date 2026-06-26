@@ -1,0 +1,36 @@
+// Copy this file to routes.jsonc and fill in your own values.
+// Slugs are 22+ chars of base64url. Generate one via `pnpm new-sub <name>`.
+{
+  "subs": [
+    {
+      "name": "example-statuspage",
+      "source": "statuspage",
+      "slug": "REPLACE_WITH_GENERATED_SLUG_22CHARS",
+      "enabled": true,
+      "sinks": ["phone"]
+    },
+    {
+      "name": "example-github",
+      "source": "github",
+      "slug": "REPLACE_WITH_GENERATED_SLUG_22CHARS",
+      "enabled": true,
+      "sinks": ["phone", "discord-personal"],
+      "auth": {
+        "scheme": "github-sha256",
+        "secretEnv": "HMAC_EXAMPLE_GITHUB"
+      }
+    }
+  ],
+  "sinks": [
+    {
+      "name": "phone",
+      "type": "ntfy",
+      "topic": "REPLACE_WITH_RANDOM_TOPIC_NAME"
+    },
+    {
+      "name": "discord-personal",
+      "type": "discord",
+      "urlEnv": "SINK_DISCORD_PERSONAL_URL"
+    }
+  ]
+}

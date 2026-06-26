@@ -1,0 +1,18 @@
+node_modules/
+.DS_Store
+*.log
+
+# Wrangler local state
+.wrangler/
+.dev.vars
+
+# Real subscription config -- holds slugs and ntfy topics, which are bearer secrets.
+# Only routes.example.jsonc (the template) is tracked; your filled-in copy is not.
+routes.jsonc
+
+# Build output
+dist/
+
+# Brainstorming specs + implementation plans -- kept locally during implementation, not tracked
+docs/superpowers/specs/
+docs/superpowers/plans/
