@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:test'
 import { describe, expect, it, vi } from 'vitest'
 import ntfy from '../../../src/sinks/ntfy'
+import type { Env } from '../../../src/index'
 import type { NormalizedEvent } from '../../../src/types'
 
 const baseEvent: NormalizedEvent = {
@@ -17,8 +18,9 @@ const baseEvent: NormalizedEvent = {
 }
 
 describe('ntfy sink', () => {
-  it('config schema accepts {topic} and rejects extras', () => {
+  it('config schema accepts optional tokenEnv and rejects extras', () => {
     expect(() => ntfy.configSchema.parse({ topic: 't' })).not.toThrow()
+    expect(() => ntfy.configSchema.parse({ topic: 't', tokenEnv: 'SINK_NTFY_TOKEN' })).not.toThrow()
     expect(() => ntfy.configSchema.parse({})).toThrow()
   })
 
@@ -30,11 +32,30 @@ describe('ntfy sink', () => {
       expect(headers.get('Title')).toBe('Hello')
       expect(headers.get('Click')).toBe('https://example.com/event/1')
       expect(headers.get('Priority')).toBe('3') // warning
+      expect(headers.get('Authorization')).toBeNull()
       expect(typeof init?.body === 'string' && init.body).toContain('world')
       return new Response('ok', { status: 200 })
     })
     await ntfy.send(baseEvent, { topic: 'my-topic' }, env, fetchMock as unknown as typeof fetch)
     expect(fetchMock).toHaveBeenCalledOnce()
+  })
+
+  it('authenticates with a token read from the configured secret', async () => {
+    const fetchMock = vi.fn(async (_input: Request | string, init?: RequestInit) => {
+      expect(new Headers(init?.headers).get('Authorization')).toBe('Bearer tk_test')
+      return new Response('ok', { status: 200 })
+    })
+    const tokenEnv = 'SINK_NTFY_PHONE_TOKEN'
+    const secretEnv = { [tokenEnv]: 'tk_test' } as unknown as Env
+    await ntfy.send(baseEvent, { topic: 't', tokenEnv }, secretEnv, fetchMock as unknown as typeof fetch)
+  })
+
+  it('rejects a configured token when its secret is missing', async () => {
+    const fetchMock = vi.fn()
+    await expect(
+      ntfy.send(baseEvent, { topic: 't', tokenEnv: 'SINK_NTFY_PHONE_TOKEN' }, env, fetchMock as unknown as typeof fetch),
+    ).rejects.toThrow(/secret not set: SINK_NTFY_PHONE_TOKEN/)
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 
   it('maps severity to ntfy priority correctly', async () => {

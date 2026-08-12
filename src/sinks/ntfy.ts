@@ -1,6 +1,8 @@
 import { z } from 'zod'
 import type { Sink } from '.'
+import type { Env } from '../index'
 import { postRaw } from '../lib/http'
+import { readSecret } from '../lib/secret'
 import type { Severity } from '../types'
 
 const PRIORITY: Record<Severity, string> = {
@@ -15,6 +17,7 @@ const configSchema = z
   .object({
     topic: z.string().min(1),
     server: z.string().url().optional(),
+    tokenEnv: z.string().min(1).optional(),
   })
   .strict()
 
@@ -24,7 +27,7 @@ const sink: Sink<Config> = {
   type: 'ntfy',
   configSchema,
 
-  async send(event, config, _env, fetchFn) {
+  async send(event, config, env: Env, fetchFn) {
     const server = config.server ?? 'https://ntfy.sh'
     const url = `${server}/${encodeURIComponent(config.topic)}`
     const headers: Record<string, string> = {
@@ -32,6 +35,7 @@ const sink: Sink<Config> = {
       Priority: PRIORITY[event.severity ?? 'info'],
       Tags: `${event.source},${event.type}`,
     }
+    if (config.tokenEnv) headers.Authorization = `Bearer ${readSecret(env, config.tokenEnv)}`
     if (event.url) headers.Click = event.url
     await postRaw(url, event.body, { headers, fetch: fetchFn })
   },

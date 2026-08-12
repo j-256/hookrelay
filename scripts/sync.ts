@@ -224,7 +224,15 @@ async function main() {
   const knownSources = new Set(['statuspage', 'github', 'cloudflare-notifications', 'uptime'])
   const knownSinkTypes = new Set(['ntfy', 'discord'])
   const sinkSchemas = {
-    ntfy: z.object({ name: z.string(), type: z.literal('ntfy'), topic: z.string(), server: z.string().url().optional() }).strict(),
+    ntfy: z
+      .object({
+        name: z.string(),
+        type: z.literal('ntfy'),
+        topic: z.string(),
+        server: z.string().url().optional(),
+        tokenEnv: z.string().min(1).optional(),
+      })
+      .strict(),
     discord: z.object({ name: z.string(), type: z.literal('discord'), urlEnv: z.string() }).strict(),
   }
   const secretsAvailable = await listSecrets()

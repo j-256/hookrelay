@@ -60,6 +60,7 @@ Steps:
 5. Set Wrangler secrets for any HMAC senders and authenticated sinks. The names you choose go into `routes.jsonc`. The recommended convention is `HMAC_<sub-label>` for HMAC keys and `SINK_<name>_URL` / `SINK_<name>_TOKEN` for sink credentials:
    ```sh
    npx wrangler secret put HMAC_GITHUB_HOOKRELAY
+   npx wrangler secret put SINK_NTFY_PHONE_TOKEN
    npx wrangler secret put SINK_DISCORD_PERSONAL_URL
    ```
 6. Configure subscriptions and sinks. Copy `routes.example.jsonc` to `routes.jsonc`, fill in real values, and sync to KV:
@@ -133,9 +134,10 @@ Set with `npx wrangler secret put <NAME>`. Cloudflare never displays them again 
 | `CF_ACCESS_TEAM_DOMAIN` | Your Zero Trust team subdomain (the part before `.cloudflareaccess.com`). Identifies your org, so it is a secret rather than a committed var. |
 | `CF_ACCESS_AUD` | The AUD tag of the Access application protecting `/admin/*`. |
 | `HMAC_<label>` | Per-subscription HMAC key for signed senders (e.g. GitHub). The name is your choice; it is referenced by `auth.secretEnv` in `routes.jsonc`. |
+| `SINK_<name>_TOKEN` | Access token for an authenticated sink such as ntfy. Referenced by the sink's `tokenEnv` in `routes.jsonc`. |
 | `SINK_<name>_URL` | A sink credential, such as a Discord webhook URL. Referenced by the sink's `urlEnv` in `routes.jsonc`. |
 
-The names are a convention, not a requirement -- whatever you put in `routes.jsonc` (`auth.secretEnv`, a sink's `urlEnv`) must match a secret name you have set. `pnpm sync` validates that every referenced secret exists before it writes anything.
+The names are a convention, not a requirement – whatever you put in `routes.jsonc` (`auth.secretEnv`, a sink's `tokenEnv` or `urlEnv`) must match a secret name you have set. `pnpm sync` validates that every referenced secret exists before it writes anything.
 
 ### 4. KV via `routes.jsonc` -- synced with `pnpm sync`
 
@@ -147,8 +149,9 @@ The names are a convention, not a requirement -- whatever you put in `routes.jso
 | `subs[].source` | Adapter name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
 | `subs[].auth` | Optional `{ scheme, secretEnv }` for signature/secret verification on top of the slug. |
-| `sinks[].type: ntfy` -> `topic` | **Bearer secret.** ntfy has no auth beyond the topic name -- anyone who knows it can read your notifications. Use a long random topic, treat it like a password. |
+| `sinks[].type: ntfy` -> `topic` | **Bearer secret for unreserved topics.** Anyone who knows an unreserved topic can read its notifications. Use a long random topic and treat it like a password. |
 | `sinks[].type: ntfy` -> `server` | Optional. Base URL of a self-hosted ntfy server; defaults to `https://ntfy.sh`. |
+| `sinks[].type: ntfy` -> `tokenEnv` | Optional Wrangler secret name containing an ntfy access token. Strongly recommended for Cloudflare Workers so publishes use the account's quota instead of a shared anonymous egress-IP quota. Authentication does not make an unreserved topic private. |
 | `sinks[].type: discord` -> `urlEnv` | Name of the Wrangler secret holding the Discord webhook URL (not the URL itself). |
 
 **Bearer secrets to guard:** subscription `slug`s and ntfy `topic`s. Both grant access purely by being known -- there is no second factor. Keep them in `routes.jsonc` (gitignored) and out of logs, screenshots, and commits.

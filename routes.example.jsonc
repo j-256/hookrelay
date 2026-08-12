@@ -25,7 +25,8 @@
     {
       "name": "phone",
       "type": "ntfy",
-      "topic": "REPLACE_WITH_RANDOM_TOPIC_NAME"
+      "topic": "REPLACE_WITH_RANDOM_TOPIC_NAME",
+      "tokenEnv": "SINK_NTFY_PHONE_TOKEN"
     },
     {
       "name": "discord-personal",

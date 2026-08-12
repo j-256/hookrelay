@@ -83,6 +83,19 @@ describe('validateRoutes', () => {
     expect(issues.join('\n')).toMatch(/secret HMAC_GH not set/)
   })
 
+  it('reports missing secret for an authenticated ntfy sink', () => {
+    const cfg = parseRoutes(
+      ROUTES.replace('"topic": "test-topic"', '"topic": "test-topic", "tokenEnv": "SINK_NTFY_PHONE_TOKEN"'),
+    )
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH']),
+    })
+    expect(issues.join('\n')).toMatch(/secret SINK_NTFY_PHONE_TOKEN .* not set/)
+  })
+
   it('reports unknown sink type', () => {
     const cfg = parseRoutes(ROUTES.replace('"ntfy"', '"madeup-sink"'))
     const issues = validateRoutes(cfg, {
