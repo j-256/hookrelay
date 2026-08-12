@@ -38,7 +38,11 @@ export interface PreparedSink {
 
 export function sinkAddUsage(): string {
   return [
-    'usage: pnpm sink:add <name> discord [--yes]',
+    'usage: pnpm sink:add <name> discord [-y]',
+    '',
+    'options:',
+    '  -y, --yes  apply remote changes without prompts',
+    '  -h, --help show this help',
     '',
     'The Discord webhook URL is read from concealed input or stdin',
   ].join('\n')
@@ -48,9 +52,9 @@ export function parseSinkAddArgs(argv: string[]): SinkAddOptions {
   const positional: string[] = []
   let yes = false
   for (const arg of argv) {
-    if (arg === '--yes') yes = true
+    if (arg === '--yes' || arg === '-y') yes = true
     else if (arg === '--help' || arg === '-h') throw new Error(sinkAddUsage())
-    else if (arg.startsWith('--')) throw new Error(`unknown option: ${arg}`)
+    else if (arg.startsWith('-')) throw new Error(`unknown option: ${arg}`)
     else positional.push(arg)
   }
   if (positional.length !== 2) throw new Error(sinkAddUsage())
@@ -128,9 +132,9 @@ async function main(): Promise<void> {
 
   const production = await prepareProduction(prepared.secret, options.yes)
   if (production === 'local-only') {
-    console.log(`Production was not changed; install ${prepared.secret.name} in Wrangler, then run pnpm sync and pnpm sync --yes`)
+    console.log(`Production was not changed; install ${prepared.secret.name} in Wrangler, then run pnpm sync and pnpm sync -y`)
   } else if (production === 'previewed') {
-    console.log('The KV sink was not changed; run pnpm sync --yes to apply it')
+    console.log('The KV sink was not changed; run pnpm sync -y to apply it')
   }
 }
 

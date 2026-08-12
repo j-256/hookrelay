@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { computePlan, parseRoutes, printableKvKey, validateRoutes } from '../../scripts/sync'
+import { computePlan, parseRoutes, parseSyncArgs, printableKvKey, validateRoutes } from '../../scripts/sync'
 
 const CLAUDE_HASH = 'a'.repeat(64)
 const GITHUB_HASH = 'b'.repeat(64)
@@ -35,6 +35,19 @@ const ROUTES = `
   ]
 }
 `
+
+describe('parseSyncArgs', () => {
+  it('accepts short and long apply options', () => {
+    expect(parseSyncArgs([])).toEqual({ yes: false })
+    expect(parseSyncArgs(['-y'])).toEqual({ yes: true })
+    expect(parseSyncArgs(['--yes'])).toEqual({ yes: true })
+  })
+
+  it('rejects unknown options and positional arguments', () => {
+    expect(() => parseSyncArgs(['-x'])).toThrow(/unknown option: -x/)
+    expect(() => parseSyncArgs(['extra'])).toThrow(/unknown option: extra/)
+  })
+})
 
 describe('parseRoutes', () => {
   it('parses JSONC with comments', () => {

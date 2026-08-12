@@ -20,6 +20,11 @@ describe('parseSinkAddArgs', () => {
     expect(parseSinkAddArgs(['discord', 'discord'])).toEqual({ name: 'discord', type: 'discord', yes: false })
   })
 
+  it('accepts -y and rejects unknown short options', () => {
+    expect(parseSinkAddArgs(['discord', 'discord', '-y'])).toEqual({ name: 'discord', type: 'discord', yes: true })
+    expect(() => parseSinkAddArgs(['discord', 'discord', '-x'])).toThrow(/unknown option: -x/)
+  })
+
   it('rejects unsupported sink types', () => {
     expect(() => parseSinkAddArgs(['alerts', 'slack'])).toThrow(/unsupported sink type/)
   })

@@ -155,10 +155,10 @@ The incoming slug and Discord webhook URL are both bearer secrets, but Hookrelay
 2. Write the local desired state. Routing and hash-only subscription data go to `routes.jsonc`; Worker-readable secrets go to `.dev.vars`, which is kept at mode `600`. The commands do not populate Miniflare's local KV.
 3. Print anything that belongs in your password manager. In particular, the raw incoming slug is not added to `.dev.vars`, because the Worker only needs its hash.
 4. Ask before changing production. Approval installs any new Wrangler secret, then runs `pnpm sync` to compare `routes.jsonc` with remote Worker KV.
-5. Ask whether to apply that plan. Approval runs `pnpm sync --yes` to update remote KV.
+5. Ask whether to apply that plan. Approval runs `pnpm sync -y` to update remote KV.
 6. For a non-manual GitHub selection, ask whether to create the repository webhook. This only happens after the remote sender secret and subscription route are live.
 
-If every prompt is approved, no later sync is needed. Declining a production prompt or encountering a remote error leaves the completed local files in place. Install any deferred Wrangler secret, preview with `pnpm sync`, and apply with `pnpm sync --yes`. Those commands finish Worker state only; if automatic GitHub hook creation was skipped, create the hook manually from the fields printed by `sub:add`. Passing `--yes` skips the approvals but keeps the same local-first order.
+If every prompt is approved, no later sync is needed. Declining a production prompt or encountering a remote error leaves the completed local files in place. Install any deferred Wrangler secret, preview with `pnpm sync`, and apply with `pnpm sync -y`. Those commands finish Worker state only; if automatic GitHub hook creation was skipped, create the hook manually from the fields printed by `sub:add`. Passing `-y` or `--yes` skips the approvals but keeps the same local-first order.
 
 ## Adding a sink
 
@@ -168,19 +168,21 @@ The sink name is a stable routing label, not a description of what feeds it. `di
 
 The command refuses to replace an existing sink or secret. The raw Discord URL never enters `routes.jsonc`, KV, process arguments, or command output. Save it in your password manager under the derived key printed by the command.
 
-Pass `--yes` to skip the production confirmation prompts. The URL is still read through concealed input when interactive, or from stdin for automation.
+Pass `-y` or `--yes` to skip the production confirmation prompts. The URL is still read through concealed input when interactive, or from stdin for automation.
 
 ## Adding a subscription
 
-`routes.jsonc` is the complete desired state for subscriptions and sinks. Keep every existing entry when adding one: `pnpm sync --yes` removes remote KV entries that are absent from the file.
+`routes.jsonc` is the complete desired state for subscriptions and sinks. Keep every existing entry when adding one: `pnpm sync -y` removes remote KV entries that are absent from the file.
 
 Run the guided command after the destination sink exists:
 
 ```sh
-pnpm sub:add <subscription-name> <source> [--sink <name>]
+pnpm sub:add <subscription-name> <source> [-s <sink-name>]
 ```
 
-If exactly one sink exists, it is selected automatically. Repeat `--sink` to route to several sinks. The command generates a private incoming slug, stores only its SHA-256 hash in `routes.jsonc`, and prints the raw slug as `SUB_<NAME>_SLUG` for your password manager. Signed providers also get a per-subscription sender secret, mirrored into `.dev.vars` and offered to Wrangler. Production changes are previewed and confirmed unless `--yes` is supplied.
+If exactly one sink exists, it is selected automatically. Repeat `-s` or `--sink` to route to several sinks. The command generates a private incoming slug, stores only its SHA-256 hash in `routes.jsonc`, and prints the raw slug as `SUB_<NAME>_SLUG` for your password manager. Signed providers also get a per-subscription sender secret, mirrored into `.dev.vars` and offered to Wrangler. Production changes are previewed and confirmed unless `-y` or `--yes` is supplied.
+
+`sub:add` also accepts `-b` for `--base-url`, `-r` for `--repo`, and `-e` for `--events`. Run any setup command with `-h` or `--help` for its complete usage.
 
 For a GitHub repository, pass the repository separately instead of deriving it from the subscription name. Subscription names may still use a readable namespace such as `github:example-owner/example-repo`:
 

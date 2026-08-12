@@ -63,6 +63,30 @@ export type Routes = z.infer<typeof routesSchema>
 export type Sub = z.infer<typeof subSchema>
 export type SinkRef = z.infer<typeof sinkSchema>
 
+export interface SyncOptions {
+  yes: boolean
+}
+
+export function syncUsage(): string {
+  return [
+    'usage: pnpm sync [-y]',
+    '',
+    'options:',
+    '  -y, --yes  apply the remote KV plan',
+    '  -h, --help show this help',
+  ].join('\n')
+}
+
+export function parseSyncArgs(argv: string[]): SyncOptions {
+  let yes = false
+  for (const arg of argv) {
+    if (arg === '--yes' || arg === '-y') yes = true
+    else if (arg === '--help' || arg === '-h') throw new Error(syncUsage())
+    else throw new Error(`unknown option: ${arg}`)
+  }
+  return { yes }
+}
+
 export function parseRoutes(text: string): Routes {
   const errs: ParseError[] = []
   const parsed = parseJsonc(text, errs, { allowTrailingComma: true })
@@ -263,7 +287,12 @@ async function listSecrets(): Promise<Set<string>> {
 }
 
 async function main() {
-  const yes = process.argv.includes('--yes')
+  const argv = process.argv.slice(2)
+  if (argv.includes('--help') || argv.includes('-h')) {
+    console.log(syncUsage())
+    return
+  }
+  const { yes } = parseSyncArgs(argv)
   const path = resolve('routes.jsonc')
   const text = await readFile(path, 'utf8')
   const routes = parseRoutes(text)
@@ -307,7 +336,7 @@ async function main() {
   }
 
   if (!yes) {
-    console.log('\nRe-run with --yes to apply.')
+    console.log('\nRe-run with -y to apply.')
     return
   }
 

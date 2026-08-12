@@ -26,6 +26,14 @@ const DEV_VARS_FILE = '.dev.vars'
 const DEFAULT_GITHUB_EVENT_SELECTION = 'push'
 const GITHUB_PROFILE_REFERENCE = 'docs/github-event-profiles.md'
 const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true, tabSize: 2, eol: '\n' })
+const SUB_ADD_OPTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+  '-s': '--sink',
+  '-b': '--base-url',
+  '-r': '--repo',
+  '-e': '--events',
+  '-y': '--yes',
+  '-h': '--help',
+})
 
 export interface SubAddOptions {
   name: string
@@ -75,11 +83,12 @@ export function subAddUsage(): string {
     'usage: pnpm sub:add <name> <source> [options]',
     '',
     'options:',
-    '  --sink <name>       select a sink, repeatable',
-    '  --base-url <url>    set the Hookrelay base URL',
-    '  --repo <owner/repo> GitHub repository target',
-    '  --events <profiles> comma-separated GitHub profiles (default: push)',
-    '  --yes               apply remote changes without prompts',
+    '  -s, --sink <name>       select a sink, repeatable',
+    '  -b, --base-url <url>    set the Hookrelay base URL',
+    '  -r, --repo <owner/repo> GitHub repository target',
+    '  -e, --events <profiles> comma-separated GitHub profiles (default: push)',
+    '  -y, --yes               apply remote changes without prompts',
+    '  -h, --help              show this help',
     '',
     `GitHub profiles: ${GITHUB_PROFILE_REFERENCE}`,
   ].join('\n')
@@ -87,7 +96,7 @@ export function subAddUsage(): string {
 
 function optionValue(argv: string[], index: number, option: string): string {
   const value = argv[index + 1]
-  if (!value || value.startsWith('--')) throw new Error(`${option} requires a value`)
+  if (!value || value.startsWith('-')) throw new Error(`${option} requires a value`)
   return value
 }
 
@@ -102,28 +111,29 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
 
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!
-    if (arg === '--sink') {
+    const option = SUB_ADD_OPTION_ALIASES[arg] ?? arg
+    if (option === '--sink') {
       sinks.push(optionValue(argv, i, arg))
       i += 1
-    } else if (arg === '--base-url') {
+    } else if (option === '--base-url') {
       if (baseUrl !== undefined) throw new Error('--base-url may only be supplied once')
       baseUrl = optionValue(argv, i, arg)
       i += 1
-    } else if (arg === '--repo') {
+    } else if (option === '--repo') {
       if (repo !== undefined) throw new Error('--repo may only be supplied once')
       repo = optionValue(argv, i, arg)
       i += 1
-    } else if (arg === '--events') {
+    } else if (option === '--events') {
       if (githubEventsSpecified) throw new Error('--events may only be supplied once')
       const value = optionValue(argv, i, arg)
       githubEvents = parseGitHubEventSelection(value)
       githubEventsSpecified = true
       i += 1
-    } else if (arg === '--yes') {
+    } else if (option === '--yes') {
       yes = true
-    } else if (arg === '--help' || arg === '-h') {
+    } else if (option === '--help') {
       throw new Error(subAddUsage())
-    } else if (arg.startsWith('--')) {
+    } else if (arg.startsWith('-')) {
       throw new Error(`unknown option: ${arg}`)
     } else {
       positional.push(arg)
@@ -362,9 +372,9 @@ async function main(): Promise<void> {
   if (production === 'local-only') {
     console.log('')
     if (prepared.senderSecret) {
-      console.log(`Production was not changed; install ${prepared.senderSecret.name} in Wrangler, then run pnpm sync and pnpm sync --yes`)
+      console.log(`Production was not changed; install ${prepared.senderSecret.name} in Wrangler, then run pnpm sync and pnpm sync -y`)
     } else {
-      console.log('Production was not changed; run pnpm sync and pnpm sync --yes')
+      console.log('Production was not changed; run pnpm sync and pnpm sync -y')
     }
     if (options.source === 'github' && options.githubEvents.kind !== 'manual') {
       console.log('After the route is live, create the GitHub webhook manually with the fields printed above')
@@ -372,7 +382,7 @@ async function main(): Promise<void> {
     return
   }
   if (production === 'previewed') {
-    console.log('The KV route was not changed; run pnpm sync --yes to apply it')
+    console.log('The KV route was not changed; run pnpm sync -y to apply it')
     if (options.source === 'github' && options.githubEvents.kind !== 'manual') {
       console.log('After the route is live, create the GitHub webhook manually with the fields printed above')
     }

@@ -46,6 +46,33 @@ describe('parseSubAddArgs', () => {
     ]).githubEvents.kind).toBe('manual')
   })
 
+  it('accepts short option aliases', () => {
+    const options = parseSubAddArgs([
+      'site',
+      'github',
+      '-s',
+      'discord',
+      '-b',
+      'https://hooks.example.com',
+      '-r',
+      'example-owner/example-repo',
+      '-e',
+      'stars,watchers',
+      '-y',
+    ])
+    expect(options).toMatchObject({
+      sinks: ['discord'],
+      baseUrl: 'https://hooks.example.com',
+      repo: 'example-owner/example-repo',
+      yes: true,
+    })
+    expect(options.githubEvents.names).toEqual(['stars', 'watchers'])
+  })
+
+  it('rejects unknown short options', () => {
+    expect(() => parseSubAddArgs(['claude', 'statuspage', '-x'])).toThrow(/unknown option: -x/)
+  })
+
   it('keeps GitHub-only options off other sources', () => {
     expect(() => parseSubAddArgs(['claude', 'statuspage', '--events', 'push'])).toThrow(/only valid for GitHub/)
     expect(() => parseSubAddArgs(['site', 'github'])).toThrow(/require --repo/)
