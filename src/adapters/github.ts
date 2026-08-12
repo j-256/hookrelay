@@ -11,7 +11,29 @@ const ADVISORY_SEVERITY: Record<string, Severity> = {
   critical: 'critical',
 }
 
-function summarize(eventName: string, payload: any): { type: string; title: string; body: string; url?: string; severity?: Severity } {
+const WORKFLOW_CONCLUSION_SEVERITY: Record<string, Severity> = {
+  action_required: 'error',
+  cancelled: 'warning',
+  failure: 'error',
+  neutral: 'info',
+  skipped: 'info',
+  stale: 'warning',
+  success: 'info',
+  timed_out: 'error',
+}
+
+const NON_TERMINAL_WORKFLOW_ACTIONS = new Set(['requested', 'in_progress'])
+
+interface GitHubSummary {
+  type: string
+  title: string
+  body: string
+  url?: string
+  severity?: Severity
+  shouldDeliver?: boolean
+}
+
+function summarize(eventName: string, payload: any): GitHubSummary {
   const action = typeof payload?.action === 'string' ? payload.action : 'event'
   const repo = typeof payload?.repository?.full_name === 'string' ? payload.repository.full_name : '(unknown)'
   const type = `${eventName}.${action}`
@@ -42,6 +64,23 @@ function summarize(eventName: string, payload: any): { type: string; title: stri
       body: typeof adv.description === 'string' ? adv.description : '',
       url: adv.html_url,
       severity: ADVISORY_SEVERITY[adv.severity] ?? 'warning',
+    }
+  }
+  if (eventName === 'workflow_run' && payload?.workflow_run) {
+    const run = payload.workflow_run
+    const state = typeof run.conclusion === 'string'
+      ? run.conclusion
+      : typeof run.status === 'string' ? run.status : action
+    const workflowName = typeof run.name === 'string' ? run.name : 'workflow'
+    const displayTitle = typeof run.display_title === 'string' ? run.display_title : ''
+    const branch = typeof run.head_branch === 'string' ? run.head_branch : ''
+    return {
+      type,
+      title: `${repo}: ${workflowName} ${state}`,
+      body: [displayTitle, branch ? `Branch: ${branch}` : ''].filter(Boolean).join('\n'),
+      url: typeof run.html_url === 'string' ? run.html_url : undefined,
+      severity: WORKFLOW_CONCLUSION_SEVERITY[state] ?? 'info',
+      shouldDeliver: !NON_TERMINAL_WORKFLOW_ACTIONS.has(action),
     }
   }
   // Generic fallback for unknown event types -- still produces a usable normalized event
@@ -88,6 +127,7 @@ const adapter: Adapter = {
       body: summary.body,
       url: summary.url,
       severity: summary.severity,
+      shouldDeliver: summary.shouldDeliver,
       raw: payload,
     }
   },

@@ -85,7 +85,8 @@ export async function handleHook(
   const contentType = request.headers.get('content-type') ?? 'application/octet-stream'
   const persisted = await persistEvent(env, event, rawBody, contentType, slugHash)
   const eventId = primaryKey(event)
-  const enqueue = await prepareDeliveries(env, eventId, sub.sinks)
+  const deliverySinks = event.shouldDeliver === false ? [] : sub.sinks
+  const enqueue = await prepareDeliveries(env, eventId, deliverySinks)
 
   if (enqueue.deferred > 0) {
     console.log(JSON.stringify({
@@ -112,7 +113,7 @@ export async function handleHook(
     subName: event.subName,
     type: event.type,
     severity: event.severity ?? null,
-    sinks: sub.sinks,
+    sinks: deliverySinks,
   }))
   return json({ ok: true, eventId }, 200)
 }

@@ -6,6 +6,7 @@ const GITHUB_HASH = 'b'.repeat(64)
 
 const ROUTES = `
 {
+  "baseUrl": "https://hooks.example.com",
   "subs": [
     {
       "name": "claude",
@@ -34,6 +35,7 @@ describe('parseRoutes', () => {
     const cfg = parseRoutes(`// header\n${ROUTES}`)
     expect(cfg.subs).toHaveLength(2)
     expect(cfg.sinks).toHaveLength(1)
+    expect(cfg.baseUrl).toBe('https://hooks.example.com')
   })
 
   it('throws on malformed JSON', () => {

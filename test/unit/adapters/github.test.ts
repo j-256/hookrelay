@@ -89,4 +89,44 @@ describe('github adapter parse', () => {
     stripped.headers.delete('x-github-delivery')
     await expect(github.parse(stripped, raw, sub)).rejects.toThrow(/delivery/i)
   })
+
+  it('records non-terminal workflow runs without delivering them to sinks', async () => {
+    const payload = {
+      action: 'in_progress',
+      repository: { full_name: 'example-owner/example-repo' },
+      workflow_run: {
+        name: 'Deploy',
+        display_title: 'Publish site',
+        head_branch: 'main',
+        status: 'in_progress',
+        conclusion: null,
+        html_url: 'https://github.com/example-owner/example-repo/actions/runs/123',
+      },
+    }
+    const { req, raw } = await makeReq(payload, 'workflow_run', { deliveryId: 'd-3' })
+    const event = await github.parse(req, raw, sub)
+    expect(event.type).toBe('workflow_run.in_progress')
+    expect(event.shouldDeliver).toBe(false)
+    expect(event.title).toBe('example-owner/example-repo: Deploy in_progress')
+  })
+
+  it('delivers completed workflow runs with a conclusion-derived severity', async () => {
+    const payload = {
+      action: 'completed',
+      repository: { full_name: 'example-owner/example-repo' },
+      workflow_run: {
+        name: 'Deploy',
+        display_title: 'Publish site',
+        head_branch: 'main',
+        status: 'completed',
+        conclusion: 'failure',
+        html_url: 'https://github.com/example-owner/example-repo/actions/runs/123',
+      },
+    }
+    const { req, raw } = await makeReq(payload, 'workflow_run', { deliveryId: 'd-4' })
+    const event = await github.parse(req, raw, sub)
+    expect(event.shouldDeliver).toBe(true)
+    expect(event.severity).toBe('error')
+    expect(event.url).toContain('/actions/runs/123')
+  })
 })

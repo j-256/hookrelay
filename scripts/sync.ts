@@ -9,6 +9,7 @@ import {
   SUBSCRIPTION_KEY_PREFIX,
   subscriptionKvKey,
 } from '../src/lib/subscription'
+import { KNOWN_SOURCE_TYPES } from './subscription-sources'
 
 const execFileP = promisify(execFile)
 
@@ -39,6 +40,7 @@ const sinkSchema = z
 
 const routesSchema = z
   .object({
+    baseUrl: z.string().url().optional(),
     subs: z.array(subSchema),
     sinks: z.array(sinkSchema),
   })
@@ -241,7 +243,7 @@ async function main() {
   const text = await readFile(path, 'utf8')
   const routes = parseRoutes(text)
 
-  const knownSources = new Set(['statuspage', 'github', 'cloudflare-notifications', 'uptime'])
+  const knownSources = new Set<string>(KNOWN_SOURCE_TYPES)
   const knownSinkTypes = new Set(['ntfy', 'discord'])
   const sinkSchemas = {
     ntfy: z

@@ -1,38 +1,7 @@
-// Copy this file to routes.jsonc and fill in your own values
-// slugHash values are lowercase SHA-256 hex; generate a hash and private URL via
-// `pnpm new-sub <name> <source>`, then save the URL in a password manager
+// Copy this file to routes.jsonc and set your deployed Worker's public origin
+// Use `pnpm sink:add` and `pnpm sub:add` to add the remaining config
 {
-  "subs": [
-    {
-      "name": "example-statuspage",
-      "source": "statuspage",
-      "slugHash": "REPLACE_WITH_GENERATED_SHA256_HASH_64_HEX_CHARS",
-      "enabled": true,
-      "sinks": ["phone"]
-    },
-    {
-      "name": "example-github",
-      "source": "github",
-      "slugHash": "REPLACE_WITH_GENERATED_SHA256_HASH_64_HEX_CHARS",
-      "enabled": true,
-      "sinks": ["phone", "discord"],
-      "auth": {
-        "scheme": "github-sha256",
-        "secretEnv": "HMAC_EXAMPLE_GITHUB"
-      }
-    }
-  ],
-  "sinks": [
-    {
-      "name": "phone",
-      "type": "ntfy",
-      "topic": "REPLACE_WITH_RANDOM_TOPIC_NAME",
-      "tokenEnv": "SINK_NTFY_PHONE_TOKEN"
-    },
-    {
-      "name": "discord",
-      "type": "discord",
-      "urlEnv": "SINK_DISCORD_URL"
-    }
-  ]
+  "baseUrl": "https://hooks.example.com",
+  "subs": [],
+  "sinks": []
 }

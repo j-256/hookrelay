@@ -10,6 +10,7 @@ export interface NormalizedEvent {
   body: string
   url?: string
   severity?: Severity
+  shouldDeliver?: boolean
   raw: unknown
 }
 

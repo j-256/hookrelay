@@ -33,6 +33,7 @@ const fixture: Adapter = {
       timestamp: '2026-06-06T00:00:00.000Z',
       title: 'fixture',
       body: text,
+      shouldDeliver: text !== 'record-only',
       raw: text,
     }
   },
@@ -158,6 +159,27 @@ describe('handleHook', () => {
     expect(second.status).toBe(200)
     const body = await second.json<{ duplicate?: boolean }>()
     expect(body.duplicate).toBe(true)
+  })
+
+  it('persists record-only events without creating sink deliveries', async () => {
+    await env.SUBS.put(SUB_KEY, JSON.stringify({ ...sub, sinks: ['phone'] }))
+    const res = await handleHook(
+      new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
+        method: 'POST',
+        body: 'record-only',
+      }),
+      env,
+      ctx,
+    )
+    expect(res.status).toBe(200)
+    const event = await env.EVENTS_DB.prepare('SELECT id FROM events WHERE id = ?')
+      .bind('fixture:record-only')
+      .first<{ id: string }>()
+    const deliveries = await env.EVENTS_DB.prepare('SELECT COUNT(*) AS count FROM deliveries WHERE event_id = ?')
+      .bind('fixture:record-only')
+      .first<{ count: number }>()
+    expect(event?.id).toBe('fixture:record-only')
+    expect(deliveries?.count).toBe(0)
   })
 
   it('returns 401 when adapter.verify throws', async () => {
