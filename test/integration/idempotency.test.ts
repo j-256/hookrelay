@@ -1,6 +1,9 @@
-import { applyD1Migrations, env } from 'cloudflare:test'
+import { applyD1Migrations, createExecutionContext, createMessageBatch, env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from '../../src/index'
+import { DELIVERY_QUEUE_NAME } from '../../src/delivery'
+import type { Env } from '../../src/index'
+import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 import statuspageFixture from '../fixtures/statuspage/incident-investigating.json'
 
 const SUB_SLUG = 'idemp-aaaaaaaaaaaaaaaaaa'
@@ -9,7 +12,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-  await env.EVENTS_DB.exec('DELETE FROM events')
+  await env.EVENTS_DB.exec('DELETE FROM deliveries; DELETE FROM events;')
   await env.SUBS.put(
     `sub:${SUB_SLUG}`,
     JSON.stringify({ name: 'idemp', source: 'statuspage', enabled: true, sinks: ['t-sink'], auth: null }),
@@ -22,32 +25,27 @@ afterEach(async () => {
   await env.SINKS.delete('sink:t-sink')
 })
 
-const makeCtx = () => {
-  const promises: Promise<unknown>[] = []
-  const ctx = { waitUntil: (p: Promise<unknown>) => promises.push(p), passThroughOnException: () => {} } as unknown as ExecutionContext
-  return { ctx, promises }
-}
-
 describe('idempotency', () => {
-  it('second POST of the same body returns duplicate:true and does not re-fanout', async () => {
+  it('second POST returns duplicate:true and does not enqueue another delivery', async () => {
     const calls: string[] = []
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : (input as Request).url
       calls.push(url)
       return new Response('ok', { status: 200 })
     })
+    const queue = recordingQueue()
+    const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
     const post = async () => {
-      const { ctx, promises } = makeCtx()
+      const ctx = createExecutionContext()
       const res = await worker.fetch(
         new Request(`https://hooks.example.com/hook/statuspage/${SUB_SLUG}`, {
           method: 'POST',
           body: JSON.stringify(statuspageFixture),
           headers: { 'content-type': 'application/json' },
         }),
-        env,
+        testEnv,
         ctx,
       )
-      await Promise.all(promises)
       return res
     }
 
@@ -58,8 +56,14 @@ describe('idempotency', () => {
     const second = await post()
     expect(second.status).toBe(200)
     expect((await second.json<{ duplicate?: boolean }>()).duplicate).toBe(true)
+    expect(queue.messages).toHaveLength(1)
 
-    // ntfy.sh fired only once -- the second post short-circuited before fanout
+    const batch = createMessageBatch(DELIVERY_QUEUE_NAME, [
+      { id: 'idempotency-1', timestamp: new Date(), attempts: 1, body: queue.messages[0]! },
+    ])
+    await worker.queue(batch, testEnv)
+
+    // The duplicate request does not create a second sink request
     const ntfyCalls = calls.filter((u) => u.startsWith('https://ntfy.sh/'))
     expect(ntfyCalls).toHaveLength(1)
     fetchSpy.mockRestore()

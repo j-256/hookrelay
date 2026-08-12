@@ -1,18 +1,24 @@
-import { primaryKey, updateFanoutResults } from './persistence'
 import { getSink } from './sinks'
 import type { Env } from './index'
-import type { FanoutResult, FanoutResults, NormalizedEvent } from './types'
+import { HttpError } from './lib/http'
+import type { NormalizedEvent } from './types'
 
 interface SinkConfig {
   type: string
   [k: string]: unknown
 }
 
-async function dispatchOne(
+export interface DispatchResult {
+  ok: boolean
+  errMsg?: string
+  retryAfterSeconds?: number
+}
+
+export async function dispatchSink(
   env: Env,
   event: NormalizedEvent,
   sinkName: string,
-): Promise<FanoutResult> {
+): Promise<DispatchResult> {
   let raw: string | null
   try {
     raw = await env.SINKS.get(`sink:${sinkName}`)
@@ -45,24 +51,10 @@ async function dispatchOne(
     return { ok: true }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
-    return { ok: false, errMsg: msg }
+    return {
+      ok: false,
+      errMsg: msg,
+      retryAfterSeconds: err instanceof HttpError ? err.retryAfterSeconds : undefined,
+    }
   }
-}
-
-export async function fanout(
-  event: NormalizedEvent,
-  sinkNames: string[],
-  env: Env,
-): Promise<void> {
-  const settled = await Promise.allSettled(
-    sinkNames.map(async (name) => [name, await dispatchOne(env, event, name)] as const),
-  )
-  const results: FanoutResults = Object.fromEntries(
-    settled.map((s, i) =>
-      s.status === 'fulfilled'
-        ? s.value
-        : [sinkNames[i]!, { ok: false, errMsg: `dispatch threw: ${String(s.reason)}` }],
-    ),
-  )
-  await updateFanoutResults(env, primaryKey(event), results)
 }

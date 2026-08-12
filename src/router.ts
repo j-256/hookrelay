@@ -1,5 +1,5 @@
 import { getAdapter } from './adapters'
-import { fanout } from './fanout'
+import { prepareDeliveries } from './delivery'
 import { persistEvent, primaryKey } from './persistence'
 import type { Env } from './index'
 import type { Subscription } from './types'
@@ -29,7 +29,7 @@ function json(body: unknown, status: number): Response {
 export async function handleHook(
   request: Request,
   env: Env,
-  ctx: ExecutionContext,
+  _ctx: ExecutionContext,
 ): Promise<Response> {
   const url = new URL(request.url)
   const parsed = parseHookPath(url.pathname)
@@ -83,13 +83,25 @@ export async function handleHook(
   const contentType = request.headers.get('content-type') ?? 'application/octet-stream'
   const persisted = await persistEvent(env, event, rawBody, contentType, slug)
   const eventId = primaryKey(event)
+  const enqueue = await prepareDeliveries(env, eventId, sub.sinks)
+
+  if (enqueue.deferred > 0) {
+    console.log(JSON.stringify({
+      level: 'warn',
+      msg: 'event.delivery.deferred',
+      eventId,
+      source: event.source,
+      subName: event.subName,
+      count: enqueue.deferred,
+    }))
+  }
 
   if (persisted.duplicate) {
     console.log(JSON.stringify({ level: 'info', msg: 'event.duplicate', eventId, source: event.source, subName: event.subName, type: event.type }))
     return json({ ok: true, eventId, duplicate: true }, 200)
   }
 
-  // Sender always gets 200 once we've persisted; sink delivery happens in waitUntil
+  // Sender gets 200 after the event and all per-sink delivery intents are durable
   console.log(JSON.stringify({
     level: 'info',
     msg: 'event.accepted',
@@ -100,8 +112,5 @@ export async function handleHook(
     severity: event.severity ?? null,
     sinks: sub.sinks,
   }))
-  if (sub.sinks.length > 0) {
-    ctx.waitUntil(fanout(event, sub.sinks, env))
-  }
   return json({ ok: true, eventId }, 200)
 }

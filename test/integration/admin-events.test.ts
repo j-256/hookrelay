@@ -1,13 +1,16 @@
 import { applyD1Migrations, env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from '../../src/index'
+import type { Env } from '../../src/index'
+import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 
 beforeAll(async () => {
   await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
 })
 
 beforeEach(async () => {
-  await env.EVENTS_DB.exec('DELETE FROM events')
+  delete (env as unknown as Record<string, unknown>).TEST_BYPASS_ACCESS
+  await env.EVENTS_DB.exec('DELETE FROM deliveries; DELETE FROM events;')
 
   const events = [
     { id: 'github:d1', source: 'github', sub_name: 'gh', type: 'issues.opened', received_at: '2026-06-06T10:00:00Z', title: 'A' },
@@ -119,5 +122,85 @@ describe('GET /admin/events', () => {
     const html = await res.text()
     expect(html).not.toContain('<script>')
     expect(html).toContain('&lt;script&gt;')
+  })
+
+  it('shows exhausted delivery state and redrives one sink', async () => {
+    bypassAccess()
+    const timestamp = '2026-06-06T12:05:00Z'
+    await env.EVENTS_DB.prepare(
+      'UPDATE events SET fanout_results = ? WHERE id = ?',
+    )
+      .bind(
+        JSON.stringify({
+          phone: {
+            ok: true,
+            status: 'delivered',
+            attempts: 1,
+            updatedAt: timestamp,
+          },
+        }),
+        'github:d1',
+      )
+      .run()
+    await env.EVENTS_DB.prepare(
+      `INSERT INTO deliveries
+       (event_id, sink_name, generation, status, attempts, last_error, created_at, updated_at)
+       VALUES (?, ?, 1, 'exhausted', 9, ?, ?, ?)`,
+    )
+      .bind('github:d1', 'phone', 'POST ntfy.sh -> 503', timestamp, timestamp)
+      .run()
+
+    const list = await worker.fetch(new Request('https://hooks.example.com/admin/events'), env, ctx)
+    const html = await list.text()
+    expect(html).toContain('phone: exhausted')
+    expect(html).toContain('type="submit">retry</button>')
+
+    const queue = recordingQueue()
+    const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
+    const retry = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events/github%3Ad1/deliveries/phone/retry', {
+        method: 'POST',
+        headers: { origin: 'https://hooks.example.com' },
+      }),
+      testEnv,
+      ctx,
+    )
+    expect(retry.status).toBe(303)
+    expect(retry.headers.get('location')).toBe('/admin/events')
+    expect(queue.messages).toEqual([
+      { version: 1, eventId: 'github:d1', sinkName: 'phone', generation: 2 },
+    ])
+
+    const row = await env.EVENTS_DB.prepare(
+      'SELECT status, attempts, last_error FROM deliveries WHERE event_id = ? AND sink_name = ?',
+    )
+      .bind('github:d1', 'phone')
+      .first<{ status: string; attempts: number; last_error: string | null }>()
+    expect(row).toEqual({ status: 'queued', attempts: 9, last_error: null })
+  })
+
+  it('rejects a cross-origin redrive request', async () => {
+    bypassAccess()
+    const res = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events/github%3Ad1/deliveries/phone/retry', {
+        method: 'POST',
+        headers: { origin: 'https://evil.example' },
+      }),
+      env,
+      ctx,
+    )
+    expect(res.status).toBe(403)
+  })
+
+  it('rejects a redrive request without a browser Origin', async () => {
+    bypassAccess()
+    const res = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events/github%3Ad1/deliveries/phone/retry', {
+        method: 'POST',
+      }),
+      env,
+      ctx,
+    )
+    expect(res.status).toBe(403)
   })
 })

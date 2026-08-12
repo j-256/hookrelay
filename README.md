@@ -4,10 +4,10 @@ A small, extensible webhook receiver for Cloudflare Workers. Drop in adapters fo
 
 ## What it does
 
-Receives webhooks at `/hook/<source>/<slug>` from a configurable list of senders, normalizes the payload, persists every event to D1+R2, then fans out notifications to per-subscription sinks (ntfy push, Discord channel, etc).
+Receives webhooks at `/hook/<source>/<slug>` from a configurable list of senders, normalizes the payload, persists every event to D1+R2, then queues one durable delivery per subscription sink (ntfy push, Discord channel, etc). Failed sink requests retry independently, and exhausted deliveries remain visible and manually retryable in the admin page.
 
 Built-in adapters (v1):
-- Statuspage (Atlassian)
+- Statuspage incidents and scheduled maintenance (Atlassian)
 - GitHub repo webhooks
 - Cloudflare Notifications
 - UptimeRobot
@@ -16,7 +16,7 @@ Built-in sinks (v1):
 - ntfy.sh push (also self-hostable)
 - Discord channel webhook
 
-Admin: `/admin/events` (Cloudflare Access protected) for browsing recent events with filters.
+Admin: `/admin/events` (Cloudflare Access protected) for browsing recent events, inspecting per-sink delivery state, and retrying exhausted deliveries.
 
 ## Deploy your own
 
@@ -41,13 +41,15 @@ Steps:
    npx wrangler kv namespace create SINKS
    npx wrangler d1 create hookrelay-events
    npx wrangler r2 bucket create hookrelay-events-raw
+   npx wrangler queues create hookrelay-delivery
+   npx wrangler queues create hookrelay-delivery-dlq
    ```
-   Copy the printed ids into the `kv_namespaces` and `d1_databases` entries in `wrangler.jsonc`. These are opaque, account-scoped resource handles, not secrets -- they grant no access without your API token, so they are safe to commit.
+   Copy the printed ids into the `kv_namespaces` and `d1_databases` entries in `wrangler.jsonc`. These are opaque, account-scoped resource handles, not secrets – they grant no access without your API token, so they are safe to commit. Queue bindings use the two queue names directly, so keep those names aligned with `wrangler.jsonc`.
 
    > Note: Wrangler names the KV namespaces `hookrelay-SUBS` / `hookrelay-SINKS` (worker name + binding), so that is what shows in the dashboard. `SUBS`/`SINKS` are the *binding* names your code uses (`env.SUBS`); the `id` in `wrangler.jsonc` is what actually links them. Dashboard title and binding name differ by design.
 3. Apply the D1 migration:
    ```sh
-   npx wrangler d1 migrations apply hookrelay-events
+   npx wrangler d1 migrations apply hookrelay-events --remote
    ```
 4. Set the Cloudflare Access values as Wrangler **secrets** (they identify your Zero Trust org, so they are kept out of source):
    ```sh
@@ -77,15 +79,9 @@ Steps:
    ```sh
    npx wrangler deploy
    ```
-   Then in the Cloudflare dashboard, attach the Worker to a custom domain (`hooks.example.com`).
-   The route is managed in the dashboard rather than in `wrangler.jsonc`, so no hostname is
-   committed to source (`workers_dev` is `false` to keep the Worker off `*.workers.dev`).
+   Then in the Cloudflare dashboard, attach the Worker to a custom domain (`hooks.example.com`). The route is managed in the dashboard rather than in `wrangler.jsonc`, so no hostname is committed to source (`workers_dev` is `false` to keep the Worker off `*.workers.dev`).
 
-   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/)
-   (Worker -> Settings -> Build): set the branch to `main`, leave the build command empty
-   (TypeScript is bundled at deploy time, no build step), and set the deploy command to
-   `npx wrangler deploy`. No build variables are needed -- Builds runs in your account's
-   context and infers the account automatically, so there is no `account_id` to set.
+   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build): set the branch to `main`, leave the build command empty (TypeScript is bundled at deploy time, no build step), and set the deploy command to `npx wrangler deploy`. No build variables are needed – Builds runs in your account's context and infers the account automatically, so there is no `account_id` to set. Apply new D1 migrations before a build deploys code that depends on them.
 8. (Optional) Deploy the edge WAF rule that keeps scanner traffic off the Worker:
    ```sh
    ./scripts/deploy-waf.sh hooks.example.com          # dry-run, shows the plan
@@ -114,6 +110,8 @@ These are opaque, account-scoped *resource handles*. They name a resource but gr
 | `kv_namespaces[].id` (`SUBS`, `SINKS`) | KV namespaces holding subscription and sink config |
 | `d1_databases[].database_id` | D1 database storing the event log |
 | `r2_buckets[].bucket_name` | R2 bucket for raw payloads (bound by name, so there is no id to set) |
+| `queues` | Producer and consumer bindings for per-sink delivery and its dead-letter queue |
+| `triggers.crons` | Five-minute recovery sweep for delivery rows that could not be published to the queue |
 | `observability` | Stored Workers Logs are disabled on purpose -- webhook URLs contain the slug (a bearer token) and Cloudflare enriches stored logs with the request URL, which would leak it. See the comment in the file; failure visibility comes from D1 (`/admin/events`) and `wrangler tail` instead. |
 
 ### 2. Environment variables -- your shell, CI, or Workers Builds
@@ -123,7 +121,7 @@ Read by Wrangler at deploy time; never committed.
 | Variable | What it is |
 | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | Your account id. Kept in the environment (not `wrangler.jsonc`) so the committed config carries no account identifier. |
-| `CLOUDFLARE_API_TOKEN` | Auth for `wrangler` / CI. Needs Workers, KV, D1, and (for the WAF script) Zone WAF edit scopes. This is the credential everything else depends on -- guard it. |
+| `CLOUDFLARE_API_TOKEN` | Auth for `wrangler` / CI. Needs Workers, KV, D1, R2, Queues, and (for the WAF script) Zone WAF edit scopes. This is the credential everything else depends on – guard it. |
 
 ### 3. Wrangler secrets -- encrypted, write-only
 
@@ -155,6 +153,45 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | `sinks[].type: discord` -> `urlEnv` | Name of the Wrangler secret holding the Discord webhook URL (not the URL itself). |
 
 **Bearer secrets to guard:** subscription `slug`s and ntfy `topic`s. Both grant access purely by being known -- there is no second factor. Keep them in `routes.jsonc` (gitignored) and out of logs, screenshots, and commits.
+
+## Adding a subscription
+
+`routes.jsonc` is the complete desired state for subscriptions and sinks. Keep every existing entry when adding one: `pnpm sync --yes` removes remote KV entries that are absent from the file.
+
+1. Add or reuse a sink in `routes.jsonc`. For an authenticated ntfy sink, keep the topic in `routes.jsonc`, put the access token in a Wrangler secret, and reference its name with `tokenEnv`.
+2. Generate the subscription stub and webhook URL:
+   ```sh
+   pnpm new-sub <subscription-name> <source>
+   ```
+3. Paste the stub into `subs[]`, select its sink names, and keep the generated slug unchanged. The slug is the webhook password: `routes.jsonc` needs it to sync KV, and a password-manager copy is recommended for recovery. It is not a separate Wrangler secret.
+4. Preview and apply the KV changes:
+   ```sh
+   pnpm sync
+   pnpm sync --yes
+   ```
+5. Paste `https://<your-hook-domain>/hook/<source>/<slug>` into the provider's webhook subscription form. For providers with HMAC support, set the Wrangler secret first and add the matching `auth` block.
+6. Send a fixture or wait for a real event, then confirm its sink moves from `queued` or `processing` to `delivered` at `/admin/events`.
+
+Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.
+
+## Durable delivery
+
+The webhook request writes the event to D1 and R2 and creates one D1 delivery row per sink before returning `200`. It then publishes a compact queue message containing only the event ID, sink name, and delivery generation; the consumer reloads the normalized event from R2. A failure in one sink never resends a sink that already succeeded.
+
+The primary queue retries failures with bounded exponential backoff and honors a valid HTTP `Retry-After` delay. After automatic retries are exhausted, Cloudflare moves the message to `hookrelay-delivery-dlq`, whose consumer marks the D1 row `exhausted`. That final D1 update also retries for the queue's retention window if D1 is unavailable. The Access-protected admin page exposes a retry button for that sink only.
+
+If queue publication itself fails, the row remains `pending`. The Cron Trigger republishes pending rows every five minutes, so recovery does not depend on the webhook provider sending the event again. Every publication reserves a new generation first, which makes late messages from an uncertain earlier publish or manual-retry cycle harmless.
+
+Delivery is at least once. The D1 claim and lease suppress ordinary duplicate queue messages, but a sink can still receive a duplicate if it accepts a request and the Worker stops before recording success. That tradeoff avoids silently losing the notification.
+
+For an existing deployment that predates queues, the D1 migration imports old successful fanout results as `delivered` and old failures as `exhausted`. The Worker performs the same import lazily if it encounters an old event that was written after the migration. Roll out in this order so the Worker never references missing resources or schema:
+
+```sh
+npx wrangler queues create hookrelay-delivery
+npx wrangler queues create hookrelay-delivery-dlq
+npx wrangler d1 migrations apply hookrelay-events --remote
+npx wrangler deploy
+```
 
 ## Smoke tests
 
@@ -190,7 +227,7 @@ curl -s -X POST -H 'content-type: application/json' \
   -d @test/fixtures/uptime/down.json
 ```
 
-Expected: each returns `{"ok":true,"eventId":"..."}` and the event appears at `/admin/events` within seconds.
+Expected: each returns `{"ok":true,"eventId":"..."}` after the event and delivery intent are durable. The event appears at `/admin/events`, normally moving from `queued` or `processing` to `delivered` within seconds.
 
 ## Writing an adapter
 
@@ -269,10 +306,11 @@ To support a new destination ("Slack"):
 ## Project layout
 
 See `src/` for components and `test/` for unit and integration tests. Key files:
-- `src/router.ts` -- request pipeline (slug parse, KV lookup, verify, parse, persist)
-- `src/persistence.ts` -- D1 idempotent insert + R2 raw + sidecar
-- `src/fanout.ts` -- parallel sink dispatch (always inside `ctx.waitUntil`)
-- `src/registry.ts` -- the only place where adapters and sinks are wired in
+- `src/router.ts` – request pipeline (slug parse, KV lookup, verify, parse, persist, enqueue)
+- `src/delivery.ts` – D1 outbox, queue consumers, retries, dead-letter handling, and manual redrive
+- `src/persistence.ts` – D1 idempotent insert plus R2 raw and normalized objects
+- `src/fanout.ts` – validation and dispatch for one sink attempt
+- `src/registry.ts` – the only place where adapters and sinks are wired in
 
 ## License
 

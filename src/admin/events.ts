@@ -1,4 +1,6 @@
 import type { Env } from '../index'
+import { redriveDelivery } from '../delivery'
+import type { DeliveryStatus, FanoutResults } from '../types'
 import { verifyAccessJwt } from './access'
 
 interface Filters {
@@ -39,6 +41,18 @@ interface Row {
   url: string | null
   severity: string | null
   fanout_results: string
+  delivery_results: FanoutResults
+}
+
+interface EventRow extends Omit<Row, 'delivery_results'> {}
+
+interface DeliveryRow {
+  event_id: string
+  sink_name: string
+  status: DeliveryStatus
+  attempts: number
+  last_error: string | null
+  updated_at: string
 }
 
 async function queryEvents(env: Env, f: Filters): Promise<Row[]> {
@@ -68,8 +82,33 @@ async function queryEvents(env: Env, f: Filters): Promise<Row[]> {
     ' ORDER BY received_at DESC LIMIT ? OFFSET ?'
   const offset = (f.page - 1) * PAGE_SIZE
   const stmt = env.EVENTS_DB.prepare(sql).bind(...binds, PAGE_SIZE, offset)
-  const result = await stmt.all<Row>()
-  return result.results ?? []
+  const result = await stmt.all<EventRow>()
+  const rows = result.results ?? []
+  if (rows.length === 0) return []
+
+  const placeholders = rows.map(() => '?').join(', ')
+  const deliveries = await env.EVENTS_DB.prepare(
+    `SELECT event_id, sink_name, status, attempts, last_error, updated_at
+     FROM deliveries WHERE event_id IN (${placeholders}) ORDER BY sink_name`,
+  )
+    .bind(...rows.map((row) => row.id))
+    .all<DeliveryRow>()
+  const byEvent = new Map<string, FanoutResults>()
+  for (const delivery of deliveries.results ?? []) {
+    const eventResults = byEvent.get(delivery.event_id) ?? {}
+    eventResults[delivery.sink_name] = {
+      ok: delivery.status === 'delivered',
+      status: delivery.status,
+      attempts: delivery.attempts,
+      ...(delivery.last_error ? { errMsg: delivery.last_error } : {}),
+      updatedAt: delivery.updated_at,
+    }
+    byEvent.set(delivery.event_id, eventResults)
+  }
+  return rows.map((row) => ({
+    ...row,
+    delivery_results: byEvent.get(row.id) ?? {},
+  }))
 }
 
 function escapeHtml(s: string): string {
@@ -89,16 +128,27 @@ function safeHref(u: string): string | null {
 }
 
 function renderRow(row: Row): string {
-  let fanout: Record<string, { ok: boolean; errMsg?: string }> = {}
+  let fanout: FanoutResults = {}
   try {
-    fanout = JSON.parse(row.fanout_results)
+    const parsed = JSON.parse(row.fanout_results) as unknown
+    if (typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)) {
+      fanout = parsed as FanoutResults
+    }
   } catch {}
+  fanout = { ...fanout, ...row.delivery_results }
   const fanoutCells = Object.entries(fanout)
-    .map(([sink, r]) =>
-      r.ok
-        ? `<span class="ok">${escapeHtml(sink)}</span>`
-        : `<span class="err" title="${escapeHtml(r.errMsg ?? '')}">${escapeHtml(sink)}</span>`,
-    )
+    .map(([sink, result]) => {
+      const status = result.status ?? (result.ok ? 'delivered' : 'failed')
+      const details = [
+        `status: ${status}`,
+        ...(result.attempts !== undefined ? [`attempts: ${result.attempts}`] : []),
+        ...(result.errMsg ? [result.errMsg] : []),
+      ].join('\n')
+      const retry = status === 'exhausted' || status === 'failed'
+        ? `<form class="retry" method="post" action="${escapeHtml(`/admin/events/${encodeURIComponent(row.id)}/deliveries/${encodeURIComponent(sink)}/retry`)}"><button type="submit">retry</button></form>`
+        : ''
+      return `<span class="delivery ${escapeHtml(status)}" title="${escapeHtml(details)}">${escapeHtml(sink)}: ${escapeHtml(status)}</span>${retry}`
+    })
     .join(' ')
   const safe = row.url ? safeHref(row.url) : null
   const titleCell = safe
@@ -126,14 +176,18 @@ function renderPage(rows: Row[], f: Filters): string {
   table { border-collapse: collapse; width: 100%; font-size: 0.9rem; }
   th, td { border-bottom: 1px solid #ddd; padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
   th { background: #f4f4f4; }
-  .ok { color: #1a7f37; }
-  .err { color: #b91c1c; cursor: help; text-decoration: underline dotted; }
-  form { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem; }
+  .delivery { cursor: help; text-decoration: underline dotted; white-space: nowrap; }
+  .delivered { color: #1a7f37; }
+  .pending, .queued, .processing, .retrying { color: #9a6700; }
+  .failed, .exhausted { color: #b91c1c; }
+  form.filters { display: flex; gap: 0.5rem; flex-wrap: wrap; align-items: end; margin-bottom: 1rem; }
+  form.retry { display: inline; margin-left: 0.25rem; }
+  form.retry button { font-size: 0.75rem; padding: 0.1rem 0.3rem; }
   label { display: flex; flex-direction: column; font-size: 0.8rem; }
   input, select { padding: 0.3rem; }
 </style></head><body>
 <h1>hookrelay events</h1>
-<form>
+<form class="filters">
   <label>source<input name="source" value="${filterValue(f.source)}"></label>
   <label>sub<input name="sub" value="${filterValue(f.sub)}"></label>
   <label>type<input name="type" value="${filterValue(f.type)}"></label>
@@ -218,4 +272,26 @@ export async function handleAdminEvents(req: Request, env: Env): Promise<Respons
       'referrer-policy': 'no-referrer',
     },
   })
+}
+
+export async function handleAdminRetry(
+  req: Request,
+  env: Env,
+  eventId: string,
+  sinkName: string,
+): Promise<Response> {
+  if (!(await ensureAuthorized(req, env))) return new Response('forbidden', { status: 403 })
+  if (req.method !== 'POST') {
+    return new Response('method not allowed', { status: 405, headers: { allow: 'POST' } })
+  }
+  const url = new URL(req.url)
+  const origin = req.headers.get('origin')
+  if (origin !== url.origin) return new Response('forbidden', { status: 403 })
+
+  const result = await redriveDelivery(env, eventId, sinkName)
+  if (!result.ok) {
+    const status = result.reason?.includes('not found') ? 404 : 409
+    return new Response(result.reason ?? 'retry rejected', { status })
+  }
+  return new Response(null, { status: 303, headers: { location: '/admin/events' } })
 }

@@ -26,9 +26,27 @@ export interface Subscription {
   auth: SubAuth | null
 }
 
+export type DeliveryStatus =
+  | 'pending'
+  | 'queued'
+  | 'processing'
+  | 'retrying'
+  | 'delivered'
+  | 'exhausted'
+
 export interface FanoutResult {
   ok: boolean
+  status?: DeliveryStatus
+  attempts?: number
   errMsg?: string
+  updatedAt?: string
 }
 
 export type FanoutResults = Record<string, FanoutResult>
+
+export interface DeliveryMessage {
+  version: 1
+  eventId: string
+  sinkName: string
+  generation: number
+}

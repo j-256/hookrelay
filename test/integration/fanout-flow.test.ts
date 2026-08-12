@@ -1,6 +1,15 @@
-import { applyD1Migrations, env } from 'cloudflare:test'
+import {
+  applyD1Migrations,
+  createExecutionContext,
+  createMessageBatch,
+  env,
+  getQueueResult,
+} from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from '../../src/index'
+import { DELIVERY_QUEUE_NAME } from '../../src/delivery'
+import type { Env } from '../../src/index'
+import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 import statuspageFixture from '../fixtures/statuspage/incident-investigating.json'
 
 const SUB_SLUG = 'a7f3b2c8d9e1f4g6h8j0k2statuspage'
@@ -11,7 +20,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-  await env.EVENTS_DB.exec('DELETE FROM events')
+  await env.EVENTS_DB.exec('DELETE FROM deliveries; DELETE FROM events;')
   await env.SUBS.put(
     `sub:${SUB_SLUG}`,
     JSON.stringify({
@@ -40,11 +49,9 @@ describe('end-to-end webhook flow', () => {
       throw new Error(`unexpected fetch: ${url}`)
     })
 
-    const promises: Promise<unknown>[] = []
-    const ctx = {
-      waitUntil: (p: Promise<unknown>) => promises.push(p),
-      passThroughOnException: () => {},
-    } as unknown as ExecutionContext
+    const queue = recordingQueue()
+    const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
+    const ctx = createExecutionContext()
 
     const res = await worker.fetch(
       new Request(`https://hooks.example.com/hook/statuspage/${SUB_SLUG}`, {
@@ -52,11 +59,19 @@ describe('end-to-end webhook flow', () => {
         body: JSON.stringify(statuspageFixture),
         headers: { 'content-type': 'application/json' },
       }),
-      env,
+      testEnv,
       ctx,
     )
     expect(res.status).toBe(200)
-    await Promise.all(promises)
+    expect(queue.messages).toHaveLength(1)
+
+    const batch = createMessageBatch(DELIVERY_QUEUE_NAME, [
+      { id: 'flow-1', timestamp: new Date(), attempts: 1, body: queue.messages[0]! },
+    ])
+    const queueCtx = createExecutionContext()
+    await worker.queue(batch, testEnv)
+    const queueResult = await getQueueResult(batch, queueCtx)
+    expect(queueResult.explicitAcks).toEqual(['flow-1'])
 
     expect(fetchSpy).toHaveBeenCalled()
     const ntfyCall = fetchSpy.mock.calls.find(([input]) =>
@@ -68,7 +83,7 @@ describe('end-to-end webhook flow', () => {
       .bind('statuspage:inc-001:upd-001')
       .first<{ fanout_results: string }>()
     const results = JSON.parse(row?.fanout_results ?? '{}')
-    expect(results[SINK_NAME]).toEqual({ ok: true })
+    expect(results[SINK_NAME]).toMatchObject({ ok: true, status: 'delivered', attempts: 1 })
     fetchSpy.mockRestore()
   })
 })

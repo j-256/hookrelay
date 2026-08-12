@@ -18,6 +18,40 @@ describe('postJson', () => {
     const fetchMock = vi.fn(async () => new Response('boom', { status: 502 }))
     await expect(postJson('https://example.com/x', {}, { fetch: fetchMock as unknown as typeof fetch })).rejects.toThrow(/502/)
   })
+
+  it('preserves numeric Retry-After metadata and sets a request timeout signal', async () => {
+    const fetchMock = vi.fn(async (_input: Request | string | URL, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal)
+      return new Response('slow down', {
+        status: 429,
+        headers: { 'retry-after': '120' },
+      })
+    })
+
+    await expect(
+      postJson('https://example.com/x', {}, { fetch: fetchMock as unknown as typeof fetch }),
+    ).rejects.toMatchObject({
+      name: 'HttpError',
+      status: 429,
+      retryAfterSeconds: 120,
+    })
+  })
+
+  it('parses an HTTP-date Retry-After value', async () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-06-06T12:00:00.000Z'))
+    try {
+      const fetchMock = vi.fn(async () => new Response('slow down', {
+        status: 503,
+        headers: { 'retry-after': 'Sat, 06 Jun 2026 12:01:30 GMT' },
+      }))
+      await expect(
+        postJson('https://example.com/x', {}, { fetch: fetchMock as unknown as typeof fetch }),
+      ).rejects.toMatchObject({ retryAfterSeconds: 90 })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
 })
 
 describe('postRaw', () => {

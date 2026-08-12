@@ -1,7 +1,7 @@
 import { env } from 'cloudflare:test'
 import { applyD1Migrations } from 'cloudflare:test'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
-import { persistEvent, primaryKey, r2Keys, updateFanoutResults } from '../../src/persistence'
+import { persistEvent, primaryKey, r2Keys, updateFanoutResult } from '../../src/persistence'
 import type { NormalizedEvent } from '../../src/types'
 
 beforeAll(async () => {
@@ -69,7 +69,7 @@ describe('persistEvent', () => {
     expect(JSON.parse(await jsonObj!.text()).id).toBe('inc-123:upd-456')
   })
 
-  it('reports duplicate on second persist of same id and skips R2', async () => {
+  it('reports duplicate on second persist and preserves existing R2 objects', async () => {
     const event = makeEvent()
     const raw = new TextEncoder().encode('first')
     const first = await persistEvent(env, event, raw, 'application/json', 'slug123')
@@ -79,22 +79,50 @@ describe('persistEvent', () => {
     const second = await persistEvent(env, event, raw2, 'application/json', 'slug123')
     expect(second.duplicate).toBe(true)
 
-    // first write's body is preserved -- second insert and R2 write were skipped
+    // The first write remains authoritative while a retry can repair missing objects
     const rawObj = await env.EVENTS_RAW.get(first.r2Keys.raw)
     expect(await rawObj?.text()).toBe('first')
   })
+
+  it('repairs a missing normalized object when the sender retries', async () => {
+    const event = makeEvent()
+    const first = await persistEvent(
+      env,
+      event,
+      new TextEncoder().encode('first'),
+      'application/json',
+      'slug123',
+    )
+    await env.EVENTS_RAW.delete(first.r2Keys.json)
+
+    const duplicate = await persistEvent(
+      env,
+      { ...event, title: 'Retry copy' },
+      new TextEncoder().encode('second'),
+      'application/json',
+      'slug123',
+    )
+
+    expect(duplicate.duplicate).toBe(true)
+    expect(await (await env.EVENTS_RAW.get(first.r2Keys.raw))?.text()).toBe('first')
+    const repaired = await env.EVENTS_RAW.get(first.r2Keys.json)
+    expect(JSON.parse(await repaired!.text()).title).toBe('Retry copy')
+  })
 })
 
-describe('updateFanoutResults', () => {
-  it('writes a JSON-serialized results map onto an existing event row', async () => {
+describe('updateFanoutResult', () => {
+  it('merges independent sink results without replacing another sink', async () => {
     const event = makeEvent()
     const raw = new TextEncoder().encode('{}')
     await persistEvent(env, event, raw, 'application/json', 'slug123')
 
-    await updateFanoutResults(env, primaryKey(event), {
-      phone: { ok: true },
-      'discord-personal': { ok: false, errMsg: '404' },
-    })
+    await Promise.all([
+      updateFanoutResult(env, primaryKey(event), 'phone', { ok: true }),
+      updateFanoutResult(env, primaryKey(event), 'discord-personal', {
+        ok: false,
+        errMsg: '404',
+      }),
+    ])
 
     const row = await env.EVENTS_DB.prepare(
       'SELECT fanout_results FROM events WHERE id = ?',

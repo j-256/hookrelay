@@ -1,12 +1,18 @@
 import './registry'
-import { handleAdminEvents, handleAdminRaw } from './admin/events'
+import { handleAdminEvents, handleAdminRaw, handleAdminRetry } from './admin/events'
+import {
+  enqueuePendingDeliveries,
+  handleQueueBatch,
+} from './delivery'
 import { handleHook } from './router'
+import type { DeliveryMessage } from './types'
 
 export interface Env {
   SUBS: KVNamespace
   SINKS: KVNamespace
   EVENTS_DB: D1Database
   EVENTS_RAW: R2Bucket
+  DELIVERY_QUEUE: Queue<DeliveryMessage>
   CF_ACCESS_TEAM_DOMAIN: string
   CF_ACCESS_AUD: string
   /** JSON binding injected by tests via cloudflareTest() miniflare.bindings */
@@ -34,6 +40,34 @@ export default {
       }
       return handleAdminRaw(request, env, eventId)
     }
+    const retryMatch = /^\/admin\/events\/([^/]+)\/deliveries\/([^/]+)\/retry$/.exec(url.pathname)
+    if (retryMatch) {
+      let eventId: string
+      let sinkName: string
+      try {
+        eventId = decodeURIComponent(retryMatch[1]!)
+        sinkName = decodeURIComponent(retryMatch[2]!)
+      } catch {
+        return new Response('not found', { status: 404 })
+      }
+      return handleAdminRetry(request, env, eventId, sinkName)
+    }
     return new Response('not found', { status: 404 })
+  },
+
+  async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
+    await handleQueueBatch(batch, env)
+  },
+
+  async scheduled(_controller: ScheduledController, env: Env): Promise<void> {
+    const result = await enqueuePendingDeliveries(env)
+    if (result.queued > 0 || result.deferred > 0) {
+      console.log(JSON.stringify({
+        level: result.deferred > 0 ? 'warn' : 'info',
+        msg: 'delivery.outbox.swept',
+        queued: result.queued,
+        deferred: result.deferred,
+      }))
+    }
   },
 } satisfies ExportedHandler<Env>

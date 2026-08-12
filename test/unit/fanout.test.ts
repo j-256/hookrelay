@@ -1,7 +1,7 @@
-import { applyD1Migrations, env } from 'cloudflare:test'
+import { env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
-import { fanout } from '../../src/fanout'
-import { primaryKey } from '../../src/persistence'
+import { dispatchSink } from '../../src/fanout'
+import { HttpError } from '../../src/lib/http'
 import { registerSink } from '../../src/sinks'
 import type { Sink } from '../../src/sinks'
 import type { NormalizedEvent } from '../../src/types'
@@ -22,92 +22,75 @@ const okSpy = vi.fn(async () => {})
 const failSpy = vi.fn(async () => {
   throw new Error('boom')
 })
+const rateLimitSpy = vi.fn(async () => {
+  throw new HttpError('rate limited', 429, 120)
+})
 
 const okSink: Sink<{ note: string }> = {
-  type: 'fanout-ok',
+  type: 'dispatch-ok',
   configSchema: z.object({ note: z.string() }).strict(),
   send: okSpy,
 }
 const failSink: Sink<{}> = {
-  type: 'fanout-fail',
+  type: 'dispatch-fail',
   configSchema: z.object({}).strict(),
   send: failSpy,
 }
+const rateLimitSink: Sink<{}> = {
+  type: 'dispatch-rate-limit',
+  configSchema: z.object({}).strict(),
+  send: rateLimitSpy,
+}
 
-beforeAll(async () => {
-  await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
-  // Register fake sinks once. Wrap in try/catch in case a sibling test file already registered them
-  try { registerSink(okSink) } catch {}
-  try { registerSink(failSink) } catch {}
+beforeAll(() => {
+  for (const sink of [okSink, failSink, rateLimitSink]) {
+    try { registerSink(sink) } catch {}
+  }
 })
 
 beforeEach(async () => {
   okSpy.mockClear()
   failSpy.mockClear()
-  await env.EVENTS_DB.exec('DELETE FROM events')
-  await env.EVENTS_DB.prepare(
-    `INSERT INTO events (id, received_at, sub_slug, sub_name, source, type, title, r2_key, fanout_results)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
-  )
-    .bind(primaryKey(event), '2026-06-06T00:00:00.000Z', 'slug', 'fixture-sub', 'fixture', 'fixture.event', 't', 'r2-key')
-    .run()
-
-  await env.SINKS.put('sink:ok-a', JSON.stringify({ type: 'fanout-ok', note: 'hi' }))
-  await env.SINKS.put('sink:fail-a', JSON.stringify({ type: 'fanout-fail' }))
+  rateLimitSpy.mockClear()
+  await env.SINKS.put('sink:ok-a', JSON.stringify({ type: 'dispatch-ok', note: 'hi' }))
+  await env.SINKS.put('sink:fail-a', JSON.stringify({ type: 'dispatch-fail' }))
+  await env.SINKS.put('sink:rate-limit-a', JSON.stringify({ type: 'dispatch-rate-limit' }))
 })
 
 afterEach(async () => {
   await env.SINKS.delete('sink:ok-a')
   await env.SINKS.delete('sink:fail-a')
+  await env.SINKS.delete('sink:rate-limit-a')
+  await env.SINKS.delete('sink:bogus')
 })
 
-describe('fanout', () => {
-  it('invokes every sink and writes per-sink results to D1', async () => {
-    await fanout(event, ['ok-a', 'fail-a'], env)
+describe('sink dispatch', () => {
+  it('validates configuration and sends one event', async () => {
+    await expect(dispatchSink(env, event, 'ok-a')).resolves.toEqual({ ok: true })
     expect(okSpy).toHaveBeenCalledOnce()
-    expect(failSpy).toHaveBeenCalledOnce()
-
-    const row = await env.EVENTS_DB.prepare('SELECT fanout_results FROM events WHERE id = ?')
-      .bind(primaryKey(event))
-      .first<{ fanout_results: string }>()
-    const results = JSON.parse(row?.fanout_results ?? '{}')
-    expect(results['ok-a']).toEqual({ ok: true })
-    expect(results['fail-a'].ok).toBe(false)
-    expect(results['fail-a'].errMsg).toContain('boom')
   })
 
-  it('records a missing-sink error without throwing', async () => {
-    await fanout(event, ['ok-a', 'no-such-sink'], env)
-    const row = await env.EVENTS_DB.prepare('SELECT fanout_results FROM events WHERE id = ?')
-      .bind(primaryKey(event))
-      .first<{ fanout_results: string }>()
-    const results = JSON.parse(row?.fanout_results ?? '{}')
-    expect(results['ok-a']).toEqual({ ok: true })
-    expect(results['no-such-sink'].ok).toBe(false)
-    expect(results['no-such-sink'].errMsg).toMatch(/no-such-sink/)
+  it('returns a sink error without throwing', async () => {
+    const result = await dispatchSink(env, event, 'fail-a')
+    expect(result.ok).toBe(false)
+    expect(result.errMsg).toContain('boom')
   })
 
-  it('records an unknown-sink-type error when KV references a type that is not registered', async () => {
+  it('returns a missing-sink error', async () => {
+    const result = await dispatchSink(env, event, 'no-such-sink')
+    expect(result.ok).toBe(false)
+    expect(result.errMsg).toMatch(/no-such-sink/)
+  })
+
+  it('returns an unknown-sink-type error', async () => {
     await env.SINKS.put('sink:bogus', JSON.stringify({ type: 'unregistered' }))
-    await fanout(event, ['bogus'], env)
-    const row = await env.EVENTS_DB.prepare('SELECT fanout_results FROM events WHERE id = ?')
-      .bind(primaryKey(event))
-      .first<{ fanout_results: string }>()
-    const results = JSON.parse(row?.fanout_results ?? '{}')
-    expect(results['bogus'].ok).toBe(false)
-    expect(results['bogus'].errMsg).toMatch(/unregistered/)
-    await env.SINKS.delete('sink:bogus')
+    const result = await dispatchSink(env, event, 'bogus')
+    expect(result.ok).toBe(false)
+    expect(result.errMsg).toMatch(/unregistered/)
   })
 
-  it('returns successfully even when every sink fails', async () => {
-    await env.EVENTS_DB.exec('DELETE FROM events')
-    await env.EVENTS_DB.prepare(
-      `INSERT INTO events (id, received_at, sub_slug, sub_name, source, type, title, r2_key, fanout_results)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
-    )
-      .bind(primaryKey(event), '2026-06-06T00:00:00.000Z', 'slug', 'fixture-sub', 'fixture', 'fixture.event', 't', 'r2-key')
-      .run()
-
-    await expect(fanout(event, ['fail-a'], env)).resolves.toBeUndefined()
+  it('preserves Retry-After metadata from HTTP failures', async () => {
+    const result = await dispatchSink(env, event, 'rate-limit-a')
+    expect(result).toMatchObject({ ok: false, retryAfterSeconds: 120 })
   })
 })

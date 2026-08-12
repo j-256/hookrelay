@@ -1,6 +1,15 @@
-import { applyD1Migrations, env } from 'cloudflare:test'
+import {
+  applyD1Migrations,
+  createExecutionContext,
+  createMessageBatch,
+  env,
+  getQueueResult,
+} from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from '../../src/index'
+import { DELIVERY_QUEUE_NAME } from '../../src/delivery'
+import type { Env } from '../../src/index'
+import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 import statuspageFixture from '../fixtures/statuspage/incident-investigating.json'
 
 const SUB_SLUG = 'sf-isolation-aaaaaaaaaa'
@@ -9,7 +18,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-  await env.EVENTS_DB.exec('DELETE FROM events')
+  await env.EVENTS_DB.exec('DELETE FROM deliveries; DELETE FROM events;')
   await env.SUBS.put(
     `sub:${SUB_SLUG}`,
     JSON.stringify({
@@ -31,7 +40,7 @@ afterEach(async () => {
 })
 
 describe('sink failure isolation', () => {
-  it('returns 200 to the sender even when one sink throws; D1 records both outcomes', async () => {
+  it('returns 200 after durable enqueue, then records each independent outcome', async () => {
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async (input) => {
       const url = typeof input === 'string' ? input : (input as Request).url
       if (url === 'https://ntfy.sh/t1') return new Response('ok', { status: 200 })
@@ -39,11 +48,9 @@ describe('sink failure isolation', () => {
       throw new Error(`unexpected fetch: ${url}`)
     })
 
-    const promises: Promise<unknown>[] = []
-    const ctx = {
-      waitUntil: (p: Promise<unknown>) => promises.push(p),
-      passThroughOnException: () => {},
-    } as unknown as ExecutionContext
+    const queue = recordingQueue()
+    const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
+    const ctx = createExecutionContext()
 
     const res = await worker.fetch(
       new Request(`https://hooks.example.com/hook/statuspage/${SUB_SLUG}`, {
@@ -51,11 +58,26 @@ describe('sink failure isolation', () => {
         body: JSON.stringify(statuspageFixture),
         headers: { 'content-type': 'application/json' },
       }),
-      env,
+      testEnv,
       ctx,
     )
     expect(res.status).toBe(200)
-    await Promise.all(promises)
+    expect(queue.messages).toHaveLength(2)
+
+    const batch = createMessageBatch(
+      DELIVERY_QUEUE_NAME,
+      queue.messages.map((body, index) => ({
+        id: `isolation-${index}`,
+        timestamp: new Date(),
+        attempts: 1,
+        body,
+      })),
+    )
+    const queueCtx = createExecutionContext()
+    await worker.queue(batch, testEnv)
+    const queueResult = await getQueueResult(batch, queueCtx)
+    expect(queueResult.explicitAcks).toHaveLength(1)
+    expect(queueResult.retryMessages).toHaveLength(1)
 
     const row = await env.EVENTS_DB.prepare(
       'SELECT fanout_results FROM events WHERE id = ?',
@@ -63,8 +85,8 @@ describe('sink failure isolation', () => {
       .bind('statuspage:inc-001:upd-001')
       .first<{ fanout_results: string }>()
     const results = JSON.parse(row?.fanout_results ?? '{}')
-    expect(results['ok-phone']).toEqual({ ok: true })
-    expect(results['broken-phone'].ok).toBe(false)
+    expect(results['ok-phone']).toMatchObject({ ok: true, status: 'delivered', attempts: 1 })
+    expect(results['broken-phone']).toMatchObject({ ok: false, status: 'retrying', attempts: 1 })
     expect(results['broken-phone'].errMsg).toMatch(/503/)
     fetchSpy.mockRestore()
   })
