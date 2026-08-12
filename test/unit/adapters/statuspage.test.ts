@@ -4,6 +4,7 @@ import type { Subscription } from '../../../src/types'
 import incidentInvestigating from '../../fixtures/statuspage/incident-investigating.json'
 import incidentResolved from '../../fixtures/statuspage/incident-resolved.json'
 import componentDegraded from '../../fixtures/statuspage/component-degraded.json'
+import maintenanceScheduled from '../../fixtures/statuspage/maintenance-scheduled.json'
 
 const sub: Subscription = { name: 'claude-status', source: 'statuspage', enabled: true, sinks: [], auth: null }
 
@@ -39,6 +40,36 @@ describe('statuspage adapter', () => {
     expect(event.type).toBe('incident.resolved')
     expect(event.id).toBe('inc-001:upd-003')
     expect(event.severity).toBe('info')
+  })
+
+  it.each([
+    ['scheduled', 'maintenance.scheduled', 'info'],
+    ['in_progress', 'maintenance.started', 'warning'],
+    ['verifying', 'maintenance.updated', 'info'],
+    ['completed', 'maintenance.completed', 'info'],
+  ] as const)('maps maintenance status %s to %s', async (status, type, severity) => {
+    const payload = {
+      ...maintenanceScheduled,
+      incident: {
+        ...maintenanceScheduled.incident,
+        status,
+        incident_updates: [
+          {
+            ...maintenanceScheduled.incident.incident_updates[0],
+            id: `maint-upd-${status}`,
+            status,
+          },
+        ],
+      },
+    }
+    const raw = new TextEncoder().encode(JSON.stringify(payload))
+    const event = await statuspage.parse(makeReq(payload), raw, sub)
+    expect(event.type).toBe(type)
+    expect(event.id).toBe(`maint-001:maint-upd-${status}`)
+    expect(event.severity).toBe(severity)
+    expect(event.title).toContain('Codespaces scheduled maintenance')
+    expect(event.body).toContain('scheduled for tomorrow')
+    expect(event.url).toBe('http://stspg.io/maintenance')
   })
 
   it('maps component degraded to component.status_changed with error severity', async () => {

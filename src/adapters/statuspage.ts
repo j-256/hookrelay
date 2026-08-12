@@ -16,7 +16,7 @@ interface IncidentPayload {
   incident: {
     id: string
     name: string
-    status: 'investigating' | 'identified' | 'monitoring' | 'resolved' | 'postmortem'
+    status: IncidentStatus
     impact: string
     shortlink?: string
     created_at: string
@@ -24,6 +24,17 @@ interface IncidentPayload {
     incident_updates: IncidentUpdate[]
   }
 }
+
+type IncidentStatus =
+  | 'investigating'
+  | 'identified'
+  | 'monitoring'
+  | 'resolved'
+  | 'postmortem'
+  | 'scheduled'
+  | 'in_progress'
+  | 'verifying'
+  | 'completed'
 
 interface ComponentPayload {
   component_update: {
@@ -73,13 +84,27 @@ function incidentType(status: IncidentPayload['incident']['status']): string {
       return 'incident.updated'
     case 'resolved':
       return 'incident.resolved'
+    case 'scheduled':
+      return 'maintenance.scheduled'
+    case 'in_progress':
+      return 'maintenance.started'
+    case 'verifying':
+      return 'maintenance.updated'
+    case 'completed':
+      return 'maintenance.completed'
     default:
       return assertNever(status)
   }
 }
 
 function incidentSeverity(p: IncidentPayload): Severity {
-  if (p.incident.status === 'resolved') return 'info'
+  if (
+    p.incident.status === 'resolved' ||
+    p.incident.status === 'scheduled' ||
+    p.incident.status === 'verifying' ||
+    p.incident.status === 'completed'
+  ) return 'info'
+  if (p.incident.status === 'in_progress') return 'warning'
   switch (p.incident.impact) {
     case 'none':
     case 'minor':

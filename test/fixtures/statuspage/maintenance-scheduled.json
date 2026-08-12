@@ -1,0 +1,23 @@
+{
+  "meta": { "unsubscribe": "http://example.com/unsub", "documentation": "http://example.com/docs" },
+  "page": { "id": "p1", "status_indicator": "maintenance", "status_description": "Service under maintenance" },
+  "incident": {
+    "id": "maint-001",
+    "name": "Codespaces scheduled maintenance",
+    "status": "scheduled",
+    "impact": "maintenance",
+    "shortlink": "http://stspg.io/maintenance",
+    "created_at": "2026-06-07T10:00:00Z",
+    "updated_at": "2026-06-07T10:00:00Z",
+    "scheduled_for": "2026-06-08T10:00:00Z",
+    "scheduled_until": "2026-06-08T11:00:00Z",
+    "incident_updates": [
+      {
+        "id": "maint-upd-001",
+        "status": "scheduled",
+        "body": "Maintenance is scheduled for tomorrow.",
+        "created_at": "2026-06-07T10:00:00Z"
+      }
+    ]
+  }
+}
