@@ -5,6 +5,7 @@ node_modules/
 # Wrangler local state
 .wrangler/
 .dev.vars
+worker-configuration.d.ts
 
 # Real routing config may hold ntfy topics, which are bearer secrets
 # Only routes.example.jsonc (the template) is tracked; your filled-in copy is not
