@@ -16,7 +16,7 @@ Built-in sinks (v1):
 - ntfy.sh push (also self-hostable)
 - Discord channel webhook
 
-Admin: `/admin/events` (Cloudflare Access protected) for browsing recent events, inspecting per-sink delivery state, and retrying exhausted deliveries.
+Admin: `/admin` redirects to the Cloudflare Access-protected `/admin/events` dashboard for browsing recent events, inspecting per-sink delivery state, and retrying exhausted deliveries.
 
 ## Deploy your own
 
@@ -84,13 +84,7 @@ Steps:
    ./scripts/deploy-waf.sh hooks.example.com          # dry-run, shows the plan
    ./scripts/deploy-waf.sh hooks.example.com --apply   # deploy
    ```
-   The default rule is a Free-plan-compatible default-deny: it edge-blocks every path that is
-   not `/hook/*` or `/admin/*`, using the `starts_with` operator (allowed on all plans). A
-   blocked request terminates at Cloudflare's edge and never invokes the Worker, so it does not
-   count against the Workers request quota -- this is a cost optimization, not a correctness
-   gate (the Worker already 404s unknown paths and 401s bad signatures on its own). `deploy-waf.sh`
-   appends its rule by description and leaves any other rules in your custom ruleset untouched.
-   See `scripts/waf-rules.example.jsonc` for the rule and the tradeoff it accepts.
+   The default rule is a Free-plan-compatible default-deny: it edge-blocks every path that is not `/hook/*`, `/admin`, or `/admin/*`, using operators allowed on all plans. A blocked request terminates at Cloudflare's edge and never invokes the Worker, so it does not count against the Workers request quota -- this is a cost optimization, not a correctness gate (the Worker already 404s unknown paths and 401s bad signatures on its own). `deploy-waf.sh` appends its rule by description and leaves any other rules in your custom ruleset untouched. See `scripts/waf-rules.example.jsonc` for the rule and the tradeoff it accepts.
 10. Configure Cloudflare Access for `/admin/*` to require login (email OTP or GitHub OAuth, your choice). Note the AUD tag for step 4.
 11. Smoke test (see "Smoke tests" below).
 

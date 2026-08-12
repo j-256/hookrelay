@@ -6,10 +6,10 @@
 // merely 404s DOES count -- so edge-blocking junk is a real cost saving, not just hygiene.
 //
 // STRATEGY: default-deny. Legitimate traffic on a hookrelay hostname is /hook/* (inbound
-// webhooks), /admin/* (the operator, gated separately by Cloudflare Access), and /cdn-cgi/*
-// (Cloudflare's own reserved path -- Access serves its login and callback flow there). Block
+// webhooks), /admin plus /admin/* (the operator, gated separately by Cloudflare Access), and
+// /cdn-cgi/* (Cloudflare's own reserved path -- Access serves its login and callback flow). Block
 // everything else. This uses starts_with (allowed on all plans) rather than the regex
-// `matches` operator (Business/Enterprise only), so it deploys on the Free plan.
+// `matches` operator (Business/Enterprise only), so it deploys on the Free plan
 //
 // IMPORTANT: /cdn-cgi/ MUST be allowed. Cloudflare Access completes its login at
 // /cdn-cgi/access/authorized on your hostname; if the WAF blocks that path, the Access flow
@@ -27,12 +27,12 @@
   "rules": [
     {
       "description": "[hookrelay] edge-block non-hook, non-admin paths",
-      "expression": "(not starts_with(http.request.uri.path, \"/hook/\")) and (not starts_with(http.request.uri.path, \"/admin/\")) and (not starts_with(http.request.uri.path, \"/cdn-cgi/\"))",
+      "expression": "(not starts_with(http.request.uri.path, \"/hook/\")) and (http.request.uri.path ne \"/admin\") and (not starts_with(http.request.uri.path, \"/admin/\")) and (not starts_with(http.request.uri.path, \"/cdn-cgi/\"))",
       "action": "block"
     }
-    // /admin/* is allowed through the WAF and gated by Cloudflare Access at the application
-    // policy level (Access runs before the Worker, so unauthenticated /admin hits never reach
-    // the Worker either). /cdn-cgi/* is Cloudflare's reserved path (Access login/callback).
-    // /hook/* reaches the Worker, which verifies the slug against KV.
+    // /admin and /admin/* are allowed through the WAF and gated by Cloudflare Access at the
+    // application policy level (Access runs before the Worker, so unauthenticated admin hits
+    // never reach the Worker). /cdn-cgi/* is Cloudflare's reserved path (Access login/callback)
+    // /hook/* reaches the Worker, which verifies the slug against KV
   ]
 }

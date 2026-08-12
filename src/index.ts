@@ -7,6 +7,9 @@ import {
 import { handleHook } from './router'
 import type { DeliveryMessage } from './types'
 
+const ADMIN_ROOT_PATH = '/admin'
+const ADMIN_EVENTS_PATH = '/admin/events'
+
 export interface Env {
   SUBS: KVNamespace
   SINKS: KVNamespace
@@ -27,7 +30,11 @@ export default {
     if (url.pathname.startsWith('/hook/')) {
       return handleHook(request, env, ctx)
     }
-    if (url.pathname === '/admin/events') {
+    if (url.pathname === ADMIN_ROOT_PATH) {
+      url.pathname = ADMIN_EVENTS_PATH
+      return Response.redirect(url.toString())
+    }
+    if (url.pathname === ADMIN_EVENTS_PATH) {
       return handleAdminEvents(request, env)
     }
     const rawMatch = /^\/admin\/events\/([^/]+)\/raw$/.exec(url.pathname)
