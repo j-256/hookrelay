@@ -39,6 +39,22 @@ function bypassAccess() {
   ;(env as unknown as Record<string, unknown>).TEST_BYPASS_ACCESS = '1'
 }
 
+async function insertDelivery(
+  eventId: string,
+  status: 'queued' | 'delivered' | 'exhausted',
+  sinkName = 'phone',
+  lastError: string | null = null,
+) {
+  const timestamp = '2026-06-06T12:05:00Z'
+  await env.EVENTS_DB.prepare(
+    `INSERT INTO deliveries
+     (event_id, sink_name, generation, status, attempts, last_error, created_at, updated_at)
+     VALUES (?, ?, 1, ?, 1, ?, ?, ?)`,
+  )
+    .bind(eventId, sinkName, status, lastError, timestamp, timestamp)
+    .run()
+}
+
 describe('GET /admin/events', () => {
   it('returns 403 when CF Access JWT is missing and bypass is off', async () => {
     delete (env as unknown as Record<string, unknown>).TEST_BYPASS_ACCESS
@@ -65,6 +81,108 @@ describe('GET /admin/events', () => {
     // Newest first: statuspage:s1 (12:00) before github:d2 (11:00) before github:d1 (10:00)
     expect(cIdx).toBeLessThan(bIdx)
     expect(bIdx).toBeLessThan(aIdx)
+  })
+
+  it('renders a dark-first operational view without caching it', async () => {
+    bypassAccess()
+    const res = await worker.fetch(new Request('https://hooks.example.com/admin/events'), env, ctx)
+    const html = await res.text()
+    expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(html).toContain('<meta name="color-scheme" content="dark">')
+    expect(html).toContain('color-scheme: dark')
+    expect(html).toContain('Event activity')
+    expect(html).toContain('Needs attention')
+    expect(html).toContain('name="q"')
+  })
+
+  it('searches across event metadata', async () => {
+    bypassAccess()
+    const res = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events?q=pull_request'),
+      env,
+      ctx,
+    )
+    const html = await res.text()
+    expect(html).toContain('github:d2')
+    expect(html).not.toContain('github:d1')
+    expect(html).not.toContain('statuspage:s1')
+  })
+
+  it('filters events by operational delivery state', async () => {
+    bypassAccess()
+    await insertDelivery('github:d1', 'exhausted', 'phone', 'upstream unavailable')
+    await insertDelivery('github:d2', 'queued')
+    await insertDelivery('statuspage:s1', 'delivered')
+
+    const attention = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events?delivery=attention'),
+      env,
+      ctx,
+    )
+    const attentionHtml = await attention.text()
+    expect(attentionHtml).toContain('github:d1')
+    expect(attentionHtml).not.toContain('github:d2')
+    expect(attentionHtml).not.toContain('statuspage:s1')
+    expect(attentionHtml).toContain('upstream unavailable')
+
+    const active = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events?delivery=active'),
+      env,
+      ctx,
+    )
+    const activeHtml = await active.text()
+    expect(activeHtml).toContain('github:d2')
+    expect(activeHtml).not.toContain('github:d1')
+
+    const delivered = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events?delivery=delivered'),
+      env,
+      ctx,
+    )
+    const deliveredHtml = await delivered.text()
+    expect(deliveredHtml).toContain('statuspage:s1')
+    expect(deliveredHtml).not.toContain('github:d2')
+  })
+
+  it('shows exact result counts and navigation in both directions', async () => {
+    bypassAccess()
+    const statements = Array.from({ length: 51 }, (_, index) => {
+      const receivedAt = new Date(Date.UTC(2026, 5, 7, 0, 0, index)).toISOString()
+      return env.EVENTS_DB.prepare(
+        `INSERT INTO events (id, received_at, sub_slug, sub_name, source, type, title, r2_key, fanout_results)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
+      ).bind(
+        `bulk:${index}`,
+        receivedAt,
+        SUB_HASH,
+        'bulk',
+        'bulk',
+        'bulk.event',
+        `Bulk event ${index}`,
+        `events/bulk_${index}.raw`,
+      )
+    })
+    await env.EVENTS_DB.batch(statements)
+
+    const first = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events?source=bulk'),
+      env,
+      ctx,
+    )
+    const firstHtml = await first.text()
+    expect(firstHtml).toContain('Showing <strong>1-50</strong> of <strong>51</strong>')
+    expect(firstHtml).toContain('rel="next"')
+    expect(firstHtml).not.toContain('rel="prev"')
+
+    const second = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events?source=bulk&page=2'),
+      env,
+      ctx,
+    )
+    const secondHtml = await second.text()
+    expect(secondHtml).toContain('bulk:0')
+    expect(secondHtml).toContain('rel="prev"')
+    expect(secondHtml).not.toContain('rel="next"')
   })
 
   it('filters by source', async () => {
@@ -155,12 +273,14 @@ describe('GET /admin/events', () => {
     const list = await worker.fetch(new Request('https://hooks.example.com/admin/events'), env, ctx)
     const html = await list.text()
     expect(html).toContain('phone: exhausted')
-    expect(html).toContain('type="submit">retry</button>')
+    expect(html).toContain('POST ntfy.sh -&gt; 503')
+    expect(html).toContain('type="submit">Retry</button>')
 
     const queue = recordingQueue()
     const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
+    const returnTo = '/admin/events?source=github&delivery=attention'
     const retry = await worker.fetch(
-      new Request('https://hooks.example.com/admin/events/github%3Ad1/deliveries/phone/retry', {
+      new Request(`https://hooks.example.com/admin/events/github%3Ad1/deliveries/phone/retry?return_to=${encodeURIComponent(returnTo)}`, {
         method: 'POST',
         headers: { origin: 'https://hooks.example.com' },
       }),
@@ -168,7 +288,7 @@ describe('GET /admin/events', () => {
       ctx,
     )
     expect(retry.status).toBe(303)
-    expect(retry.headers.get('location')).toBe('/admin/events')
+    expect(retry.headers.get('location')).toBe(returnTo)
     expect(queue.messages).toEqual([
       { version: 1, eventId: 'github:d1', sinkName: 'phone', generation: 2 },
     ])
