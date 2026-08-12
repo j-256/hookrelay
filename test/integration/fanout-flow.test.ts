@@ -9,10 +9,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import worker from '../../src/index'
 import { DELIVERY_QUEUE_NAME } from '../../src/delivery'
 import type { Env } from '../../src/index'
+import { subscriptionKvKeyForSlug } from '../../src/lib/subscription'
 import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 import statuspageFixture from '../fixtures/statuspage/incident-investigating.json'
 
 const SUB_SLUG = 'a7f3b2c8d9e1f4g6h8j0k2statuspage'
+const SUB_KEY = await subscriptionKvKeyForSlug(SUB_SLUG)
 const SINK_NAME = 'phone-fixture'
 
 beforeAll(async () => {
@@ -22,7 +24,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   await env.EVENTS_DB.exec('DELETE FROM deliveries; DELETE FROM events;')
   await env.SUBS.put(
-    `sub:${SUB_SLUG}`,
+    SUB_KEY,
     JSON.stringify({
       name: 'claude-status',
       source: 'statuspage',
@@ -35,7 +37,7 @@ beforeEach(async () => {
 })
 
 afterEach(async () => {
-  await env.SUBS.delete(`sub:${SUB_SLUG}`)
+  await env.SUBS.delete(SUB_KEY)
   await env.SINKS.delete(`sink:${SINK_NAME}`)
 })
 

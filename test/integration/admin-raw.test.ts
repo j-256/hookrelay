@@ -2,6 +2,8 @@ import { applyD1Migrations, env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import worker from '../../src/index'
 
+const SUB_HASH = 'a'.repeat(64)
+
 beforeAll(async () => {
   await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
 })
@@ -22,7 +24,7 @@ async function insertRow(id: string, receivedAt: string, r2Key: string) {
     `INSERT INTO events (id, received_at, sub_slug, sub_name, source, type, title, r2_key, fanout_results)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
   )
-    .bind(id, receivedAt, 'slug', 'fixture', 'fixture', 'fixture.event', 't', r2Key)
+    .bind(id, receivedAt, SUB_HASH, 'fixture', 'fixture', 'fixture.event', 't', r2Key)
     .run()
 }
 

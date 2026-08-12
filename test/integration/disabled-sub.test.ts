@@ -1,21 +1,23 @@
 import { applyD1Migrations, env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import worker from '../../src/index'
+import { subscriptionKvKeyForSlug } from '../../src/lib/subscription'
 
 const SUB_SLUG = 'disabled-aaaaaaaaaaaaaaaa'
+const SUB_KEY = await subscriptionKvKeyForSlug(SUB_SLUG)
 beforeAll(async () => {
   await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
 })
 
 beforeEach(async () => {
   await env.SUBS.put(
-    `sub:${SUB_SLUG}`,
+    SUB_KEY,
     JSON.stringify({ name: 'disabled', source: 'statuspage', enabled: false, sinks: [], auth: null }),
   )
 })
 
 afterEach(async () => {
-  await env.SUBS.delete(`sub:${SUB_SLUG}`)
+  await env.SUBS.delete(SUB_KEY)
 })
 
 describe('disabled subscription', () => {

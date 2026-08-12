@@ -67,7 +67,7 @@ export async function persistEvent(
   event: NormalizedEvent,
   rawBody: Uint8Array,
   contentType: string,
-  subSlug: string,
+  subHash: string,
 ): Promise<PersistResult> {
   const receivedAt = new Date().toISOString()
   const keys = r2Keys(event, receivedAt)
@@ -82,7 +82,7 @@ export async function persistEvent(
       id,
       receivedAt,
       event.timestamp,
-      subSlug,
+      subHash,
       event.subName,
       event.source,
       event.type,

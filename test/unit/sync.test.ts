@@ -1,5 +1,8 @@
 import { describe, expect, it } from 'vitest'
-import { computePlan, parseRoutes, validateRoutes } from '../../scripts/sync'
+import { computePlan, parseRoutes, printableKvKey, validateRoutes } from '../../scripts/sync'
+
+const CLAUDE_HASH = 'a'.repeat(64)
+const GITHUB_HASH = 'b'.repeat(64)
 
 const ROUTES = `
 {
@@ -7,14 +10,14 @@ const ROUTES = `
     {
       "name": "claude",
       "source": "statuspage",
-      "slug": "abcdefghijabcdefghijab",
+      "slugHash": "${CLAUDE_HASH}",
       "enabled": true,
       "sinks": ["phone"]
     },
     {
       "name": "gh",
       "source": "github",
-      "slug": "1234567890abcdef123456",
+      "slugHash": "${GITHUB_HASH}",
       "enabled": true,
       "sinks": ["phone"],
       "auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH" }
@@ -35,6 +38,10 @@ describe('parseRoutes', () => {
 
   it('throws on malformed JSON', () => {
     expect(() => parseRoutes('{ "subs": [')).toThrow(/parse/i)
+  })
+
+  it('rejects raw subscription slugs', () => {
+    expect(() => parseRoutes(ROUTES.replace(`"slugHash": "${CLAUDE_HASH}"`, '"slug": "abcdefghijabcdefghijab"'))).toThrow()
   })
 })
 
@@ -107,8 +114,8 @@ describe('validateRoutes', () => {
     expect(issues.join('\n')).toMatch(/unknown sink type: madeup-sink/)
   })
 
-  it('reports duplicate sub slugs', () => {
-    const dup = ROUTES.replace('1234567890abcdef123456', 'abcdefghijabcdefghijab')
+  it('reports duplicate sub slug hashes', () => {
+    const dup = ROUTES.replace(GITHUB_HASH, CLAUDE_HASH)
     const cfg = parseRoutes(dup)
     const issues = validateRoutes(cfg, {
       knownSources: new Set(['statuspage', 'github']),
@@ -116,7 +123,7 @@ describe('validateRoutes', () => {
       sinkSchemas: { ntfy: { topic: 'string' } } as any,
       secretsAvailable: new Set(['HMAC_GH']),
     })
-    expect(issues.join('\n')).toMatch(/duplicate sub slug/)
+    expect(issues.join('\n')).toMatch(/duplicate sub slugHash/)
   })
 })
 
@@ -126,7 +133,7 @@ describe('computePlan', () => {
     const plan = computePlan(cfg, {
       subs: {
         // existing key with stale value -> update
-        'sub:abcdefghijabcdefghijab': '{"name":"claude","source":"statuspage","enabled":false,"sinks":["phone"],"auth":null}',
+        [`sub:sha256:${CLAUDE_HASH}`]: '{"name":"claude","source":"statuspage","enabled":false,"sinks":["phone"],"auth":null}',
         // existing key not in file -> delete
         'sub:obsolete-slug-aaaaaa': '{}',
       },
@@ -137,7 +144,19 @@ describe('computePlan', () => {
     })
     expect(plan.subPuts).toHaveLength(2) // claude updated, gh new
     expect(plan.subDeletes).toEqual(['sub:obsolete-slug-aaaaaa'])
+    expect(plan.subPuts.map((entry) => entry.key)).toEqual([
+      `sub:sha256:${CLAUDE_HASH}`,
+      `sub:sha256:${GITHUB_HASH}`,
+    ])
     expect(plan.sinkPuts).toHaveLength(0)
     expect(plan.sinkDeletes).toEqual([])
+  })
+})
+
+describe('printableKvKey', () => {
+  it('redacts legacy raw-slug keys but leaves hashes and sink names visible', () => {
+    expect(printableKvKey('sub:raw-bearer-value-aaaa')).toBe('sub:<legacy-redacted>')
+    expect(printableKvKey(`sub:sha256:${CLAUDE_HASH}`)).toBe(`sub:sha256:${CLAUDE_HASH}`)
+    expect(printableKvKey('sink:discord')).toBe('sink:discord')
   })
 })

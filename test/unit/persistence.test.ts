@@ -4,6 +4,8 @@ import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import { persistEvent, primaryKey, r2Keys, updateFanoutResult } from '../../src/persistence'
 import type { NormalizedEvent } from '../../src/types'
 
+const SUB_HASH = 'a'.repeat(64)
+
 beforeAll(async () => {
   await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
 })
@@ -50,7 +52,7 @@ describe('persistEvent', () => {
   it('inserts an event and writes both R2 objects', async () => {
     const event = makeEvent()
     const raw = new TextEncoder().encode('{"raw":"body"}')
-    const result = await persistEvent(env, event, raw, 'application/json', 'slug123')
+    const result = await persistEvent(env, event, raw, 'application/json', SUB_HASH)
 
     expect(result.duplicate).toBe(false)
 
@@ -58,7 +60,7 @@ describe('persistEvent', () => {
       'SELECT id, source, sub_slug, fanout_results FROM events WHERE id = ?',
     ).bind('statuspage:inc-123:upd-456').first<{ id: string; source: string; sub_slug: string; fanout_results: string }>()
     expect(row?.source).toBe('statuspage')
-    expect(row?.sub_slug).toBe('slug123')
+    expect(row?.sub_slug).toBe(SUB_HASH)
     expect(JSON.parse(row?.fanout_results ?? '{}')).toEqual({})
 
     const rawObj = await env.EVENTS_RAW.get(result.r2Keys.raw)
@@ -72,11 +74,11 @@ describe('persistEvent', () => {
   it('reports duplicate on second persist and preserves existing R2 objects', async () => {
     const event = makeEvent()
     const raw = new TextEncoder().encode('first')
-    const first = await persistEvent(env, event, raw, 'application/json', 'slug123')
+    const first = await persistEvent(env, event, raw, 'application/json', SUB_HASH)
     expect(first.duplicate).toBe(false)
 
     const raw2 = new TextEncoder().encode('second')
-    const second = await persistEvent(env, event, raw2, 'application/json', 'slug123')
+    const second = await persistEvent(env, event, raw2, 'application/json', SUB_HASH)
     expect(second.duplicate).toBe(true)
 
     // The first write remains authoritative while a retry can repair missing objects
@@ -91,7 +93,7 @@ describe('persistEvent', () => {
       event,
       new TextEncoder().encode('first'),
       'application/json',
-      'slug123',
+      SUB_HASH,
     )
     await env.EVENTS_RAW.delete(first.r2Keys.json)
 
@@ -100,7 +102,7 @@ describe('persistEvent', () => {
       { ...event, title: 'Retry copy' },
       new TextEncoder().encode('second'),
       'application/json',
-      'slug123',
+      SUB_HASH,
     )
 
     expect(duplicate.duplicate).toBe(true)
@@ -114,11 +116,11 @@ describe('updateFanoutResult', () => {
   it('merges independent sink results without replacing another sink', async () => {
     const event = makeEvent()
     const raw = new TextEncoder().encode('{}')
-    await persistEvent(env, event, raw, 'application/json', 'slug123')
+    await persistEvent(env, event, raw, 'application/json', SUB_HASH)
 
     await Promise.all([
       updateFanoutResult(env, primaryKey(event), 'phone', { ok: true }),
-      updateFanoutResult(env, primaryKey(event), 'discord-personal', {
+      updateFanoutResult(env, primaryKey(event), 'discord', {
         ok: false,
         errMsg: '404',
       }),
@@ -129,7 +131,7 @@ describe('updateFanoutResult', () => {
     ).bind('statuspage:inc-123:upd-456').first<{ fanout_results: string }>()
     expect(JSON.parse(row?.fanout_results ?? '{}')).toEqual({
       phone: { ok: true },
-      'discord-personal': { ok: false, errMsg: '404' },
+      discord: { ok: false, errMsg: '404' },
     })
   })
 })

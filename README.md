@@ -1,6 +1,6 @@
 # hookrelay
 
-A small, extensible webhook receiver for Cloudflare Workers. Drop in adapters for new webhook senders (Statuspage, GitHub, your own scripts) and sinks for where notifications go (push, chat, log). Subscriptions and routing live in KV; secrets live in Wrangler.
+A small, extensible webhook receiver for Cloudflare Workers. Drop in adapters for new webhook senders (Statuspage, GitHub, your own scripts) and sinks for where notifications go (push, chat, log). Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
 
 ## What it does
 
@@ -63,12 +63,12 @@ Steps:
    ```sh
    npx wrangler secret put HMAC_GITHUB_HOOKRELAY
    npx wrangler secret put SINK_NTFY_PHONE_TOKEN
-   npx wrangler secret put SINK_DISCORD_PERSONAL_URL
+   npx wrangler secret put SINK_DISCORD_URL
    ```
 6. Configure subscriptions and sinks. Copy `routes.example.jsonc` to `routes.jsonc`, fill in real values, and sync to KV:
    ```sh
    cp routes.example.jsonc routes.jsonc
-   # generate slugs:
+   # generate hash-only config stubs and private webhook URLs
    pnpm new-sub claude-status statuspage
    pnpm new-sub github-yourname-yourrepo github
    # paste the printed entries into routes.jsonc, edit as needed, then:
@@ -101,20 +101,20 @@ Steps:
 
 hookrelay splits configuration across four locations by sensitivity. The guiding rule: **nothing secret is committed.** If you are forking this to run your own instance, this section is the "what goes where, and why."
 
-### 1. `wrangler.jsonc` -- committed, safe to make public
+### 1. `wrangler.jsonc` – committed, safe to make public
 
 These are opaque, account-scoped *resource handles*. They name a resource but grant no access on their own: every Cloudflare API call still requires your API token, and a binding id from one account cannot be used from another. That is why they are safe to commit.
 
 | Key | What it is |
 | --- | --- |
 | `kv_namespaces[].id` (`SUBS`, `SINKS`) | KV namespaces holding subscription and sink config |
-| `d1_databases[].database_id` | D1 database storing the event log |
+| `d1_databases[].database_id` | D1 database storing the event log and subscription hashes |
 | `r2_buckets[].bucket_name` | R2 bucket for raw payloads (bound by name, so there is no id to set) |
 | `queues` | Producer and consumer bindings for per-sink delivery and its dead-letter queue |
 | `triggers.crons` | Five-minute recovery sweep for delivery rows that could not be published to the queue |
 | `observability` | Stored Workers Logs are disabled on purpose -- webhook URLs contain the slug (a bearer token) and Cloudflare enriches stored logs with the request URL, which would leak it. See the comment in the file; failure visibility comes from D1 (`/admin/events`) and `wrangler tail` instead. |
 
-### 2. Environment variables -- your shell, CI, or Workers Builds
+### 2. Environment variables – your shell, CI, or Workers Builds
 
 Read by Wrangler at deploy time; never committed.
 
@@ -123,9 +123,9 @@ Read by Wrangler at deploy time; never committed.
 | `CLOUDFLARE_ACCOUNT_ID` | Your account id. Kept in the environment (not `wrangler.jsonc`) so the committed config carries no account identifier. |
 | `CLOUDFLARE_API_TOKEN` | Auth for `wrangler` / CI. Needs Workers, KV, D1, R2, Queues, and (for the WAF script) Zone WAF edit scopes. This is the credential everything else depends on – guard it. |
 
-### 3. Wrangler secrets -- encrypted, write-only
+### 3. Wrangler secrets – recoverable only by Worker code
 
-Set with `npx wrangler secret put <NAME>`. Cloudflare never displays them again after you set them, so record them in your own password manager. For local `wrangler dev`, mirror them into a `.dev.vars` file (gitignored).
+Set with `npx wrangler secret put <NAME>`. Wrangler lists their names but does not return their values, while Worker code can read the values when it needs to call an outbound service. Record them in your own password manager. For local `wrangler dev`, mirror them into a `.dev.vars` file (gitignored).
 
 | Secret | What it is |
 | --- | --- |
@@ -137,13 +137,13 @@ Set with `npx wrangler secret put <NAME>`. Cloudflare never displays them again 
 
 The names are a convention, not a requirement – whatever you put in `routes.jsonc` (`auth.secretEnv`, a sink's `tokenEnv` or `urlEnv`) must match a secret name you have set. `pnpm sync` validates that every referenced secret exists before it writes anything.
 
-### 4. KV via `routes.jsonc` -- synced with `pnpm sync`
+### 4. KV via `routes.jsonc` – synced with `pnpm sync`
 
-`routes.jsonc` is your real subscription config. It is **gitignored** (only `routes.example.jsonc` is tracked) because it contains bearer secrets. `pnpm sync` validates it and writes it into the `SUBS`/`SINKS` KV namespaces; the Worker reads only KV at runtime.
+`routes.jsonc` is your real subscription config. It contains a hash of each incoming slug, never the raw slug. It remains **gitignored** because some sink types, such as an unreserved ntfy topic, can still place bearer credentials there. `pnpm sync` validates the file and writes it into the `SUBS`/`SINKS` KV namespaces; the Worker reads only KV at runtime.
 
 | Field | What it is |
 | --- | --- |
-| `subs[].slug` | **Bearer secret.** The unguessable path segment in `/hook/<source>/<slug>`. Anyone who learns it can post events as that subscription. Generate with `pnpm new-sub`; never log, commit, or share it. |
+| `subs[].slugHash` | Lowercase SHA-256 digest of the private slug. The Worker hashes the incoming path segment and uses `sub:sha256:<slugHash>` for KV lookup; neither KV nor this file needs the raw slug. Generate it with `pnpm new-sub` rather than choosing a low-entropy slug. |
 | `subs[].source` | Adapter name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
 | `subs[].auth` | Optional `{ scheme, secretEnv }` for signature/secret verification on top of the slug. |
@@ -152,24 +152,24 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | `sinks[].type: ntfy` -> `tokenEnv` | Optional Wrangler secret name containing an ntfy access token. Strongly recommended for Cloudflare Workers so publishes use the account's quota instead of a shared anonymous egress-IP quota. Authentication does not make an unreserved topic private. |
 | `sinks[].type: discord` -> `urlEnv` | Name of the Wrangler secret holding the Discord webhook URL (not the URL itself). |
 
-**Bearer secrets to guard:** subscription `slug`s and ntfy `topic`s. Both grant access purely by being known -- there is no second factor. Keep them in `routes.jsonc` (gitignored) and out of logs, screenshots, and commits.
+The incoming slug and Discord webhook URL are both bearer secrets, but Hookrelay uses them differently. It hashes the slug because it only needs to recognize an incoming value. It keeps the Discord URL in a Worker secret because it must recover that value to make an outbound request. Guard generated webhook URLs, unreserved ntfy topics, and sink credentials in a password manager and keep them out of logs, screenshots, and commits.
 
 ## Adding a subscription
 
 `routes.jsonc` is the complete desired state for subscriptions and sinks. Keep every existing entry when adding one: `pnpm sync --yes` removes remote KV entries that are absent from the file.
 
-1. Add or reuse a sink in `routes.jsonc`. For an authenticated ntfy sink, keep the topic in `routes.jsonc`, put the access token in a Wrangler secret, and reference its name with `tokenEnv`.
+1. Add or reuse a sink in `routes.jsonc`. For Discord, put the webhook URL in a Wrangler secret and reference its name with `urlEnv`. For authenticated ntfy, keep the topic in `routes.jsonc`, put the access token in a Wrangler secret, and reference its name with `tokenEnv`.
 2. Generate the subscription stub and webhook URL:
    ```sh
    pnpm new-sub <subscription-name> <source>
    ```
-3. Paste the stub into `subs[]`, select its sink names, and keep the generated slug unchanged. The slug is the webhook password: `routes.jsonc` needs it to sync KV, and a password-manager copy is recommended for recovery. It is not a separate Wrangler secret.
+3. Save the printed webhook URL in a password manager, then paste the hash-only stub into `subs[]` and select its sink names. The URL contains the webhook password and cannot be recovered from `slugHash`.
 4. Preview and apply the KV changes:
    ```sh
    pnpm sync
    pnpm sync --yes
    ```
-5. Paste `https://<your-hook-domain>/hook/<source>/<slug>` into the provider's webhook subscription form. For providers with HMAC support, set the Wrangler secret first and add the matching `auth` block.
+5. Replace `hooks.example.com` in the saved URL with your hook domain, then paste the full URL into the provider's webhook subscription form. For providers with HMAC support, set the Wrangler secret first and add the matching `auth` block.
 6. Send a fixture or wait for a real event, then confirm its sink moves from `queued` or `processing` to `delivered` at `/admin/events`.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.

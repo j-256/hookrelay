@@ -1,11 +1,12 @@
 import { getAdapter } from './adapters'
 import { prepareDeliveries } from './delivery'
+import { hashSubscriptionSlug, SUBSCRIPTION_SLUG_PATTERN, subscriptionKvKey } from './lib/subscription'
 import { persistEvent, primaryKey } from './persistence'
 import type { Env } from './index'
 import type { Subscription } from './types'
 
-export const SLUG_PATH_RE = /^\/hook\/[a-z0-9-]+\/[A-Za-z0-9_-]{22,}$/
-const HOOK_PATH_RE = /^\/hook\/([a-z0-9-]+)\/([A-Za-z0-9_-]{22,})$/
+export const SLUG_PATH_RE = new RegExp(`^/hook/[a-z0-9-]+/${SUBSCRIPTION_SLUG_PATTERN}$`)
+const HOOK_PATH_RE = new RegExp(`^/hook/([a-z0-9-]+)/(${SUBSCRIPTION_SLUG_PATTERN})$`)
 const MAX_BODY_BYTES = 1024 * 1024
 
 export interface ParsedHookPath {
@@ -35,8 +36,9 @@ export async function handleHook(
   const parsed = parseHookPath(url.pathname)
   if (!parsed) return new Response('not found', { status: 404 })
   const { sourceType, slug } = parsed
+  const slugHash = await hashSubscriptionSlug(slug)
 
-  const subRaw = await env.SUBS.get(`sub:${slug}`)
+  const subRaw = await env.SUBS.get(subscriptionKvKey(slugHash))
   if (!subRaw) return new Response('not found', { status: 404 })
   let sub: Subscription
   try {
@@ -81,7 +83,7 @@ export async function handleHook(
   }
 
   const contentType = request.headers.get('content-type') ?? 'application/octet-stream'
-  const persisted = await persistEvent(env, event, rawBody, contentType, slug)
+  const persisted = await persistEvent(env, event, rawBody, contentType, slugHash)
   const eventId = primaryKey(event)
   const enqueue = await prepareDeliveries(env, eventId, sub.sinks)
 

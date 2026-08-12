@@ -3,10 +3,12 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import worker from '../../src/index'
 import { DELIVERY_QUEUE_NAME } from '../../src/delivery'
 import type { Env } from '../../src/index'
+import { subscriptionKvKeyForSlug } from '../../src/lib/subscription'
 import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 import statuspageFixture from '../fixtures/statuspage/incident-investigating.json'
 
 const SUB_SLUG = 'idemp-aaaaaaaaaaaaaaaaaa'
+const SUB_KEY = await subscriptionKvKeyForSlug(SUB_SLUG)
 beforeAll(async () => {
   await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
 })
@@ -14,14 +16,14 @@ beforeAll(async () => {
 beforeEach(async () => {
   await env.EVENTS_DB.exec('DELETE FROM deliveries; DELETE FROM events;')
   await env.SUBS.put(
-    `sub:${SUB_SLUG}`,
+    SUB_KEY,
     JSON.stringify({ name: 'idemp', source: 'statuspage', enabled: true, sinks: ['t-sink'], auth: null }),
   )
   await env.SINKS.put('sink:t-sink', JSON.stringify({ type: 'ntfy', topic: 'idemp' }))
 })
 
 afterEach(async () => {
-  await env.SUBS.delete(`sub:${SUB_SLUG}`)
+  await env.SUBS.delete(SUB_KEY)
   await env.SINKS.delete('sink:t-sink')
 })
 

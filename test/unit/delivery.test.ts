@@ -26,6 +26,7 @@ import { z } from 'zod'
 const EVENT_ID = 'fixture:evt-1'
 const R2_RAW_KEY = 'events/2026/06/06/fixture_evt-1.raw'
 const SINK_NAME = 'delivery-test'
+const SUB_HASH = 'a'.repeat(64)
 
 const event: NormalizedEvent = {
   source: 'fixture',
@@ -95,7 +96,7 @@ async function seedEvent(): Promise<void> {
       EVENT_ID,
       '2026-06-06T00:00:00.000Z',
       event.timestamp,
-      'slug',
+      SUB_HASH,
       event.subName,
       event.source,
       event.type,

@@ -4,6 +4,11 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
+import {
+  SUBSCRIPTION_HASH_RE,
+  SUBSCRIPTION_KEY_PREFIX,
+  subscriptionKvKey,
+} from '../src/lib/subscription'
 
 const execFileP = promisify(execFile)
 
@@ -11,7 +16,7 @@ const subSchema = z
   .object({
     name: z.string().min(1),
     source: z.string().min(1),
-    slug: z.string().regex(/^[A-Za-z0-9_-]{22,}$/),
+    slugHash: z.string().regex(SUBSCRIPTION_HASH_RE),
     enabled: z.boolean(),
     sinks: z.array(z.string().min(1)),
     auth: z
@@ -63,14 +68,14 @@ export interface ValidateContext {
 export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
   const issues: string[] = []
   const declaredSinkNames = new Set(routes.sinks.map((s) => s.name))
-  const slugOwners = new Map<string, string>() // slug -> first sub.name to claim it
+  const slugHashOwners = new Map<string, string>() // hash -> first sub.name to claim it
 
   for (const sub of routes.subs) {
-    const prevOwner = slugOwners.get(sub.slug)
+    const prevOwner = slugHashOwners.get(sub.slugHash)
     if (prevOwner !== undefined) {
-      issues.push(`duplicate sub slug between '${prevOwner}' and '${sub.name}'`)
+      issues.push(`duplicate sub slugHash between '${prevOwner}' and '${sub.name}'`)
     } else {
-      slugOwners.set(sub.slug, sub.name)
+      slugHashOwners.set(sub.slugHash, sub.name)
     }
 
     if (!ctx.knownSources.has(sub.source)) {
@@ -126,6 +131,13 @@ export interface Plan {
   sinkDeletes: string[]
 }
 
+export function printableKvKey(key: string): string {
+  if (key.startsWith('sub:') && !key.startsWith(SUBSCRIPTION_KEY_PREFIX)) {
+    return 'sub:<legacy-redacted>'
+  }
+  return key
+}
+
 function canonicalize(value: unknown): string {
   // Deterministic JSON: sort object keys recursively so unchanged data round-trips identically
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -151,7 +163,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
 
   const desiredSubKeys = new Set<string>()
   for (const sub of routes.subs) {
-    const key = `sub:${sub.slug}`
+    const key = subscriptionKvKey(sub.slugHash)
     desiredSubKeys.add(key)
     const value = canonicalize({
       name: sub.name,
@@ -185,15 +197,19 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
   return { subPuts, subDeletes, sinkPuts, sinkDeletes }
 }
 
-// CLI -- only runs when invoked directly. Importable functions stay pure for tests.
-// All KV ops pass --remote: sync targets the deployed Worker's production namespaces.
+// CLI -- only runs when invoked directly; importable functions stay pure for tests
+// All KV ops pass --remote: sync targets the deployed Worker's production namespaces
 // Without it, wrangler 4 defaults to the local Miniflare KV, so the live Worker would
-// read nothing and every hook would 404.
+// read nothing and every hook would 404
 async function listKv(binding: string): Promise<Record<string, string>> {
   const { stdout: keysOut } = await execFileP('npx', ['wrangler', 'kv', 'key', 'list', '--binding', binding, '--remote'])
   const keys = JSON.parse(keysOut) as Array<{ name: string }>
   const out: Record<string, string> = {}
   for (const { name } of keys) {
+    if (binding === 'SUBS' && name.startsWith('sub:') && !name.startsWith(SUBSCRIPTION_KEY_PREFIX)) {
+      out[name] = ''
+      continue
+    }
     const { stdout } = await execFileP('npx', ['wrangler', 'kv', 'key', 'get', name, '--binding', binding, '--text', '--remote'])
     out[name] = stdout
   }
@@ -205,7 +221,11 @@ async function putKv(binding: string, key: string, value: string): Promise<void>
 }
 
 async function deleteKv(binding: string, key: string): Promise<void> {
-  await execFileP('npx', ['wrangler', 'kv', 'key', 'delete', key, '--binding', binding, '--remote'])
+  try {
+    await execFileP('npx', ['wrangler', 'kv', 'key', 'delete', key, '--binding', binding, '--remote'])
+  } catch {
+    throw new Error(`KV delete failed for ${printableKvKey(key)} in ${binding}`)
+  }
 }
 
 async function listSecrets(): Promise<Set<string>> {
@@ -250,8 +270,8 @@ async function main() {
   const plan = computePlan(routes, current)
 
   console.log('Plan:')
-  for (const p of plan.subPuts) console.log(`  PUT    ${p.key}`)
-  for (const k of plan.subDeletes) console.log(`  DELETE ${k}`)
+  for (const p of plan.subPuts) console.log(`  PUT    ${printableKvKey(p.key)}`)
+  for (const k of plan.subDeletes) console.log(`  DELETE ${printableKvKey(k)}`)
   for (const p of plan.sinkPuts) console.log(`  PUT    ${p.key}`)
   for (const k of plan.sinkDeletes) console.log(`  DELETE ${k}`)
   if (plan.subPuts.length === 0 && plan.subDeletes.length === 0 && plan.sinkPuts.length === 0 && plan.sinkDeletes.length === 0) {

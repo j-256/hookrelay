@@ -4,6 +4,8 @@ import worker from '../../src/index'
 import type { Env } from '../../src/index'
 import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 
+const SUB_HASH = 'a'.repeat(64)
+
 beforeAll(async () => {
   await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
 })
@@ -22,7 +24,7 @@ beforeEach(async () => {
       `INSERT INTO events (id, received_at, sub_slug, sub_name, source, type, title, r2_key, fanout_results)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
     )
-      .bind(e.id, e.received_at, 'slug', e.sub_name, e.source, e.type, e.title, `events/2026/06/06/${e.id.replace(':', '_')}.raw`)
+      .bind(e.id, e.received_at, SUB_HASH, e.sub_name, e.source, e.type, e.title, `events/2026/06/06/${e.id.replace(':', '_')}.raw`)
       .run()
   }
 })
@@ -110,7 +112,7 @@ describe('GET /admin/events', () => {
       .bind(
         'github:xss',
         '2026-06-06T13:00:00Z',
-        'slug',
+        SUB_HASH,
         '<script>',
         '<script>',
         '<script>',

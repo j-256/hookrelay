@@ -4,9 +4,12 @@ import '../../src/registry'
 import { handleHook, parseHookPath, SLUG_PATH_RE } from '../../src/router'
 import { registerAdapter } from '../../src/adapters'
 import type { Adapter } from '../../src/adapters'
+import { hashSubscriptionSlug, subscriptionKvKey, subscriptionKvKeyForSlug } from '../../src/lib/subscription'
 import type { Subscription } from '../../src/types'
 
 const SUB_SLUG = 'a7f3b2c8d9e1f4g6h8j0k2'
+const SUB_HASH = await hashSubscriptionSlug(SUB_SLUG)
+const SUB_KEY = subscriptionKvKey(SUB_HASH)
 const sub: Subscription = {
   name: 'fixture-sub',
   source: 'fixture',
@@ -42,11 +45,11 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   await env.EVENTS_DB.exec('DELETE FROM events')
-  await env.SUBS.put(`sub:${SUB_SLUG}`, JSON.stringify(sub))
+  await env.SUBS.put(SUB_KEY, JSON.stringify(sub))
 })
 
 afterEach(async () => {
-  await env.SUBS.delete(`sub:${SUB_SLUG}`)
+  await env.SUBS.delete(SUB_KEY)
 })
 
 describe('SLUG_PATH_RE', () => {
@@ -100,7 +103,7 @@ describe('handleHook', () => {
   })
 
   it('returns 204 for disabled sub', async () => {
-    await env.SUBS.put(`sub:${SUB_SLUG}`, JSON.stringify({ ...sub, enabled: false }))
+    await env.SUBS.put(SUB_KEY, JSON.stringify({ ...sub, enabled: false }))
     const res = await handleHook(
       new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, { method: 'POST', body: 'x' }),
       env,
@@ -140,7 +143,7 @@ describe('handleHook', () => {
     const row = await env.EVENTS_DB.prepare('SELECT id, sub_slug FROM events WHERE id = ?')
       .bind('fixture:event-1')
       .first<{ id: string; sub_slug: string }>()
-    expect(row?.sub_slug).toBe(SUB_SLUG)
+    expect(row?.sub_slug).toBe(SUB_HASH)
   })
 
   it('returns duplicate:true on second POST of same id', async () => {
@@ -169,8 +172,9 @@ describe('handleHook', () => {
     }
     try { registerAdapter(guarded) } catch {}
     const SLUG2 = 'b8g4c3d9e0f5h6i7j8k9l0'
+    const subKey2 = await subscriptionKvKeyForSlug(SLUG2)
     await env.SUBS.put(
-      `sub:${SLUG2}`,
+      subKey2,
       JSON.stringify({ ...sub, source: 'guarded' }),
     )
     const res = await handleHook(
@@ -179,6 +183,6 @@ describe('handleHook', () => {
       ctx,
     )
     expect(res.status).toBe(401)
-    await env.SUBS.delete(`sub:${SLUG2}`)
+    await env.SUBS.delete(subKey2)
   })
 })

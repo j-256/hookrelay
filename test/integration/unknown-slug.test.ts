@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { env } from 'cloudflare:test'
 import worker from '../../src/index'
+import { subscriptionKvKeyForSlug } from '../../src/lib/subscription'
 
 describe('unknown slug', () => {
   it('returns 404 for slug-shape paths whose KV entry is missing', async () => {
@@ -18,8 +19,9 @@ describe('unknown slug', () => {
 
   it('returns 404 for slug-shape paths with a wrong-source slug', async () => {
     const slug = 'wrongsrc-aaaaaaaaaaaaaaa'
+    const subKey = await subscriptionKvKeyForSlug(slug)
     await env.SUBS.put(
-      `sub:${slug}`,
+      subKey,
       JSON.stringify({ name: 'x', source: 'statuspage', enabled: true, sinks: [], auth: null }),
     )
     try {
@@ -31,7 +33,7 @@ describe('unknown slug', () => {
       )
       expect(res.status).toBe(404)
     } finally {
-      await env.SUBS.delete(`sub:${slug}`)
+      await env.SUBS.delete(subKey)
     }
   })
 })
