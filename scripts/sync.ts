@@ -10,6 +10,7 @@ import {
   subscriptionKvKey,
 } from '../src/lib/subscription'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
+import { parseGitHubEventSelection } from './github-events'
 
 const execFileP = promisify(execFile)
 
@@ -28,6 +29,18 @@ const subSchema = z
       .nullable()
       .optional()
       .default(null),
+    setup: z
+      .object({
+        github: z
+          .object({
+            repo: z.string().min(1),
+            eventProfiles: z.array(z.string().min(1)).min(1),
+          })
+          .strict()
+          .optional(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
 
@@ -90,6 +103,18 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
     }
     if (sub.auth && !ctx.secretsAvailable.has(sub.auth.secretEnv)) {
       issues.push(`sub '${sub.name}': secret ${sub.auth.secretEnv} not set in Wrangler`)
+    }
+    if (sub.setup?.github) {
+      if (sub.source !== 'github') {
+        issues.push(`sub '${sub.name}': setup.github is only valid for GitHub subscriptions`)
+      } else {
+        try {
+          parseGitHubEventSelection(sub.setup.github.eventProfiles.join(','))
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          issues.push(`sub '${sub.name}': invalid setup.github.eventProfiles: ${message}`)
+        }
+      }
     }
   }
 

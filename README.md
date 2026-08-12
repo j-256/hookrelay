@@ -59,10 +59,9 @@ Steps:
    - `CF_ACCESS_TEAM_DOMAIN`: your Zero Trust team subdomain -- the part before `.cloudflareaccess.com`. Find it in the Zero Trust dashboard under Settings, or run `npx wrangler access` (note: it may not match your org name -- e.g. an org named `my-org` can have the team domain `myorg`)
    - `CF_ACCESS_AUD`: the AUD tag from your CF Access application configured for `/admin/*`
    - For local `wrangler dev`, put both in a `.dev.vars` file (gitignored) instead.
-5. Initialize the local routing config and set the public origin of the deployed Worker:
+5. Initialize the local routing config:
    ```sh
    cp routes.example.jsonc routes.jsonc
-   # edit baseUrl in routes.jsonc
    ```
 6. Deploy the Worker:
    ```sh
@@ -75,7 +74,7 @@ Steps:
    ```sh
    pnpm sink:add discord discord
    ```
-8. Add subscriptions. Each command writes the hash-only route locally, prints the raw slug under a password-manager key, and offers to install any sender secret and sync KV. GitHub's non-manual event modes create the repository webhook only after the route is live:
+8. Add subscriptions. Each command writes the hash-only route locally, prints the raw slug under a password-manager key, and offers to install any sender secret and sync KV. GitHub's non-manual event selections create the repository webhook only after the route is live:
    ```sh
    pnpm sub:add claude-status statuspage
    pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events recommended
@@ -141,17 +140,31 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 
 | Field | What it is |
 | --- | --- |
-| `baseUrl` | Public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. This local setup value is not written to KV. |
+| `baseUrl` | Optional public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. Without it, the command discovers the single production custom domain attached to the Worker through Cloudflare's API and saves the result here. This local setup value is not written to KV. |
 | `subs[].slugHash` | Lowercase SHA-256 digest of the private slug. The Worker hashes the incoming path segment and uses `sub:sha256:<slugHash>` for KV lookup; neither KV nor this file needs the raw slug. Generate it with `pnpm sub:add` rather than choosing a low-entropy slug. |
 | `subs[].source` | Adapter name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
 | `subs[].auth` | Optional `{ scheme, secretEnv }` for signature/secret verification on top of the slug. |
+| `subs[].setup` | Local-only provider setup metadata, including a GitHub repository and event profile names. `pnpm sync` validates it but does not write it to KV. |
 | `sinks[].type: ntfy` -> `topic` | **Bearer secret for unreserved topics.** Anyone who knows an unreserved topic can read its notifications. Use a long random topic and treat it like a password. |
 | `sinks[].type: ntfy` -> `server` | Optional. Base URL of a self-hosted ntfy server; defaults to `https://ntfy.sh`. |
 | `sinks[].type: ntfy` -> `tokenEnv` | Optional Wrangler secret name containing an ntfy access token. Strongly recommended for Cloudflare Workers so publishes use the account's quota instead of a shared anonymous egress-IP quota. Authentication does not make an unreserved topic private. |
 | `sinks[].type: discord` -> `urlEnv` | Name of the Wrangler secret holding the Discord webhook URL (not the URL itself). |
 
 The incoming slug and Discord webhook URL are both bearer secrets, but Hookrelay uses them differently. It hashes the slug because it only needs to recognize an incoming value. It keeps the Discord URL in a Worker secret because it must recover that value to make an outbound request. Guard generated webhook URLs, unreserved ntfy topics, and sink credentials in a password manager and keep them out of logs, screenshots, and commits.
+
+## Guided setup lifecycle
+
+`sink:add` and `sub:add` follow this order:
+
+1. Read and validate gitignored `routes.jsonc` and `.dev.vars`. `sink:add` reads the Discord URL through concealed input. `sub:add` generates its private values and resolves the base URL.
+2. Write the local desired state. Routing and hash-only subscription data go to `routes.jsonc`; Worker-readable secrets go to `.dev.vars`, which is kept at mode `600`. The commands do not populate Miniflare's local KV.
+3. Print anything that belongs in your password manager. In particular, the raw incoming slug is not added to `.dev.vars`, because the Worker only needs its hash.
+4. Ask before changing production. Approval installs any new Wrangler secret, then runs `pnpm sync` to compare `routes.jsonc` with remote Worker KV.
+5. Ask whether to apply that plan. Approval runs `pnpm sync --yes` to update remote KV.
+6. For a non-manual GitHub selection, ask whether to create the repository webhook. This only happens after the remote sender secret and subscription route are live.
+
+If every prompt is approved, no later sync is needed. Declining a production prompt or encountering a remote error leaves the completed local files in place. Install any deferred Wrangler secret, preview with `pnpm sync`, and apply with `pnpm sync --yes`. Those commands finish Worker state only; if automatic GitHub hook creation was skipped, create the hook manually from the fields printed by `sub:add`. Passing `--yes` skips the approvals but keeps the same local-first order.
 
 ## Adding a sink
 
@@ -175,24 +188,17 @@ pnpm sub:add <subscription-name> <source> [--sink <name>]
 
 If exactly one sink exists, it is selected automatically. Repeat `--sink` to route to several sinks. The command generates a private incoming slug, stores only its SHA-256 hash in `routes.jsonc`, and prints the raw slug as `SUB_<NAME>_SLUG` for your password manager. Signed providers also get a per-subscription sender secret, mirrored into `.dev.vars` and offered to Wrangler. Production changes are previewed and confirmed unless `--yes` is supplied.
 
-For a GitHub repository, pass the repository separately instead of deriving it from the subscription name. This keeps names such as `github-example-owner-example-repo` unambiguous:
+For a GitHub repository, pass the repository separately instead of deriving it from the subscription name. Subscription names may still use a readable namespace such as `github:example-owner/example-repo`:
 
 ```sh
-pnpm sub:add github-example-owner-example-repo github --repo example-owner/example-repo --events recommended
+pnpm sub:add github:example-owner/example-repo github --repo example-owner/example-repo --events stars,watchers
 ```
 
-GitHub event modes, in recommended order:
+The `--events` value accepts comma-separated profiles. Profiles compose by set union, so `recommended,stars` adds star activity to the recommended set. `push` remains the default, while `all` and `manual` are exclusive presets. The complete profile-to-event table and noise guidance live in [GitHub event profiles](docs/github-event-profiles.md).
 
-| Mode | Behavior |
-| --- | --- |
-| `recommended` | Creates the hook with Hookrelay's actionable, lower-noise set. This is the best general choice. |
-| `push` | Creates a push-only hook. This is GitHub's default and Hookrelay's CLI default. |
-| `manual` | Prepares and syncs Hookrelay but leaves hook creation and checkbox selection to you in GitHub. |
-| `all` | Creates the hook with GitHub's `*` event wildcard. Use this when full capture is worth the extra volume. |
+The base URL resolves from an explicit `--base-url`, then the value already saved in `routes.jsonc`, then the single production custom domain attached to the Worker named in `wrangler.jsonc`. Automatic discovery uses `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; an absent or ambiguous domain produces an error asking for `--base-url`.
 
-The recommended set is `branch_protection_configuration`, `branch_protection_rule`, `code_scanning_alert`, `dependabot_alert`, `deploy_key`, `issue_comment`, `issues`, `member`, `pull_request`, `pull_request_review`, `pull_request_review_comment`, `release`, `repository`, `repository_advisory`, `repository_ruleset`, `secret_scanning_alert`, `security_and_analysis`, `team_add`, and `workflow_run`. It omits high-volume or redundant signals such as `push`, `check_run`, `check_suite`, `status`, and `deployment_status`. For `workflow_run`, Hookrelay persists `requested` and `in_progress` events but only delivers completed runs to sinks. GitHub likewise recommends subscribing only to events an integration handles; see the [repository webhook API](https://docs.github.com/en/rest/repos/webhooks) and [event payload catalog](https://docs.github.com/en/webhooks/webhook-events-and-payloads).
-
-In `manual` mode, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other GitHub mode, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and KV route are live.
+With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and KV route are live.
 
 `pnpm new-sub <name> <source>` remains available as a low-level generator. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks.
 

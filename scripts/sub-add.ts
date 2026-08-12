@@ -3,7 +3,11 @@ import { readFile, writeFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import { hashSubscriptionSlug } from '../src/lib/subscription'
-import { githubEventsForMode, isGitHubEventMode, type GitHubEventMode } from './github-events'
+import { discoverWorkerBaseUrl } from './cloudflare-domains'
+import {
+  parseGitHubEventSelection,
+  type GitHubEventSelection,
+} from './github-events'
 import { getSourceProfile } from './subscription-sources'
 import {
   addDevVar,
@@ -19,7 +23,8 @@ import { parseRoutes } from './sync'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
-const DEFAULT_GITHUB_EVENT_MODE: GitHubEventMode = 'push'
+const DEFAULT_GITHUB_EVENT_SELECTION = 'push'
+const GITHUB_PROFILE_REFERENCE = 'docs/github-event-profiles.md'
 const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true, tabSize: 2, eol: '\n' })
 
 export interface SubAddOptions {
@@ -28,7 +33,7 @@ export interface SubAddOptions {
   sinks: string[]
   baseUrl?: string
   repo?: string
-  githubEventMode: GitHubEventMode
+  githubEvents: GitHubEventSelection
   yes: boolean
 }
 
@@ -46,6 +51,12 @@ interface NewSubscriptionConfig {
   auth?: {
     scheme: string
     secretEnv: string
+  }
+  setup?: {
+    github: {
+      repo: string
+      eventProfiles: string[]
+    }
   }
 }
 
@@ -67,8 +78,10 @@ export function subAddUsage(): string {
     '  --sink <name>       select a sink, repeatable',
     '  --base-url <url>    set the Hookrelay base URL',
     '  --repo <owner/repo> GitHub repository target',
-    '  --events <mode>     push, all, recommended, or manual (default: push)',
+    '  --events <profiles> comma-separated GitHub profiles (default: push)',
     '  --yes               apply remote changes without prompts',
+    '',
+    `GitHub profiles: ${GITHUB_PROFILE_REFERENCE}`,
   ].join('\n')
 }
 
@@ -83,7 +96,7 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   const sinks: string[] = []
   let baseUrl: string | undefined
   let repo: string | undefined
-  let githubEventMode = DEFAULT_GITHUB_EVENT_MODE
+  let githubEvents = parseGitHubEventSelection(DEFAULT_GITHUB_EVENT_SELECTION)
   let githubEventsSpecified = false
   let yes = false
 
@@ -103,8 +116,7 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
     } else if (arg === '--events') {
       if (githubEventsSpecified) throw new Error('--events may only be supplied once')
       const value = optionValue(argv, i, arg)
-      if (!isGitHubEventMode(value)) throw new Error(`unknown GitHub event mode: ${value}`)
-      githubEventMode = value
+      githubEvents = parseGitHubEventSelection(value)
       githubEventsSpecified = true
       i += 1
     } else if (arg === '--yes') {
@@ -127,7 +139,7 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
     throw new Error('--repo and --events are only valid for GitHub subscriptions')
   }
 
-  return { name, source, sinks, baseUrl, repo, githubEventMode, yes }
+  return { name, source, sinks, baseUrl, repo, githubEvents, yes }
 }
 
 export function validateGitHubRepo(repo: string): void {
@@ -143,6 +155,17 @@ export function normalizeBaseUrl(value: string): string {
     throw new Error('base URL must contain only scheme and host')
   }
   return url.origin
+}
+
+export async function resolveSubscriptionBaseUrl(
+  routesText: string,
+  explicitBaseUrl: string | undefined,
+  discover: () => Promise<string> = discoverWorkerBaseUrl,
+): Promise<string> {
+  if (explicitBaseUrl) return normalizeBaseUrl(explicitBaseUrl)
+  const savedBaseUrl = parseRoutes(routesText).baseUrl
+  if (savedBaseUrl) return normalizeBaseUrl(savedBaseUrl)
+  return normalizeBaseUrl(await discover())
 }
 
 export function selectSinks(configuredNames: string[], requestedNames: string[]): string[] {
@@ -225,6 +248,16 @@ export async function prepareSubscription(
     enabled: true,
     sinks,
     ...(auth ? { auth } : {}),
+    ...(options.source === 'github' && options.repo
+      ? {
+          setup: {
+            github: {
+              repo: options.repo,
+              eventProfiles: [...options.githubEvents.names],
+            },
+          },
+        }
+      : {}),
   }
   const webhookUrl = `${baseUrl}/hook/${options.source}/${rawSlug}`
   const updatedRoutesText = updateRoutesText(routesText, baseUrl, subscription)
@@ -246,14 +279,13 @@ export async function prepareSubscription(
 export function githubHookPayload(
   webhookUrl: string,
   secret: string,
-  mode: GitHubEventMode,
+  selection: GitHubEventSelection,
 ): Record<string, unknown> | null {
-  const events = githubEventsForMode(mode)
-  if (!events) return null
+  if (!selection.events) return null
   return {
     name: 'web',
     active: true,
-    events: [...events],
+    events: [...selection.events],
     config: {
       url: webhookUrl,
       content_type: 'json',
@@ -275,10 +307,10 @@ async function createGitHubHook(
   repo: string,
   webhookUrl: string,
   secret: string,
-  mode: GitHubEventMode,
+  selection: GitHubEventSelection,
 ): Promise<number> {
-  const payload = githubHookPayload(webhookUrl, secret, mode)
-  if (!payload) throw new Error('manual GitHub event mode cannot create a webhook')
+  const payload = githubHookPayload(webhookUrl, secret, selection)
+  if (!payload) throw new Error('manual GitHub event selection cannot create a webhook')
   await assertGitHubHookAbsent(repo, webhookUrl)
   const output = await runProcess('gh', ['api', '--method', 'POST', `repos/${repo}/hooks`, '--input', '-'], {
     input: JSON.stringify(payload),
@@ -302,10 +334,8 @@ function printPrepared(options: SubAddOptions, prepared: PreparedSubscription): 
     console.log(`GitHub repository: ${options.repo}`)
     console.log('Content type: application/json')
     console.log('SSL verification: enabled')
-    console.log(`Event mode: ${options.githubEventMode}`)
-    if (options.githubEventMode === 'recommended') {
-      console.log(`Events: ${githubEventsForMode('recommended')!.join(', ')}`)
-    }
+    console.log(`Event profiles: ${options.githubEvents.names.join(', ')}`)
+    if (options.githubEvents.events) console.log(`Events: ${options.githubEvents.events.join(', ')}`)
   }
 }
 
@@ -320,11 +350,13 @@ async function main(): Promise<void> {
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')
   const devVarsText = await readOptionalText(devVarsPath)
-  const prepared = await prepareSubscription(routesText, devVarsText, options)
+  const baseUrl = await resolveSubscriptionBaseUrl(routesText, options.baseUrl)
+  const resolvedOptions = { ...options, baseUrl }
+  const prepared = await prepareSubscription(routesText, devVarsText, resolvedOptions)
 
   await writeFile(routesPath, prepared.routesText, 'utf8')
   if (prepared.senderSecret) await writePrivateText(devVarsPath, prepared.devVarsText)
-  printPrepared(options, prepared)
+  printPrepared(resolvedOptions, prepared)
 
   const production = await prepareProduction(prepared.senderSecret, options.yes)
   if (production === 'local-only') {
@@ -334,14 +366,20 @@ async function main(): Promise<void> {
     } else {
       console.log('Production was not changed; run pnpm sync and pnpm sync --yes')
     }
+    if (options.source === 'github' && options.githubEvents.kind !== 'manual') {
+      console.log('After the route is live, create the GitHub webhook manually with the fields printed above')
+    }
     return
   }
   if (production === 'previewed') {
     console.log('The KV route was not changed; run pnpm sync --yes to apply it')
+    if (options.source === 'github' && options.githubEvents.kind !== 'manual') {
+      console.log('After the route is live, create the GitHub webhook manually with the fields printed above')
+    }
     return
   }
 
-  if (options.source !== 'github' || options.githubEventMode === 'manual') {
+  if (options.source !== 'github' || options.githubEvents.kind === 'manual') {
     if (options.source === 'github') {
       console.log('Create the GitHub webhook with the fields printed above and choose events manually')
     }
@@ -349,9 +387,10 @@ async function main(): Promise<void> {
   }
 
   if (!prepared.senderSecret || !options.repo) throw new Error('GitHub setup is missing sender authentication or repository')
-  const events = githubEventsForMode(options.githubEventMode)!
+  const selectedEvents = options.githubEvents.events!
+  const selectionLabel = options.githubEvents.names.join(',')
   const create = options.yes || await confirm(
-    `Create the GitHub webhook in ${options.repo} with ${options.githubEventMode} events (${events.length === 1 ? events[0] : events.length})?`,
+    `Create the GitHub webhook in ${options.repo} with ${selectionLabel} (${selectedEvents.length === 1 ? selectedEvents[0] : `${selectedEvents.length} events`})?`,
   )
   if (!create) {
     console.log('GitHub was not changed; create the webhook manually with the fields printed above')
@@ -362,7 +401,7 @@ async function main(): Promise<void> {
     options.repo,
     prepared.webhookUrl,
     prepared.senderSecret.value,
-    options.githubEventMode,
+    options.githubEvents,
   )
   console.log(`Created GitHub webhook ${hookId} in ${options.repo}`)
 }

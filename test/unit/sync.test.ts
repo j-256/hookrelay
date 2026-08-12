@@ -21,7 +21,13 @@ const ROUTES = `
       "slugHash": "${GITHUB_HASH}",
       "enabled": true,
       "sinks": ["phone"],
-      "auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH" }
+      "auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH" },
+      "setup": {
+        "github": {
+          "repo": "example-owner/example-repo",
+          "eventProfiles": ["recommended", "stars"]
+        }
+      }
     }
   ],
   "sinks": [
@@ -127,6 +133,17 @@ describe('validateRoutes', () => {
     })
     expect(issues.join('\n')).toMatch(/duplicate sub slugHash/)
   })
+
+  it('reports invalid local GitHub setup metadata', () => {
+    const cfg = parseRoutes(ROUTES.replace('"recommended", "stars"', '"all", "stars"'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH']),
+    })
+    expect(issues.join('\n')).toMatch(/invalid setup\.github\.eventProfiles/)
+  })
 })
 
 describe('computePlan', () => {
@@ -150,6 +167,8 @@ describe('computePlan', () => {
       `sub:sha256:${CLAUDE_HASH}`,
       `sub:sha256:${GITHUB_HASH}`,
     ])
+    const githubPut = plan.subPuts.find((entry) => entry.key === `sub:sha256:${GITHUB_HASH}`)
+    expect(JSON.parse(githubPut!.value)).not.toHaveProperty('setup')
     expect(plan.sinkPuts).toHaveLength(0)
     expect(plan.sinkDeletes).toEqual([])
   })

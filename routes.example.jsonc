@@ -1,7 +1,8 @@
-// Copy this file to routes.jsonc and set your deployed Worker's public origin
-// Use `pnpm sink:add` and `pnpm sub:add` to add the remaining config
+// Copy this file to routes.jsonc, then use `pnpm sink:add` and `pnpm sub:add`
+// sub:add discovers a single Cloudflare Worker custom domain automatically
 {
-  "baseUrl": "https://hooks.example.com",
+  // Optional when automatic custom-domain discovery is unavailable or ambiguous
+  // "baseUrl": "https://hooks.example.com",
   "subs": [],
   "sinks": []
 }

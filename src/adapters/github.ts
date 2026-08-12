@@ -66,6 +66,30 @@ function summarize(eventName: string, payload: any): GitHubSummary {
       severity: ADVISORY_SEVERITY[adv.severity] ?? 'warning',
     }
   }
+  if (eventName === 'star') {
+    const actor = typeof payload?.sender?.login === 'string' ? payload.sender.login : 'Someone'
+    const repoUrl = typeof payload?.repository?.html_url === 'string' ? payload.repository.html_url : undefined
+    return {
+      type,
+      title: action === 'deleted'
+        ? `${repo}: ${actor} removed a star`
+        : `${repo}: ${actor} starred the repository`,
+      body: '',
+      url: repoUrl ? `${repoUrl}/stargazers` : undefined,
+      severity: 'info',
+    }
+  }
+  if (eventName === 'watch') {
+    const actor = typeof payload?.sender?.login === 'string' ? payload.sender.login : 'Someone'
+    const repoUrl = typeof payload?.repository?.html_url === 'string' ? payload.repository.html_url : undefined
+    return {
+      type,
+      title: `${repo}: ${actor} started watching the repository`,
+      body: '',
+      url: repoUrl ? `${repoUrl}/watchers` : undefined,
+      severity: 'info',
+    }
+  }
   if (eventName === 'workflow_run' && payload?.workflow_run) {
     const run = payload.workflow_run
     const state = typeof run.conclusion === 'string'

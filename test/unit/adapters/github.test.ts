@@ -83,6 +83,23 @@ describe('github adapter parse', () => {
     expect(event.severity).toBe('critical')
   })
 
+  it('formats star and watcher activity as useful notifications', async () => {
+    const repository = {
+      full_name: 'example-owner/example-repo',
+      html_url: 'https://github.com/example-owner/example-repo',
+    }
+    const sender = { login: 'octocat' }
+    const starred = await makeReq({ action: 'created', repository, sender }, 'star', { deliveryId: 'star-1' })
+    const watched = await makeReq({ action: 'started', repository, sender }, 'watch', { deliveryId: 'watch-1' })
+
+    const starEvent = await github.parse(starred.req, starred.raw, sub)
+    const watchEvent = await github.parse(watched.req, watched.raw, sub)
+    expect(starEvent.title).toBe('example-owner/example-repo: octocat starred the repository')
+    expect(starEvent.url).toBe('https://github.com/example-owner/example-repo/stargazers')
+    expect(watchEvent.title).toBe('example-owner/example-repo: octocat started watching the repository')
+    expect(watchEvent.url).toBe('https://github.com/example-owner/example-repo/watchers')
+  })
+
   it('throws when X-GitHub-Delivery is missing', async () => {
     const { req, raw } = await makeReq(issuesOpened, 'issues')
     const stripped = new Request(req)
