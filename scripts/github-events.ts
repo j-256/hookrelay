@@ -1,7 +1,17 @@
 const events = <T extends readonly string[]>(...values: T): Readonly<T> => Object.freeze(values)
 
+export const GITHUB_ACTIVITY_EVENTS = events('push', 'workflow_run')
+
+export const GITHUB_ALERT_EVENTS = events(
+  'code_scanning_alert',
+  'dependabot_alert',
+  'secret_scanning_alert',
+)
+
 export const GITHUB_EVENT_PROFILES = Object.freeze({
   access: events('deploy_key', 'member', 'team_add'),
+  activity: GITHUB_ACTIVITY_EVENTS,
+  alerts: GITHUB_ALERT_EVENTS,
   branches: events('create', 'delete'),
   checks: events('check_run', 'check_suite', 'status'),
   'commit-comments': events('commit_comment'),
@@ -22,13 +32,9 @@ export const GITHUB_EVENT_PROFILES = Object.freeze({
   repository: events('custom_property_values', 'public', 'repository', 'repository_import'),
   rules: events('branch_protection_configuration', 'branch_protection_rule', 'repository_ruleset'),
   security: events(
-    'code_scanning_alert',
-    'dependabot_alert',
+    ...GITHUB_ALERT_EVENTS,
     'repository_advisory',
-    'repository_vulnerability_alert',
-    'secret_scanning_alert',
     'secret_scanning_alert_location',
-    'secret_scanning_scan',
     'security_and_analysis',
   ),
   stars: events('star'),

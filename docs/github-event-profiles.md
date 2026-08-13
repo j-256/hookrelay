@@ -3,12 +3,12 @@
 `pnpm sub:add` accepts a comma-separated GitHub event selection:
 
 ```sh
-pnpm sub:add github:example-owner/example-repo github --repo example-owner/example-repo --events stars,watchers
+pnpm sub:add github:example-owner/example-repo github --repo example-owner/example-repo --events activity,alerts
 ```
 
-Composable names expand in the order supplied, and duplicate raw events are removed. `push` is the default. `recommended` can be combined with profiles, for example `recommended,stars`. The `all` and `manual` presets are exclusive and cannot be combined with another name.
+Composable names expand in the order supplied, and duplicate raw events are removed. Profiles can intentionally overlap, so `activity,workflows` still creates only one `workflow_run` subscription. `push` is the default. `recommended` can be combined with profiles, for example `recommended,stars`. The `all` and `manual` presets are exclusive and cannot be combined with another name.
 
-GitHub recommends subscribing only to events an integration handles. The catalog below covers repository webhooks from GitHub's [webhook event reference](https://docs.github.com/en/webhooks/webhook-events-and-payloads).
+GitHub recommends subscribing only to events an integration handles. The curated catalog below draws from GitHub's [webhook event reference](https://docs.github.com/en/webhooks/webhook-events-and-payloads). Use `all` or `manual` when a repository needs an event outside these profiles.
 
 ## Presets
 
@@ -23,10 +23,12 @@ GitHub recommends subscribing only to events an integration handles. The catalog
 | Profile | GitHub events | Use it for |
 | --- | --- | --- |
 | `access` | `deploy_key`, `member`, `team_add` | Repository access and deploy-key changes. |
+| `activity` | `push`, `workflow_run` | Source changes and completed workflow outcomes. Hookrelay records requested and in-progress workflow runs without delivering them to sinks. |
+| `alerts` | `code_scanning_alert`, `dependabot_alert`, `secret_scanning_alert` | Actionable code, dependency, and leaked-secret findings. Resolution events remain visible at informational severity. |
 | `branches` | `create`, `delete` | Branch and tag creation or deletion. |
 | `checks` | `check_run`, `check_suite`, `status` | Check and commit-status transitions. This can be noisy in active repositories. |
 | `commit-comments` | `commit_comment` | Comments attached directly to commits. |
-| `deployments` | `deployment`, `deployment_status`, `page_build` | Deployments, deployment states, and GitHub Pages builds. |
+| `deployments` | `deployment`, `deployment_status`, `page_build` | Deployment outcomes and GitHub Pages builds. Hookrelay records creation and transient states but delivers only terminal outcomes. |
 | `discussions` | `discussion`, `discussion_comment` | GitHub Discussions activity. |
 | `forks` | `fork` | New repository forks. |
 | `issues` | `issue_comment`, `issue_dependencies`, `issues`, `label`, `milestone`, `sub_issues` | Issues, their comments and relationships, plus issue metadata administration. |
@@ -37,13 +39,17 @@ GitHub recommends subscribing only to events an integration handles. The catalog
 | `releases` | `release` | Release publication and lifecycle changes. |
 | `repository` | `custom_property_values`, `public`, `repository`, `repository_import` | Repository lifecycle, visibility, imports, and custom properties. |
 | `rules` | `branch_protection_configuration`, `branch_protection_rule`, `repository_ruleset` | Branch protection and repository rulesets. |
-| `security` | `code_scanning_alert`, `dependabot_alert`, `repository_advisory`, `repository_vulnerability_alert`, `secret_scanning_alert`, `secret_scanning_alert_location`, `secret_scanning_scan`, `security_and_analysis` | Repository security findings and security-feature configuration. |
+| `security` | `code_scanning_alert`, `dependabot_alert`, `secret_scanning_alert`, `repository_advisory`, `secret_scanning_alert_location`, `security_and_analysis` | The `alerts` set plus published repository advisories, additional secret locations, and security-feature configuration changes. |
 | `stars` | `star` | Stars added or removed. |
 | `watchers` | `watch` | A user starting to watch repository notifications. GitHub exposes only the `started` action for this webhook. |
 | `webhooks` | `meta`, `ping` | Webhook lifecycle and connectivity diagnostics. Hookrelay records pings without delivering them to sinks. GitHub also sends a ping automatically when a hook is created. |
 | `wiki` | `gollum` | Wiki page creation and updates. |
-| `workflows` | `workflow_job`, `workflow_run` | GitHub Actions jobs and runs. Individual jobs can be noisy; Hookrelay records non-terminal workflow runs but only delivers completed runs to sinks. |
+| `workflows` | `workflow_job`, `workflow_run` | GitHub Actions jobs and runs. Hookrelay records non-terminal states but delivers only completed jobs and runs; individual job completions can still be noisy. |
 
 `stars` and `watchers` are intentionally separate. GitHub uses `star` for starring activity and `watch` for repository notification subscriptions.
+
+`repository_vulnerability_alert` is omitted because GitHub is closing it down in favor of `dependabot_alert`. `secret_scanning_scan` is also omitted because it reports scan completion rather than a finding. Hooks created with `all` or `manual` can still send either event; Hookrelay records secret-scanning completion without delivering it to sinks.
+
+Security summaries never copy the raw secret value from a `secret_scanning_alert`. The original authenticated payload remains subject to Hookrelay's normal restricted persistence model.
 
 The selected profile names and repository are saved under `subs[].setup.github` in local `routes.jsonc`. They are setup metadata and are not copied into Worker KV. The expanded raw events are stored on the GitHub webhook itself.

@@ -79,7 +79,7 @@ Steps:
 8. Add subscriptions. Each command writes the hash-only route locally, prints the raw slug under a password-manager key, and offers to install any sender secret and sync KV. GitHub's non-manual event selections create the repository webhook only after the route is live:
    ```sh
    pnpm sub:add claude-status statuspage
-   pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events recommended
+   pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events activity,alerts
    ```
 9. (Optional) Deploy the edge WAF rule that keeps scanner traffic off the Worker:
    ```sh
@@ -223,7 +223,7 @@ For a GitHub repository, pass the repository separately instead of deriving it f
 pnpm sub:add github:example-owner/example-repo github --repo example-owner/example-repo --events stars,watchers
 ```
 
-The `--events` value accepts comma-separated profiles. Profiles compose by set union, so `recommended,stars` adds star activity to the recommended set. `push` remains the default, while `all` and `manual` are exclusive presets. The complete profile-to-event table and noise guidance live in [GitHub event profiles](docs/github-event-profiles.md).
+The `--events` value accepts comma-separated profiles. Profiles compose by set union, so `activity,alerts` combines concise repository activity with actionable security findings and `recommended,stars` adds star activity to the broad general-purpose set. `push` remains the default, while `all` and `manual` are exclusive presets. The complete profile-to-event table and noise guidance live in [GitHub event profiles](docs/github-event-profiles.md).
 
 The base URL resolves from an explicit `--base-url`, then the value already saved in `routes.jsonc`, then the single production custom domain attached to the Worker named in `wrangler.jsonc`. Automatic discovery uses `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; an absent or ambiguous domain produces an error asking for `--base-url`.
 

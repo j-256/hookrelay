@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  GITHUB_ACTIVITY_EVENTS,
+  GITHUB_ALERT_EVENTS,
   GITHUB_EVENT_PROFILES,
   GITHUB_RECOMMENDED_EVENTS,
   parseGitHubEventSelection,
@@ -48,10 +50,8 @@ const REPOSITORY_EVENTS = [
   'repository_advisory',
   'repository_import',
   'repository_ruleset',
-  'repository_vulnerability_alert',
   'secret_scanning_alert',
   'secret_scanning_alert_location',
-  'secret_scanning_scan',
   'security_and_analysis',
   'star',
   'status',
@@ -63,10 +63,26 @@ const REPOSITORY_EVENTS = [
 ]
 
 describe('GitHub event profiles', () => {
-  it('partitions the repository webhook event catalog', () => {
-    const profiled = Object.values(GITHUB_EVENT_PROFILES).flat().sort()
+  it('covers the supported repository webhook event catalog', () => {
+    const profiled = [...new Set(Object.values(GITHUB_EVENT_PROFILES).flat())].sort()
     expect(profiled).toEqual(REPOSITORY_EVENTS)
-    expect(new Set(profiled).size).toBe(profiled.length)
+    for (const profile of Object.values(GITHUB_EVENT_PROFILES)) {
+      expect(new Set(profile).size).toBe(profile.length)
+    }
+  })
+
+  it('expands purpose-specific activity and alert profiles', () => {
+    expect(parseGitHubEventSelection('activity,alerts')).toEqual({
+      kind: 'events',
+      names: ['activity', 'alerts'],
+      events: [...GITHUB_ACTIVITY_EVENTS, ...GITHUB_ALERT_EVENTS],
+    })
+    expect(GITHUB_EVENT_PROFILES.security).toEqual([
+      ...GITHUB_ALERT_EVENTS,
+      'repository_advisory',
+      'secret_scanning_alert_location',
+      'security_and_analysis',
+    ])
   })
 
   it('composes profiles in order and expands stars and watchers separately', () => {
@@ -82,9 +98,7 @@ describe('GitHub event profiles', () => {
     expect(selection.names).toEqual(['recommended', 'security', 'stars'])
     expect(selection.events).toEqual([
       ...GITHUB_RECOMMENDED_EVENTS,
-      'repository_vulnerability_alert',
       'secret_scanning_alert_location',
-      'secret_scanning_scan',
       'star',
     ])
     expect(new Set(selection.events!).size).toBe(selection.events!.length)
