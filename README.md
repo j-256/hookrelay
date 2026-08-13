@@ -247,6 +247,52 @@ pnpm sub:events github:example-owner/example-repo
 
 GitHub may return the same events in a different order, so order alone does not trigger an update. GitHub's general webhook update clears an existing secret unless the request supplies it again, so the command requires the subscription's `auth.secretEnv` value in `.dev.vars` and resends it with the unchanged URL, content type, SSL setting, and active state. The secret-bearing request travels through stdin and is never placed in process arguments or output. Selecting `manual` changes local metadata but leaves GitHub's checkboxes under manual control.
 
+### Managing a GitHub repository fleet
+
+`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and manages a standard three-hook topology for each repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. The three hooks have distinct private URLs but share one per-repository HMAC.
+
+The command requires an explicit manifest path so a deployment can choose its own encrypted or otherwise access-controlled secret store without embedding that location in Hookrelay. The JSON manifest is the recovery source for each repository's raw slugs and HMAC. It and `.dev.vars` must be regular, non-symlink files with mode `0600`; `routes.jsonc` stores only slug hashes. Treat the manifest and full GitHub hook URLs as secrets and never commit the manifest unless the repository encrypts it before storage.
+
+The manifest is strict, versioned JSON with this repository shape:
+
+```json
+{
+  "version": 1,
+  "repositories": {
+    "owner/repo": {
+      "hmac": {
+        "name": "HMAC_GITHUB_OWNER_REPO",
+        "value": "<secret>"
+      },
+      "slugs": {
+        "activity": "<private-slug>",
+        "stars": "<private-slug>",
+        "alerts": "<private-slug>"
+      }
+    }
+  }
+}
+```
+
+Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. A legacy migration may temporarily add command-owned `retiringHmacs` entries until its old HMACs are safely removed.
+
+Use the four phases in order:
+
+```sh
+pnpm github:fleet plan --root <directory> --manifest <file>
+pnpm github:fleet prepare --root <directory> --manifest <file>
+pnpm github:fleet apply --root <directory> --manifest <file>
+pnpm github:fleet verify --root <directory> --manifest <file>
+```
+
+`plan` is read-only. It reports discoveries, exclusions, drift, exact additions, GitHub administration blockers, remote KV differences, and projected Worker variable and secret capacity. `prepare` is local-only: it generates missing manifest values first, then repairs `.dev.vars` and appends missing routes from that manifest. `apply` confirms before production writes, installs missing repository HMACs with Wrangler's [bulk secret command](https://developers.cloudflare.com/workers/wrangler/commands/workers/#secret-bulk), updates only selected subscription and sink KV entries, waits for authenticated routes, and creates or repairs only Hookrelay-owned GitHub hooks. `verify` reports drift without repairing it, but it deliberately sends a fresh GitHub ping to every managed hook so it can prove the unrecoverable GitHub-side secret agrees with Hookrelay. Ping events are accepted without creating sink deliveries.
+
+Repeat `--repo <owner/repo>` to limit new additions for a canary rollout. Already managed repositories are still audited, and an unfinished `example-owner/example-repo` HMAC consolidation remains a prerequisite. Omit `--repo` to select every eligible discovered repository. `--secret-limit` sets the capacity guard, and `-y` is accepted only by `apply` to skip its confirmation.
+
+The workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST. Existing `example-owner/example-repo` activity, stars, and alerts names and URLs are preserved while its legacy profile HMACs move to the canonical repository HMAC through expanded, switched, and contracted authentication stages.
+
+Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating hooks or retiring an old HMAC. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
+
 `pnpm new-sub <name> <source>` remains available as a low-level generator. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.
