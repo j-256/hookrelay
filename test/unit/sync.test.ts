@@ -36,6 +36,11 @@ const ROUTES = `
 }
 `
 
+const ROTATING_ROUTES = ROUTES.replace(
+  '"auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH" }',
+  '"auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH", "alternateSecretEnvs": ["HMAC_GH_NEXT"] }',
+)
+
 describe('parseSyncArgs', () => {
   it('accepts short and long apply options', () => {
     expect(parseSyncArgs([])).toEqual({ yes: false })
@@ -63,6 +68,15 @@ describe('parseRoutes', () => {
 
   it('rejects raw subscription slugs', () => {
     expect(() => parseRoutes(ROUTES.replace(`"slugHash": "${CLAUDE_HASH}"`, '"slug": "abcdefghijabcdefghijab"'))).toThrow()
+  })
+
+  it('parses alternate subscription secret environments', () => {
+    const cfg = parseRoutes(ROTATING_ROUTES)
+    expect(cfg.subs[1]?.auth).toEqual({
+      scheme: 'github-sha256',
+      secretEnv: 'HMAC_GH',
+      alternateSecretEnvs: ['HMAC_GH_NEXT'],
+    })
   })
 })
 
@@ -109,6 +123,62 @@ describe('validateRoutes', () => {
       secretsAvailable: new Set(),
     })
     expect(issues.join('\n')).toMatch(/secret HMAC_GH not set/)
+  })
+
+  it('accepts rotating auth when every referenced secret is available', () => {
+    const cfg = parseRoutes(ROTATING_ROUTES)
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH', 'HMAC_GH_NEXT']),
+    })
+    expect(issues).toEqual([])
+  })
+
+  it('reports every missing rotating auth secret', () => {
+    const cfg = parseRoutes(ROTATING_ROUTES)
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(),
+    })
+    expect(issues).toContain("sub 'gh': secret HMAC_GH not set in Wrangler")
+    expect(issues).toContain("sub 'gh': secret HMAC_GH_NEXT not set in Wrangler")
+  })
+
+  it('rejects duplicate rotating auth references', () => {
+    const cfg = parseRoutes(ROTATING_ROUTES.replace('HMAC_GH_NEXT', 'HMAC_GH'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH']),
+    })
+    expect(issues.join('\n')).toMatch(/secret references must be unique/)
+  })
+
+  it('rejects rotating auth on a non-GitHub subscription', () => {
+    const cfg = parseRoutes(ROTATING_ROUTES.replace('"source": "github"', '"source": "statuspage"'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH', 'HMAC_GH_NEXT']),
+    })
+    expect(issues.join('\n')).toMatch(/only valid for GitHub subscriptions/)
+  })
+
+  it('rejects rotating auth with a non-GitHub scheme', () => {
+    const cfg = parseRoutes(ROTATING_ROUTES.replace('github-sha256', 'shared-secret'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH', 'HMAC_GH_NEXT']),
+    })
+    expect(issues.join('\n')).toMatch(/requires the github-sha256 scheme/)
   })
 
   it('reports missing secret for an authenticated ntfy sink', () => {
@@ -184,6 +254,17 @@ describe('computePlan', () => {
     expect(JSON.parse(githubPut!.value)).not.toHaveProperty('setup')
     expect(plan.sinkPuts).toHaveLength(0)
     expect(plan.sinkDeletes).toEqual([])
+  })
+
+  it('serializes alternate subscription secret environments', () => {
+    const cfg = parseRoutes(ROTATING_ROUTES)
+    const plan = computePlan(cfg, { subs: {}, sinks: {} })
+    const githubPut = plan.subPuts.find((entry) => entry.key === `sub:sha256:${GITHUB_HASH}`)
+    expect(JSON.parse(githubPut!.value).auth).toEqual({
+      scheme: 'github-sha256',
+      secretEnv: 'HMAC_GH',
+      alternateSecretEnvs: ['HMAC_GH_NEXT'],
+    })
   })
 })
 

@@ -26,6 +26,7 @@ const subSchema = z
       .object({
         scheme: z.string().min(1),
         secretEnv: z.string().min(1),
+        alternateSecretEnvs: z.array(z.string().min(1)).min(1).optional(),
       })
       .nullable()
       .optional()
@@ -126,8 +127,24 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
         issues.push(`sub '${sub.name}': sink '${sinkName}' not declared in sinks[]`)
       }
     }
-    if (sub.auth && !ctx.secretsAvailable.has(sub.auth.secretEnv)) {
-      issues.push(`sub '${sub.name}': secret ${sub.auth.secretEnv} not set in Wrangler`)
+    if (sub.auth) {
+      const secretEnvs = [sub.auth.secretEnv, ...(sub.auth.alternateSecretEnvs ?? [])]
+      for (const name of secretEnvs) {
+        if (!ctx.secretsAvailable.has(name)) {
+          issues.push(`sub '${sub.name}': secret ${name} not set in Wrangler`)
+        }
+      }
+      if (new Set(secretEnvs).size !== secretEnvs.length) {
+        issues.push(`sub '${sub.name}': auth secret references must be unique`)
+      }
+      if (sub.auth.alternateSecretEnvs) {
+        if (sub.source !== 'github') {
+          issues.push(`sub '${sub.name}': alternateSecretEnvs is only valid for GitHub subscriptions`)
+        }
+        if (sub.auth.scheme !== 'github-sha256') {
+          issues.push(`sub '${sub.name}': alternateSecretEnvs requires the github-sha256 scheme`)
+        }
+      }
     }
     if (sub.setup?.github) {
       if (sub.source !== 'github') {

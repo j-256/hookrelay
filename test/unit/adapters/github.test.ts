@@ -8,7 +8,10 @@ import advisoryCritical from '../../fixtures/github/security-advisory-critical.j
 
 const SECRET_NAME = 'HMAC_GITHUB_TEST'
 const SECRET_VALUE = 'shhh'
+const ALTERNATE_SECRET_NAME = 'HMAC_GITHUB_TEST_ALTERNATE'
+const ALTERNATE_SECRET_VALUE = 'also-shhh'
 ;(env as unknown as Record<string, string>)[SECRET_NAME] = SECRET_VALUE
+;(env as unknown as Record<string, string>)[ALTERNATE_SECRET_NAME] = ALTERNATE_SECRET_VALUE
 
 const sub: Subscription = {
   name: 'github-test',
@@ -18,7 +21,11 @@ const sub: Subscription = {
   auth: { scheme: 'github-sha256', secretEnv: SECRET_NAME },
 }
 
-const makeReq = async (body: unknown, eventName: string, opts: { sign?: boolean; deliveryId?: string } = {}) => {
+const makeReq = async (
+  body: unknown,
+  eventName: string,
+  opts: { sign?: boolean; deliveryId?: string; secret?: string } = {},
+) => {
   const raw = new TextEncoder().encode(JSON.stringify(body))
   const headers = new Headers({
     'content-type': 'application/json',
@@ -26,7 +33,7 @@ const makeReq = async (body: unknown, eventName: string, opts: { sign?: boolean;
     'x-github-delivery': opts.deliveryId ?? '11111111-2222-3333-4444-555555555555',
   })
   if (opts.sign !== false) {
-    const sig = await hmacSha256Hex(SECRET_VALUE, raw)
+    const sig = await hmacSha256Hex(opts.secret ?? SECRET_VALUE, raw)
     headers.set('x-hub-signature-256', `sha256=${sig}`)
   }
   return { req: new Request('https://hooks.example.com/hook/github/abc', { method: 'POST', body: raw, headers }), raw }
@@ -36,6 +43,45 @@ describe('github adapter verify', () => {
   it('passes for a correctly signed body', async () => {
     const { req, raw } = await makeReq(issuesOpened, 'issues')
     await expect(github.verify(req, raw, sub, env)).resolves.toBeUndefined()
+  })
+
+  it('passes when an alternate secret signs the body', async () => {
+    const { req, raw } = await makeReq(issuesOpened, 'issues', { secret: ALTERNATE_SECRET_VALUE })
+    const rotatingSub = {
+      ...sub,
+      auth: {
+        scheme: 'github-sha256',
+        secretEnv: SECRET_NAME,
+        alternateSecretEnvs: [ALTERNATE_SECRET_NAME],
+      },
+    }
+    await expect(github.verify(req, raw, rotatingSub, env)).resolves.toBeUndefined()
+  })
+
+  it('passes with an available alternate when the primary secret is missing', async () => {
+    const { req, raw } = await makeReq(issuesOpened, 'issues', { secret: ALTERNATE_SECRET_VALUE })
+    const rotatingSub = {
+      ...sub,
+      auth: {
+        scheme: 'github-sha256',
+        secretEnv: 'DOES_NOT_EXIST',
+        alternateSecretEnvs: [ALTERNATE_SECRET_NAME],
+      },
+    }
+    await expect(github.verify(req, raw, rotatingSub, env)).resolves.toBeUndefined()
+  })
+
+  it('passes with the primary when an alternate secret is missing', async () => {
+    const { req, raw } = await makeReq(issuesOpened, 'issues')
+    const rotatingSub = {
+      ...sub,
+      auth: {
+        scheme: 'github-sha256',
+        secretEnv: SECRET_NAME,
+        alternateSecretEnvs: ['DOES_NOT_EXIST'],
+      },
+    }
+    await expect(github.verify(req, raw, rotatingSub, env)).resolves.toBeUndefined()
   })
 
   it('rejects when signature is missing', async () => {
@@ -58,6 +104,20 @@ describe('github adapter verify', () => {
     const { req, raw } = await makeReq(issuesOpened, 'issues')
     await expect(
       github.verify(req, raw, { ...sub, auth: { scheme: 'github-sha256', secretEnv: 'DOES_NOT_EXIST' } }, env),
+    ).rejects.toThrow(/secret/)
+  })
+
+  it('rejects when no configured secret env is available', async () => {
+    const { req, raw } = await makeReq(issuesOpened, 'issues')
+    await expect(
+      github.verify(req, raw, {
+        ...sub,
+        auth: {
+          scheme: 'github-sha256',
+          secretEnv: 'DOES_NOT_EXIST',
+          alternateSecretEnvs: ['ALSO_DOES_NOT_EXIST'],
+        },
+      }, env),
     ).rejects.toThrow(/secret/)
   })
 })

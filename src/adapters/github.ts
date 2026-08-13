@@ -1,7 +1,7 @@
 import type { Adapter } from '.'
 import { hmacSha256Hex, timingSafeEqualHex } from '../lib/hmac'
 import type { Env } from '../index'
-import { readSecret } from '../lib/secret'
+import { readOptionalSecret } from '../lib/secret'
 import type { NormalizedEvent, Severity, Subscription } from '../types'
 
 const SECURITY_SEVERITY: Record<string, Severity> = {
@@ -434,9 +434,18 @@ const adapter: Adapter = {
       throw new Error('missing x-hub-signature-256')
     }
     const provided = header.slice('sha256='.length)
-    const secret = readSecret(env, sub.auth.secretEnv)
-    const expected = await hmacSha256Hex(secret, raw)
-    if (!timingSafeEqualHex(expected, provided)) {
+    const secretEnvs = [sub.auth.secretEnv, ...(sub.auth.alternateSecretEnvs ?? [])]
+    const secrets = secretEnvs
+      .map((name) => readOptionalSecret(env, name))
+      .filter((secret): secret is string => secret !== undefined)
+    if (secrets.length === 0) throw new Error(`secret not set: ${secretEnvs.join(', ')}`)
+
+    const expectedSignatures = await Promise.all(secrets.map((secret) => hmacSha256Hex(secret, raw)))
+    let signatureMatches = false
+    for (const expected of expectedSignatures) {
+      signatureMatches = timingSafeEqualHex(expected, provided) || signatureMatches
+    }
+    if (!signatureMatches) {
       throw new Error('signature mismatch')
     }
   },

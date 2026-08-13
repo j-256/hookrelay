@@ -17,6 +17,7 @@ export interface NormalizedEvent {
 export interface SubAuth {
   scheme: string
   secretEnv: string
+  alternateSecretEnvs?: string[]
 }
 
 export interface Subscription {
