@@ -11,6 +11,7 @@ import {
 } from '../src/lib/subscription'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { parseGitHubEventSelection } from './github-events'
+import { listWranglerSecrets } from './setup'
 
 const execFileP = promisify(execFile)
 
@@ -279,13 +280,6 @@ async function deleteKv(binding: string, key: string): Promise<void> {
   }
 }
 
-async function listSecrets(): Promise<Set<string>> {
-  const { stdout } = await execFileP('npx', ['wrangler', 'secret', 'list'])
-  // wrangler outputs JSON of [{ name, type }, ...]
-  const items = JSON.parse(stdout) as Array<{ name: string }>
-  return new Set(items.map((i) => i.name))
-}
-
 async function main() {
   const argv = process.argv.slice(2)
   if (argv.includes('--help') || argv.includes('-h')) {
@@ -311,7 +305,7 @@ async function main() {
       .strict(),
     discord: z.object({ name: z.string(), type: z.literal('discord'), urlEnv: z.string() }).strict(),
   }
-  const secretsAvailable = await listSecrets()
+  const secretsAvailable = await listWranglerSecrets()
 
   const issues = validateRoutes(routes, { knownSources, knownSinkTypes, sinkSchemas, secretsAvailable })
   if (issues.length) {

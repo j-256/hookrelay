@@ -15,6 +15,8 @@
     "new-sub": "tsx scripts/new-sub.ts",
     "sub:add": "tsx scripts/sub-add.ts",
     "sink:add": "tsx scripts/sink-add.ts",
+    "sink:rename": "tsx scripts/sink-rename.ts",
+    "sink:secret:rename": "tsx scripts/sink-secret-rename.ts",
     "preversion": "[ \"$(git branch --show-current)\" = main ] || { echo 'Error: npm version must be run on main'; exit 1; } && npm run typecheck && npm test",
     "postversion": "git push origin main v$npm_package_version",
     "retag": "git tag -f v$npm_package_version && git push origin v$npm_package_version --force"

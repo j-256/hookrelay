@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { addDevVar, envSegment } from '../../scripts/setup'
+import { addDevVar, envSegment, getDevVar, removeDevVar } from '../../scripts/setup'
 
 describe('envSegment', () => {
   it('normalizes config names into secret-name segments', () => {
@@ -19,5 +19,21 @@ describe('addDevVar', () => {
 
   it('refuses to replace an existing variable', () => {
     expect(() => addDevVar('export SECOND=old\n', 'SECOND', 'new')).toThrow(/already exists/)
+  })
+})
+
+describe('.dev.vars lookup and removal', () => {
+  it('parses generated, exported, and quoted values without exposing syntax', () => {
+    const text = 'PLAIN=value\nexport EXPORTED = other\nQUOTED="value with spaces"\n'
+    expect(getDevVar(text, 'PLAIN')).toBe('value')
+    expect(getDevVar(text, 'EXPORTED')).toBe('other')
+    expect(getDevVar(text, 'QUOTED')).toBe('value with spaces')
+    expect(getDevVar(text, 'MISSING')).toBeNull()
+  })
+
+  it('removes exactly one assignment while preserving surrounding content', () => {
+    const text = '# local secrets\nFIRST=one\nexport SECOND = "two words"\nTHIRD=three\n'
+    expect(removeDevVar(text, 'SECOND')).toBe('# local secrets\nFIRST=one\nTHIRD=three\n')
+    expect(() => removeDevVar(text, 'MISSING')).toThrow(/does not exist/)
   })
 })

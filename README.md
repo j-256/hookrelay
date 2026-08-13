@@ -172,6 +172,37 @@ The command refuses to replace an existing sink or secret. The raw Discord URL n
 
 Pass `-y` or `--yes` to skip the production confirmation prompts. The URL is still read through concealed input when interactive, or from stdin for automation.
 
+### Renaming a deployed sink
+
+A deployed sink name is both a routing label and a delivery identity, so renaming it in one `routes.jsonc` edit can orphan queue messages that still carry the old name. Use the phased rename command instead:
+
+```sh
+pnpm sink:rename discord discord-service-status
+pnpm sink:rename discord discord-service-status --switch
+pnpm sink:rename discord discord-service-status --finalize
+```
+
+The prepare phase copies convention-derived local credentials such as `SINK_DISCORD_URL` to `SINK_DISCORD_SERVICE_STATUS_URL`, installs the new Wrangler secret after confirmation, and deploys both sink names with the new secret reference. Subscription routes still use the old name during this phase.
+
+The switch phase verifies both remote sink aliases and the new secret before changing every subscription reference to the new name. The old alias remains deployed and uses the new secret, so already queued deliveries and historical admin retries continue to work.
+
+The finalize phase explicitly deletes the obsolete local and Wrangler secret. It does not delete the old sink alias because doing so would break historical retries. Custom secret names that do not follow the `SINK_<NAME>_<CONCEPT>` convention remain unchanged.
+
+Each phase accepts `-y` or `--yes` to apply its production changes without confirmation. Run the phases separately and let the prepare change propagate before switching subscription routes because [Workers KV reads are eventually consistent](https://developers.cloudflare.com/kv/concepts/how-kv-works/).
+
+### Renaming a sink secret reference
+
+Changing a sink's `urlEnv`, `tokenEnv`, or another `*Env` field does not require changing the sink name. Use the secret rename command with the existing sink name and the old and new Wrangler secret names:
+
+```sh
+pnpm sink:secret:rename discord SINK_DISCORD_URL SINK_DISCORD_SERVICE_STATUS_URL
+pnpm sink:secret:rename discord SINK_DISCORD_URL SINK_DISCORD_SERVICE_STATUS_URL --finalize
+```
+
+The prepare phase copies the value from `.dev.vars`, installs the new Wrangler secret, and then syncs the selected sink's KV config to reference it. The old secret remains available while cached copies of the previous KV value expire, so queued messages carrying the unchanged sink name can dispatch through either configuration.
+
+After the KV change has propagated, the explicit finalize phase verifies that production matches the new local sink config and that no route references the old secret before deleting it from Wrangler and `.dev.vars`. Sink names, subscription routes, queued delivery identities, and historical retry links do not change.
+
 ## Adding a subscription
 
 `routes.jsonc` is the complete desired state for subscriptions and sinks. Keep every existing entry when adding one: `pnpm sync -y` removes remote KV entries that are absent from the file.

@@ -1,6 +1,7 @@
 import { spawn } from 'node:child_process'
 import { chmod, readFile, writeFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline/promises'
+import { parseEnv } from 'node:util'
 
 export interface SecretValue {
   name: string
@@ -30,6 +31,27 @@ export function addDevVar(text: string, name: string, value: string): string {
 
   const prefix = text.length === 0 || text.endsWith('\n') ? text : `${text}\n`
   return `${prefix}${name}=${value}\n`
+}
+
+export function getDevVar(text: string, name: string): string | null {
+  let parsed: ReturnType<typeof parseEnv>
+  try {
+    parsed = parseEnv(text)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    throw new Error(`failed to parse .dev.vars: ${message}`)
+  }
+  return parsed[name] ?? null
+}
+
+export function removeDevVar(text: string, name: string): string {
+  const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const assignment = new RegExp(`^\\s*(?:export\\s+)?${escapedName}\\s*=`)
+  const lines = text.match(/[^\n]*(?:\n|$)/g)?.filter((line) => line.length > 0) ?? []
+  const matching = lines.filter((line) => assignment.test(line))
+  if (matching.length === 0) throw new Error(`${name} does not exist in .dev.vars`)
+  if (matching.length > 1) throw new Error(`${name} appears more than once in .dev.vars`)
+  return lines.filter((line) => !assignment.test(line)).join('')
 }
 
 export async function readOptionalText(path: string): Promise<string> {
@@ -134,17 +156,30 @@ export async function putWranglerSecret(secret: SecretValue): Promise<void> {
   await runProcess('npx', ['wrangler', 'secret', 'put', secret.name], { input: `${secret.value}\n` })
 }
 
+export async function deleteWranglerSecret(name: string): Promise<void> {
+  // Wrangler sees piped stdin as non-interactive after our own confirmation
+  await runProcess('npx', ['wrangler', 'secret', 'delete', name], { input: '' })
+}
+
+export async function listWranglerSecrets(): Promise<Set<string>> {
+  const stdout = await runProcess('npx', ['wrangler', 'secret', 'list'], { captureStdout: true })
+  const items = JSON.parse(stdout) as Array<{ name: string }>
+  return new Set(items.map((item) => item.name))
+}
+
 export async function runSync(apply: boolean): Promise<void> {
   await runProcess('npx', ['tsx', 'scripts/sync.ts', ...(apply ? ['--yes'] : [])])
 }
 
-export async function prepareProduction(secret: SecretValue | null, yes: boolean): Promise<ProductionResult> {
-  const action = secret
-    ? `Set ${secret.name} in Wrangler and preview the production KV plan?`
+export async function prepareProduction(secrets: SecretValue | SecretValue[] | null, yes: boolean): Promise<ProductionResult> {
+  const secretList = secrets === null ? [] : Array.isArray(secrets) ? secrets : [secrets]
+  const secretNames = secretList.map((secret) => secret.name).join(', ')
+  const action = secretList.length > 0
+    ? `Set ${secretNames} in Wrangler and preview the production KV plan?`
     : 'Preview the production KV plan?'
   if (!yes && !(await confirm(action))) return 'local-only'
 
-  if (secret) await putWranglerSecret(secret)
+  for (const secret of secretList) await putWranglerSecret(secret)
   if (yes) {
     await runSync(true)
     return 'applied'
