@@ -71,7 +71,7 @@ Steps:
    ```
    Then in the Cloudflare dashboard, attach the Worker to a custom domain (`hooks.example.com`). The route is managed in the dashboard rather than in `wrangler.jsonc`, so no hostname is committed to source (`workers_dev` is `false` to keep the Worker off `*.workers.dev`).
 
-   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build): set the branch to `main`, leave the build command empty (TypeScript is bundled at deploy time, no build step), and set the deploy command to `npx wrangler deploy`. No build variables are needed – Builds runs in your account's context and infers the account automatically, so there is no `account_id` to set. Apply new D1 migrations before a build deploys code that depends on them.
+   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build): set the branch to `main`, set the build command to `pnpm typecheck && pnpm test`, and set the deploy command to `npx wrangler deploy`. Workers Builds runs the build command before deploying, so a typecheck or test failure blocks the deployment. No build variables are needed – Builds runs in your account's context and infers the account automatically, so there is no `account_id` to set. Apply new D1 migrations before a build deploys code that depends on them.
 7. Add a sink. The command reads the Discord webhook URL without echoing it, stores it in `.dev.vars`, adds the secret reference to `routes.jsonc`, and offers to install the Wrangler secret and sync KV:
    ```sh
    pnpm sink:add discord discord
