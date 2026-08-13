@@ -1,5 +1,7 @@
 # hookrelay
 
+Run `pnpm commands` for a one-screen reference to routine setup, sync, development, and deployment commands.
+
 A small, extensible webhook receiver for Cloudflare Workers. Drop in adapters for new webhook senders (Statuspage, GitHub, your own scripts) and sinks for where notifications go (push, chat, log). Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
 
 ## What it does

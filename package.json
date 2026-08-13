@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "commands": "tsx scripts/commands.ts",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "test": "vitest run",
