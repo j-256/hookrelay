@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import { hashSubscriptionSlug } from '../src/lib/subscription'
@@ -19,6 +19,7 @@ import {
   runProcess,
   type SecretValue,
   writePrivateText,
+  writeText,
 } from './setup'
 import { parseRoutes } from './sync'
 
@@ -361,7 +362,7 @@ async function main(): Promise<void> {
   const resolvedOptions = { ...options, baseUrl }
   const prepared = await prepareSubscription(routesText, devVarsText, resolvedOptions)
 
-  await writeFile(routesPath, prepared.routesText, 'utf8')
+  await writeText(routesPath, prepared.routesText)
   if (prepared.senderSecret) await writePrivateText(devVarsPath, prepared.devVarsText)
   printPrepared(resolvedOptions, prepared)
 

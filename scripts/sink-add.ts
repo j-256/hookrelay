@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import {
@@ -9,6 +9,7 @@ import {
   readSecret,
   type SecretValue,
   writePrivateText,
+  writeText,
 } from './setup'
 import { parseRoutes } from './sync'
 
@@ -125,7 +126,7 @@ async function main(): Promise<void> {
   const webhookUrl = await readSecret('Discord webhook URL: ')
   const prepared = prepareDiscordSink(routesText, devVarsText, options.name, webhookUrl)
 
-  await writeFile(routesPath, prepared.routesText, 'utf8')
+  await writeText(routesPath, prepared.routesText)
   await writePrivateText(devVarsPath, prepared.devVarsText)
   console.log(`Prepared ${prepared.sink.type} sink ${prepared.sink.name}`)
   console.log(`Save the webhook URL in your secret store as ${prepared.secret.name}`)

@@ -89,17 +89,31 @@ export async function listGitHubRepositoryHooks(
   return parseGitHubRepositoryHookPages(stdout)
 }
 
-async function hookMatchesSlugHash(hook: GitHubRepositoryHook, slugHash: string): Promise<boolean> {
+export function gitHubRepositoryHookSlug(hook: GitHubRepositoryHook): string | null {
   let url: URL
   try {
     url = new URL(hook.config.url)
   } catch {
-    return false
+    return null
   }
-  if (url.protocol !== 'https:' || url.search || url.hash) return false
+  if (url.protocol !== 'https:' || url.search || url.hash) return null
   const match = GITHUB_HOOK_PATH_RE.exec(url.pathname)
-  if (!match || !SUBSCRIPTION_SLUG_RE.test(match[1]!)) return false
-  return await hashSubscriptionSlug(match[1]!) === slugHash
+  if (!match || !SUBSCRIPTION_SLUG_RE.test(match[1]!)) return null
+  return match[1]!
+}
+
+async function hookMatchesSlugHash(hook: GitHubRepositoryHook, slugHash: string): Promise<boolean> {
+  const slug = gitHubRepositoryHookSlug(hook)
+  return slug !== null && await hashSubscriptionSlug(slug) === slugHash
+}
+
+export async function matchingGitHubRepositoryHooks(
+  hooks: GitHubRepositoryHook[],
+  slugHash: string,
+): Promise<GitHubRepositoryHook[]> {
+  return (
+    await Promise.all(hooks.map(async (hook) => ({ hook, matches: await hookMatchesSlugHash(hook, slugHash) })))
+  ).filter(({ matches }) => matches).map(({ hook }) => hook)
 }
 
 export async function requireMatchingGitHubRepositoryHook(
@@ -108,16 +122,14 @@ export async function requireMatchingGitHubRepositoryHook(
   subscriptionName: string,
   repo: string,
 ): Promise<GitHubRepositoryHook> {
-  const matches = (
-    await Promise.all(hooks.map(async (hook) => ({ hook, matches: await hookMatchesSlugHash(hook, slugHash) })))
-  ).filter(({ matches }) => matches)
+  const matches = await matchingGitHubRepositoryHooks(hooks, slugHash)
   if (matches.length === 0) {
     throw new Error(`matching GitHub webhook not found for subscription ${subscriptionName} in ${repo}`)
   }
   if (matches.length > 1) {
     throw new Error(`multiple GitHub webhooks match subscription ${subscriptionName} in ${repo}`)
   }
-  return matches[0]!.hook
+  return matches[0]!
 }
 
 export function sameGitHubEvents(current: readonly string[], desired: readonly string[]): boolean {

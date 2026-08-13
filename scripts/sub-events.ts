@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import {
@@ -12,7 +12,7 @@ import {
   updateGitHubRepositoryHookEvents,
   validateGitHubRepo,
 } from './github-repository'
-import { confirm, getDevVar, readOptionalText } from './setup'
+import { confirm, getDevVar, readOptionalText, writeText } from './setup'
 import { parseRoutes } from './sync'
 
 const ROUTES_FILE = 'routes.jsonc'
@@ -160,7 +160,7 @@ async function main(): Promise<void> {
   const prepared = prepareSubEvents(routesText, options.name, options.githubEvents)
 
   if (prepared.routesChanged) {
-    await writeFile(routesPath, prepared.routesText, 'utf8')
+    await writeText(routesPath, prepared.routesText)
     console.log(
       `Saved event profiles for ${options.name}: ${profileLabel(prepared.previousProfileNames)} -> ${profileLabel(prepared.githubEvents.names)}`,
     )

@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   listGitHubRepositoryHooks,
+  matchingGitHubRepositoryHooks,
   parseGitHubRepositoryHookPages,
   requireMatchingGitHubRepositoryHook,
   sameGitHubEvents,
@@ -65,6 +66,9 @@ describe('GitHub repository hook identity', () => {
     )
 
     expect(matched.id).toBe(2)
+    await expect(matchingGitHubRepositoryHooks(hooks, await hashSubscriptionSlug(SECOND_SLUG))).resolves.toEqual([
+      hooks[1],
+    ])
   })
 
   it('reports missing and duplicate matches without exposing webhook URLs or slugs', async () => {

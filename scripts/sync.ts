@@ -1,7 +1,5 @@
 import { parse as parseJsonc, ParseError } from 'jsonc-parser'
 import { z } from 'zod'
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import {
@@ -11,9 +9,10 @@ import {
 } from '../src/lib/subscription'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { parseGitHubEventSelection } from './github-events'
+import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
 import { listWranglerSecrets } from './setup'
 
-const execFileP = promisify(execFile)
+export { printableKvKey } from './kv'
 
 const subSchema = z
   .object({
@@ -200,13 +199,6 @@ export interface Plan {
   sinkDeletes: string[]
 }
 
-export function printableKvKey(key: string): string {
-  if (key.startsWith('sub:') && !key.startsWith(SUBSCRIPTION_KEY_PREFIX)) {
-    return 'sub:<legacy-redacted>'
-  }
-  return key
-}
-
 function canonicalize(value: unknown): string {
   // Deterministic JSON: sort object keys recursively so unchanged data round-trips identically
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -266,37 +258,6 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
   return { subPuts, subDeletes, sinkPuts, sinkDeletes }
 }
 
-// CLI -- only runs when invoked directly; importable functions stay pure for tests
-// All KV ops pass --remote: sync targets the deployed Worker's production namespaces
-// Without it, wrangler 4 defaults to the local Miniflare KV, so the live Worker would
-// read nothing and every hook would 404
-async function listKv(binding: string): Promise<Record<string, string>> {
-  const { stdout: keysOut } = await execFileP('npx', ['wrangler', 'kv', 'key', 'list', '--binding', binding, '--remote'])
-  const keys = JSON.parse(keysOut) as Array<{ name: string }>
-  const out: Record<string, string> = {}
-  for (const { name } of keys) {
-    if (binding === 'SUBS' && name.startsWith('sub:') && !name.startsWith(SUBSCRIPTION_KEY_PREFIX)) {
-      out[name] = ''
-      continue
-    }
-    const { stdout } = await execFileP('npx', ['wrangler', 'kv', 'key', 'get', name, '--binding', binding, '--text', '--remote'])
-    out[name] = stdout
-  }
-  return out
-}
-
-async function putKv(binding: string, key: string, value: string): Promise<void> {
-  await execFileP('npx', ['wrangler', 'kv', 'key', 'put', key, value, '--binding', binding, '--remote'])
-}
-
-async function deleteKv(binding: string, key: string): Promise<void> {
-  try {
-    await execFileP('npx', ['wrangler', 'kv', 'key', 'delete', key, '--binding', binding, '--remote'])
-  } catch {
-    throw new Error(`KV delete failed for ${printableKvKey(key)} in ${binding}`)
-  }
-}
-
 async function main() {
   const argv = process.argv.slice(2)
   if (argv.includes('--help') || argv.includes('-h')) {
@@ -330,10 +291,7 @@ async function main() {
     process.exit(1)
   }
 
-  const current: KvSnapshot = {
-    subs: await listKv('SUBS'),
-    sinks: await listKv('SINKS'),
-  }
+  const current: KvSnapshot = await readRemoteKvSnapshot()
   const plan = computePlan(routes, current)
 
   console.log('Plan:')
@@ -351,10 +309,10 @@ async function main() {
     return
   }
 
-  for (const { key, value } of plan.subPuts) await putKv('SUBS', key, value)
-  for (const k of plan.subDeletes) await deleteKv('SUBS', k)
-  for (const { key, value } of plan.sinkPuts) await putKv('SINKS', key, value)
-  for (const k of plan.sinkDeletes) await deleteKv('SINKS', k)
+  for (const { key, value } of plan.subPuts) await putRemoteKv('SUBS', key, value)
+  for (const k of plan.subDeletes) await deleteRemoteKv('SUBS', k)
+  for (const { key, value } of plan.sinkPuts) await putRemoteKv('SINKS', key, value)
+  for (const k of plan.sinkDeletes) await deleteRemoteKv('SINKS', k)
   console.log('Applied.')
 }
 

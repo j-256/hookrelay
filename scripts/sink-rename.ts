@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import {
@@ -14,6 +14,7 @@ import {
   runProcess,
   type SecretValue,
   writePrivateText,
+  writeText,
 } from './setup'
 import { parseRoutes, type Routes, type SinkRef } from './sync'
 import { subscriptionKvKey } from '../src/lib/subscription'
@@ -380,7 +381,7 @@ async function runPrepare(options: SinkRenameOptions, routesPath: string, devVar
       throw new Error(`new remote secrets already exist and cannot be compared safely: ${collisions.join(', ')}`)
     }
   }
-  await writeFile(routesPath, prepared.routesText, 'utf8')
+  await writeText(routesPath, prepared.routesText)
   await writePrivateText(devVarsPath, prepared.devVarsText)
   console.log(`Prepared compatible sink names ${options.oldName} and ${options.newName}`)
   for (const secret of prepared.secrets) console.log(`Prepared secret rename ${secret.oldName} -> ${secret.name}`)
@@ -402,7 +403,7 @@ async function runSwitch(options: SinkRenameOptions, routesPath: string): Promis
   const routes = parseRoutes(routesText)
   await assertRemoteAliasesReady(routes, options.oldName, options.newName)
   const switched = switchSinkRename(routesText, options.oldName, options.newName)
-  await writeFile(routesPath, switched.routesText, 'utf8')
+  await writeText(routesPath, switched.routesText)
   if (switched.subscriptions.length === 0) console.log('No subscription references needed changing')
   else console.log(`Prepared subscription routing to ${options.newName}: ${switched.subscriptions.join(', ')}`)
 

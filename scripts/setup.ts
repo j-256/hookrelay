@@ -1,5 +1,7 @@
+import { randomBytes } from 'node:crypto'
 import { spawn } from 'node:child_process'
-import { chmod, readFile, writeFile } from 'node:fs/promises'
+import { chmod, lstat, open, readFile, rename, unlink } from 'node:fs/promises'
+import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { parseEnv } from 'node:util'
 
@@ -8,7 +10,25 @@ export interface SecretValue {
   value: string
 }
 
+export interface FileSystemStat {
+  mode: number
+  isFile(): boolean
+  isSymbolicLink(): boolean
+}
+
+export interface AtomicFileSystem {
+  chmod(path: string, mode: number): Promise<void>
+  lstat(path: string): Promise<FileSystemStat>
+  open: typeof open
+  rename(source: string, target: string): Promise<void>
+  unlink(path: string): Promise<void>
+}
+
+const NODE_FILE_SYSTEM: AtomicFileSystem = { chmod, lstat, open, rename, unlink }
+
 export type ProductionResult = 'local-only' | 'previewed' | 'applied'
+
+export const WRANGLER_BULK_SECRET_LIMIT = 100
 
 interface ProcessOptions {
   input?: string
@@ -31,6 +51,13 @@ export function addDevVar(text: string, name: string, value: string): string {
 
   const prefix = text.length === 0 || text.endsWith('\n') ? text : `${text}\n`
   return `${prefix}${name}=${value}\n`
+}
+
+export function setDevVar(text: string, name: string, value: string): string {
+  const existing = getDevVar(text, name)
+  if (existing === null) return addDevVar(text, name, value)
+  if (existing !== value) throw new Error(`${name} already exists in .dev.vars with a different value`)
+  return text
 }
 
 export function getDevVar(text: string, name: string): string | null {
@@ -63,9 +90,93 @@ export async function readOptionalText(path: string): Promise<string> {
   }
 }
 
-export async function writePrivateText(path: string, text: string): Promise<void> {
-  await writeFile(path, text, { encoding: 'utf8', mode: 0o600 })
-  await chmod(path, 0o600)
+export async function privateFileIssue(path: string, fileSystem: AtomicFileSystem | undefined = NODE_FILE_SYSTEM): Promise<string | null> {
+  const fs = fileSystem ?? NODE_FILE_SYSTEM
+  try {
+    const info = await fs.lstat(path)
+    if (info.isSymbolicLink()) return `${path} must not be a symbolic link`
+    if (!info.isFile()) return `${path} must be a regular file`
+    if ((info.mode & 0o777) !== 0o600) return `${path} must have mode 0600`
+    return null
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw err
+  }
+}
+
+export async function readPrivateOptionalText(path: string, fileSystem: AtomicFileSystem | undefined = NODE_FILE_SYSTEM): Promise<string> {
+  const issue = await privateFileIssue(path, fileSystem)
+  if (issue) throw new Error(issue)
+  return readOptionalText(path)
+}
+
+async function writeAtomicText(
+  path: string,
+  text: string,
+  mode: number,
+  requirePrivateMode: boolean,
+  fileSystem: AtomicFileSystem,
+): Promise<void> {
+  const tempPath = join(dirname(path), `.${basename(path)}.${process.pid}.${randomBytes(8).toString('hex')}.tmp`)
+  const backupPath = `${tempPath}.backup`
+  let handle: Awaited<ReturnType<typeof open>> | undefined
+  let backupExists = false
+  try {
+    handle = await fileSystem.open(tempPath, 'wx', mode)
+    await fileSystem.chmod(tempPath, mode)
+    await handle.writeFile(text, 'utf8')
+    await handle.sync()
+    await handle.close()
+    handle = undefined
+    try {
+      await fileSystem.rename(tempPath, path)
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err
+      await fileSystem.rename(path, backupPath)
+      backupExists = true
+      try {
+        await fileSystem.rename(tempPath, path)
+      } catch (replacementErr) {
+        await fileSystem.rename(backupPath, path)
+        backupExists = false
+        throw replacementErr
+      }
+      await fileSystem.unlink(backupPath)
+      backupExists = false
+    }
+    await fileSystem.chmod(path, mode)
+    if (requirePrivateMode) {
+      const info = await fileSystem.lstat(path)
+      if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o600) {
+        throw new Error(`${path} was not written as a private regular file with mode 0600 (found ${(info.mode & 0o777).toString(8)})`)
+      }
+    }
+  } catch (err) {
+    await handle?.close().catch(() => undefined)
+    if (backupExists) {
+      await fileSystem.rename(backupPath, path).catch(() => undefined)
+    }
+    await fileSystem.unlink(tempPath).catch((unlinkErr) => {
+      if ((unlinkErr as NodeJS.ErrnoException).code !== 'ENOENT') throw unlinkErr
+    })
+    throw err
+  }
+}
+
+export async function writePrivateText(
+  path: string,
+  text: string,
+  fileSystem: AtomicFileSystem = NODE_FILE_SYSTEM,
+): Promise<void> {
+  await writeAtomicText(path, text, 0o600, true, fileSystem)
+}
+
+export async function writeText(
+  path: string,
+  text: string,
+  fileSystem: AtomicFileSystem = NODE_FILE_SYSTEM,
+): Promise<void> {
+  await writeAtomicText(path, text, 0o644, false, fileSystem)
 }
 
 export async function confirm(question: string): Promise<boolean> {
@@ -161,10 +272,63 @@ export async function deleteWranglerSecret(name: string): Promise<void> {
   await runProcess('npx', ['wrangler', 'secret', 'delete', name], { input: '' })
 }
 
-export async function listWranglerSecrets(): Promise<Set<string>> {
-  const stdout = await runProcess('npx', ['wrangler', 'secret', 'list'], { captureStdout: true })
+export async function listWranglerSecrets(runner: typeof runProcess = runProcess): Promise<Set<string>> {
+  const stdout = await runner('npx', ['wrangler', 'secret', 'list'], { captureStdout: true })
   const items = JSON.parse(stdout) as Array<{ name: string }>
   return new Set(items.map((item) => item.name))
+}
+
+async function patchWranglerSecretsBulk(
+  values: Readonly<Record<string, string | null>>,
+  runner: typeof runProcess = runProcess,
+): Promise<Set<string>> {
+  const entries = Object.entries(values)
+  if (entries.length === 0) return listWranglerSecrets(runner)
+  if (entries.length > WRANGLER_BULK_SECRET_LIMIT) {
+    throw new Error(`Wrangler accepts at most ${WRANGLER_BULK_SECRET_LIMIT} secrets per bulk operation`)
+  }
+  for (const [name, value] of entries) {
+    if (!name) throw new Error('Wrangler secret name is empty')
+    if (value === '') throw new Error(`Wrangler secret ${name} is empty`)
+  }
+
+  await runner('npx', ['wrangler', 'secret', 'bulk'], {
+    input: `${JSON.stringify(values)}\n`,
+  })
+  const names = await listWranglerSecrets(runner)
+  for (const [name, value] of entries) {
+    if (value === null && names.has(name)) throw new Error(`Wrangler secret ${name} still exists after bulk deletion`)
+    if (value !== null && !names.has(name)) throw new Error(`Wrangler secret ${name} is missing after bulk update`)
+  }
+  return names
+}
+
+export async function putWranglerSecretsBulk(
+  secrets: readonly SecretValue[],
+  runner: typeof runProcess = runProcess,
+): Promise<Set<string>> {
+  const values: Record<string, string> = {}
+  for (const secret of secrets) {
+    if (Object.prototype.hasOwnProperty.call(values, secret.name)) {
+      throw new Error(`Wrangler secret supplied more than once: ${secret.name}`)
+    }
+    values[secret.name] = secret.value
+  }
+  return patchWranglerSecretsBulk(values, runner)
+}
+
+export async function deleteWranglerSecretsBulk(
+  names: readonly string[],
+  runner: typeof runProcess = runProcess,
+): Promise<Set<string>> {
+  const values: Record<string, null> = {}
+  for (const name of names) {
+    if (Object.prototype.hasOwnProperty.call(values, name)) {
+      throw new Error(`Wrangler secret supplied more than once: ${name}`)
+    }
+    values[name] = null
+  }
+  return patchWranglerSecretsBulk(values, runner)
 }
 
 export async function runSync(apply: boolean): Promise<void> {

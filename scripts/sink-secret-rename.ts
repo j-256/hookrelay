@@ -1,4 +1,4 @@
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import {
@@ -13,6 +13,7 @@ import {
   runProcess,
   type SecretValue,
   writePrivateText,
+  writeText,
 } from './setup'
 import { parseRoutes, type Routes, type SinkRef } from './sync'
 
@@ -270,7 +271,7 @@ async function runPrepare(
   if (remoteSecrets.has(options.newSecretName)) {
     throw new Error(`new remote secret already exists and cannot be compared safely: ${options.newSecretName}`)
   }
-  await writeFile(routesPath, prepared.routesText, 'utf8')
+  await writeText(routesPath, prepared.routesText)
   await writePrivateText(devVarsPath, prepared.devVarsText)
   console.log(`Prepared ${options.sinkName}.${prepared.fieldName}: ${options.oldSecretName} -> ${options.newSecretName}`)
 
