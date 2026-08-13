@@ -8,6 +8,7 @@ import {
   parseGitHubEventSelection,
   type GitHubEventSelection,
 } from './github-events'
+import { validateGitHubRepo } from './github-repository'
 import { getSourceProfile } from './subscription-sources'
 import {
   addDevVar,
@@ -20,6 +21,8 @@ import {
   writePrivateText,
 } from './setup'
 import { parseRoutes } from './sync'
+
+export { validateGitHubRepo } from './github-repository'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -150,12 +153,6 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   }
 
   return { name, source, sinks, baseUrl, repo, githubEvents, yes }
-}
-
-export function validateGitHubRepo(repo: string): void {
-  if (!/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/.test(repo)) {
-    throw new Error(`invalid GitHub repository: ${repo}`)
-  }
 }
 
 export function normalizeBaseUrl(value: string): string {

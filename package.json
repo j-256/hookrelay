@@ -14,6 +14,7 @@
     "sync": "tsx scripts/sync.ts",
     "new-sub": "tsx scripts/new-sub.ts",
     "sub:add": "tsx scripts/sub-add.ts",
+    "sub:events": "tsx scripts/sub-events.ts",
     "sink:add": "tsx scripts/sink-add.ts",
     "sink:rename": "tsx scripts/sink-rename.ts",
     "sink:secret:rename": "tsx scripts/sink-secret-rename.ts",

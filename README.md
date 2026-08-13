@@ -229,6 +229,24 @@ The base URL resolves from an explicit `--base-url`, then the value already save
 
 With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and KV route are live.
 
+### Updating GitHub event profiles
+
+Use the saved subscription name to replace an existing webhook's event selection:
+
+```sh
+pnpm sub:events github:example-owner/example-repo --events recommended,stars
+```
+
+The command updates only `setup.github.eventProfiles` in local `routes.jsonc`, preserving its comments, then finds the exact repository hook by hashing each Hookrelay URL slug and comparing it with the subscription's saved `slugHash`. It previews the GitHub change and asks before applying it; pass `-y` or `--yes` to skip that confirmation. Neither the private URL nor its slug is printed.
+
+If you edit `eventProfiles` in `routes.jsonc` yourself, omit `--events` to reconcile that saved selection:
+
+```sh
+pnpm sub:events github:example-owner/example-repo
+```
+
+GitHub may return the same events in a different order, so order alone does not trigger an update. GitHub's general webhook update clears an existing secret unless the request supplies it again, so the command requires the subscription's `auth.secretEnv` value in `.dev.vars` and resends it with the unchanged URL, content type, SSL setting, and active state. The secret-bearing request travels through stdin and is never placed in process arguments or output. Selecting `manual` changes local metadata but leaves GitHub's checkboxes under manual control.
+
 `pnpm new-sub <name> <source>` remains available as a low-level generator. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.
