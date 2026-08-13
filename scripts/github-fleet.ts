@@ -500,6 +500,14 @@ export async function planGitHubFleet(
     dependencies.readKv(),
   ])
   const vars = countWranglerTextVars(wranglerText)
+  const requiredSinkNames = new Set<string>(Object.values(GITHUB_FLEET_PROFILES).map((profile) => profile.sink))
+  for (const sink of state.routes.sinks.filter((candidate) => requiredSinkNames.has(candidate.name))) {
+    for (const [field, value] of Object.entries(sink)) {
+      if (field.endsWith('Env') && typeof value === 'string' && !existingSecrets.has(value)) {
+        blockers.push(`required sink ${sink.name} references missing Wrangler secret ${value}`)
+      }
+    }
+  }
   const plannedSecretNames = new Set<string>()
   const retiringSecretNames = new Set<string>()
   for (const repo of plannedRepositoryNames(state)) {
@@ -669,7 +677,21 @@ async function main(): Promise<void> {
     console.log(`Subscription additions: ${result.subscriptionAdditions}`)
     return
   }
-  throw new Error(`${options.phase} is not implemented yet`)
+  const { applyGitHubFleet, verifyGitHubFleet } = await import('./github-fleet-reconcile')
+  if (options.phase === 'apply') {
+    const preview = await planGitHubFleet(options)
+    console.log(formatGitHubFleetPlan(preview))
+    const result = await applyGitHubFleet(options)
+    console.log(`Installed repository HMACs: ${result.installedSecrets}`)
+    console.log(`Reconciled GitHub hooks: ${result.reconciledHooks}`)
+    console.log(`Site HMAC consolidation: ${result.siteConsolidated ? 'completed' : 'already complete'}`)
+    return
+  }
+  const result = await verifyGitHubFleet(options)
+  console.log(`Verified repositories: ${result.repositories.length}`)
+  console.log(`Verified GitHub hooks: ${result.verifiedHooks}`)
+  for (const issue of result.issues) console.log(`ISSUE ${issue}`)
+  if (result.issues.length > 0) process.exitCode = 1
 }
 
 const isMain = import.meta.url === `file://${process.argv[1]}`

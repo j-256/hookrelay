@@ -1,13 +1,22 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
+  createGitHubRepositoryHook,
+  gitHubRepositoryHookMatches,
+  githubHookPayload,
   listGitHubRepositoryHooks,
+  listGitHubRepositoryHookDeliveries,
   matchingGitHubRepositoryHooks,
+  parseGitHubRepositoryHookDeliveryPages,
   parseGitHubRepositoryHookPages,
+  pingAndVerifyGitHubRepositoryHook,
   requireMatchingGitHubRepositoryHook,
   sameGitHubEvents,
+  triggerGitHubRepositoryHookPing,
+  updateGitHubRepositoryHook,
   updateGitHubRepositoryHookEvents,
   type GitHubRepositoryHook,
 } from '../../scripts/github-repository'
+import { parseGitHubEventSelection } from '../../scripts/github-events'
 import { hashSubscriptionSlug } from '../../src/lib/subscription'
 
 const FIRST_SLUG = 'abcdefghijklmnopqrstuv'
@@ -105,6 +114,77 @@ describe('GitHub repository hook updates', () => {
     expect(sameGitHubEvents(['*'], ['*'])).toBe(true)
   })
 
+  it('compares the complete managed hook shape', () => {
+    const url = `https://hooks.example.com/hook/github/${FIRST_SLUG}`
+    expect(gitHubRepositoryHookMatches(hook(1, url, ['star', 'watch']), url, ['watch', 'star'])).toBe(true)
+    expect(gitHubRepositoryHookMatches({ ...hook(1, url), active: false }, url, ['push'])).toBe(false)
+    expect(gitHubRepositoryHookMatches(hook(1, url), `${url}-different`, ['push'])).toBe(false)
+    expect(gitHubRepositoryHookMatches({
+      ...hook(1, url),
+      config: { url, content_type: 'form', insecure_ssl: '0' },
+    }, url, ['push'])).toBe(false)
+    expect(gitHubRepositoryHookMatches({
+      ...hook(1, url),
+      config: { url, content_type: 'json', insecure_ssl: '1' },
+    }, url, ['push'])).toBe(false)
+  })
+
+  it('creates a hook with a secret-bearing stdin payload and returns its id', async () => {
+    const runner = vi.fn(async (
+      _command: string,
+      args: string[],
+      _options?: { input?: string; captureStdout?: boolean },
+    ) => args.includes('--paginate') ? '[[]]' : '{"id":456}')
+    const selection = parseGitHubEventSelection('stars,watchers')
+    await expect(createGitHubRepositoryHook(
+      'example-owner/example-repo',
+      `https://hooks.example.com/hook/github/${FIRST_SLUG}`,
+      'local-hmac-secret',
+      selection,
+      runner,
+    )).resolves.toBe(456)
+
+    const [, args, options] = runner.mock.calls[1]!
+    expect(args).toContain('POST')
+    expect(args).toContain('repos/example-owner/example-repo/hooks')
+    expect(args).not.toContain('local-hmac-secret')
+    expect(JSON.parse(options!.input!)).toEqual(githubHookPayload(
+      `https://hooks.example.com/hook/github/${FIRST_SLUG}`,
+      'local-hmac-secret',
+      selection,
+    ))
+  })
+
+  it('PATCHes the exact desired shape and always supplies the secret', async () => {
+    const runner = vi.fn(async (
+      _command: string,
+      _args: string[],
+      _options?: { input?: string; captureStdout?: boolean },
+    ) => '')
+    await updateGitHubRepositoryHook(
+      'example-owner/example-repo',
+      123,
+      `https://hooks.example.com/hook/github/${FIRST_SLUG}`,
+      ['star', 'watch'],
+      'local-hmac-secret',
+      runner,
+    )
+    const [, args, options] = runner.mock.calls[0]!
+    expect(args).toContain('PATCH')
+    expect(args).toContain('--silent')
+    expect(args).not.toContain('local-hmac-secret')
+    expect(JSON.parse(options!.input!)).toEqual({
+      active: true,
+      events: ['star', 'watch'],
+      config: {
+        url: `https://hooks.example.com/hook/github/${FIRST_SLUG}`,
+        content_type: 'json',
+        insecure_ssl: '0',
+        secret: 'local-hmac-secret',
+      },
+    })
+  })
+
   it('PATCHes events while preserving hook config and suppressing the secret-bearing response', async () => {
     const runner = vi.fn(async (
       _command: string,
@@ -136,5 +216,100 @@ describe('GitHub repository hook updates', () => {
         secret: 'local-hmac-secret',
       },
     })
+  })
+})
+
+describe('GitHub repository hook pings', () => {
+  const baseline = {
+    id: 10,
+    guid: 'baseline-guid',
+    event: 'push',
+    status_code: 200,
+    delivered_at: '2026-08-13T00:00:00Z',
+  }
+  const pending = {
+    id: 11,
+    guid: 'pending-guid',
+    event: 'ping',
+    status_code: null,
+    delivered_at: '2026-08-13T00:00:01Z',
+  }
+
+  it('parses delivery pages and builds list and ping API calls', async () => {
+    expect(parseGitHubRepositoryHookDeliveryPages(JSON.stringify([[baseline]]))).toEqual([{
+      id: 'baseline-guid',
+      event: 'push',
+      statusCode: 200,
+      deliveredAt: '2026-08-13T00:00:00Z',
+    }])
+    expect(() => parseGitHubRepositoryHookDeliveryPages('invalid')).toThrow(/malformed/)
+    expect(() => parseGitHubRepositoryHookDeliveryPages('[{}]')).toThrow(/invalid/)
+
+    const runner = vi.fn(async (
+      _command: string,
+      args: string[],
+      _options?: { input?: string; captureStdout?: boolean },
+    ) => args.includes('GET') ? JSON.stringify([[baseline]]) : '')
+    await expect(listGitHubRepositoryHookDeliveries('example-owner/example-repo', 123, runner)).resolves.toHaveLength(1)
+    await triggerGitHubRepositoryHookPing('example-owner/example-repo', 123, runner)
+    expect(runner.mock.calls[0]![1]).toContain('repos/example-owner/example-repo/hooks/123/deliveries?per_page=100')
+    expect(runner.mock.calls[1]![1]).toContain('repos/example-owner/example-repo/hooks/123/pings')
+    expect(runner.mock.calls[1]![1]).toContain('--silent')
+  })
+
+  it('waits for a new successful ping delivery', async () => {
+    let deliveryRead = 0
+    let now = 0
+    const runner = vi.fn(async (
+      _command: string,
+      args: string[],
+      _options?: { input?: string; captureStdout?: boolean },
+    ) => {
+      if (args.some((arg) => arg.includes('/deliveries'))) {
+        deliveryRead += 1
+        if (deliveryRead === 1) return JSON.stringify([[baseline]])
+        if (deliveryRead === 2) return JSON.stringify([[pending, baseline]])
+        return JSON.stringify([[{ ...pending, status_code: 204 }, baseline]])
+      }
+      return ''
+    })
+    await expect(pingAndVerifyGitHubRepositoryHook('example-owner/example-repo', 123, runner, {
+      timeoutMs: 20,
+      intervalMs: 5,
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds },
+    })).resolves.toMatchObject({ id: 'pending-guid', event: 'ping', statusCode: 204 })
+  })
+
+  it('rejects a failed ping and times out when no new ping appears', async () => {
+    let deliveryRead = 0
+    const failedRunner = vi.fn(async (
+      _command: string,
+      args: string[],
+      _options?: { input?: string; captureStdout?: boolean },
+    ) => {
+      if (!args.some((arg) => arg.includes('/deliveries'))) return ''
+      deliveryRead += 1
+      return deliveryRead === 1
+        ? JSON.stringify([[baseline]])
+        : JSON.stringify([[{ ...pending, status_code: 500 }, baseline]])
+    })
+    await expect(pingAndVerifyGitHubRepositoryHook('example-owner/example-repo', 123, failedRunner, {
+      timeoutMs: 10,
+      intervalMs: 5,
+    })).rejects.toThrow(/status 500/)
+
+    let now = 0
+    const timeoutRunner = vi.fn(async (
+      _command: string,
+      args: string[],
+      _options?: { input?: string; captureStdout?: boolean },
+    ) => args.some((arg) => arg.includes('/deliveries')) ? JSON.stringify([[baseline]]) : '')
+    await expect(pingAndVerifyGitHubRepositoryHook('example-owner/example-repo', 123, timeoutRunner, {
+      timeoutMs: 10,
+      intervalMs: 5,
+      now: () => now,
+      sleep: async (milliseconds) => { now += milliseconds },
+    })).rejects.toThrow(/timed out/)
   })
 })

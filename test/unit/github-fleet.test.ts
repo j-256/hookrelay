@@ -108,7 +108,7 @@ function dependencies(repositories = [REPO]): GitHubFleetDependencies {
       blockers: [],
     }),
     listHooks: async () => [],
-    listSecrets: async () => new Set(['EXISTING_SECRET']),
+    listSecrets: async () => new Set(['EXISTING_SECRET', 'SINK_ACTIVITY', 'SINK_STARS', 'SINK_ALERTS']),
     readKv: async () => ({ subs: {}, sinks: {} }),
     randomValues: {
       hmac: () => HMAC_VALUE,
@@ -148,7 +148,7 @@ describe('GitHub fleet planning and preparation', () => {
       expect(plan.manifestAdditions).toEqual([REPO])
       expect(plan.subscriptionAdditions).toHaveLength(3)
       expect(plan.hookAdditions).toHaveLength(3)
-      expect(plan.capacity).toMatchObject({ vars: 2, existingSecrets: 1, plannedSecrets: 1, projected: 4 })
+      expect(plan.capacity).toMatchObject({ vars: 2, existingSecrets: 4, plannedSecrets: 1, projected: 7 })
       const output = formatGitHubFleetPlan(plan)
       expect(output).not.toContain(HMAC_VALUE)
       expect(output).not.toContain(SLUGS.activity)

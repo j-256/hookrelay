@@ -1,4 +1,5 @@
 import { SUBSCRIPTION_SLUG_RE, hashSubscriptionSlug } from '../src/lib/subscription'
+import type { GitHubEventSelection } from './github-events'
 import { runProcess } from './setup'
 
 const GITHUB_API_VERSION = '2022-11-28'
@@ -16,7 +17,37 @@ export interface GitHubRepositoryHook {
   }
 }
 
+export interface GitHubRepositoryHookDelivery {
+  id: string
+  event: string
+  statusCode: number | null
+  deliveredAt: string | null
+}
+
+export interface GitHubHookPollingOptions {
+  timeoutMs?: number
+  intervalMs?: number
+  now?: () => number
+  sleep?: (milliseconds: number) => Promise<void>
+}
+
 type ProcessRunner = typeof runProcess
+
+const DEFAULT_PING_TIMEOUT_MS = 30_000
+const DEFAULT_PING_INTERVAL_MS = 1_000
+
+function gitHubApiArgs(method: string, path: string): string[] {
+  return [
+    'api',
+    '--header',
+    'Accept: application/vnd.github+json',
+    '--header',
+    `X-GitHub-Api-Version: ${GITHUB_API_VERSION}`,
+    '--method',
+    method,
+    path,
+  ]
+}
 
 export function validateGitHubRepo(repo: string): void {
   if (!GITHUB_REPOSITORY_RE.test(repo)) throw new Error(`invalid GitHub repository: ${repo}`)
@@ -138,6 +169,98 @@ export function sameGitHubEvents(current: readonly string[], desired: readonly s
   return currentSet.size === current.length && desired.every((event) => currentSet.has(event))
 }
 
+export function githubHookPayload(
+  webhookUrl: string,
+  secret: string,
+  selection: GitHubEventSelection,
+): Record<string, unknown> | null {
+  if (!secret) throw new Error('GitHub webhook secret is empty')
+  if (!selection.events) return null
+  return {
+    name: 'web',
+    active: true,
+    events: [...selection.events],
+    config: {
+      url: webhookUrl,
+      content_type: 'json',
+      secret,
+      insecure_ssl: '0',
+    },
+  }
+}
+
+function desiredHookPayload(
+  webhookUrl: string,
+  secret: string,
+  events: readonly string[],
+): Record<string, unknown> {
+  return {
+    active: true,
+    events: [...events],
+    config: {
+      url: webhookUrl,
+      content_type: 'json',
+      secret,
+      insecure_ssl: '0',
+    },
+  }
+}
+
+export function gitHubRepositoryHookMatches(
+  hook: GitHubRepositoryHook,
+  webhookUrl: string,
+  events: readonly string[],
+): boolean {
+  return hook.active
+    && hook.config.url === webhookUrl
+    && hook.config.content_type === 'json'
+    && String(hook.config.insecure_ssl) === '0'
+    && sameGitHubEvents(hook.events, events)
+}
+
+export async function createGitHubRepositoryHook(
+  repo: string,
+  webhookUrl: string,
+  secret: string,
+  selection: GitHubEventSelection,
+  runner: ProcessRunner = runProcess,
+): Promise<number> {
+  validateGitHubRepo(repo)
+  const payload = githubHookPayload(webhookUrl, secret, selection)
+  if (!payload) throw new Error('manual GitHub event selection cannot create a webhook')
+  const hooks = await listGitHubRepositoryHooks(repo, runner)
+  if (hooks.some((hook) => hook.config.url === webhookUrl)) {
+    throw new Error(`GitHub webhook already exists for the requested subscription in ${repo}`)
+  }
+  const output = await runner('gh', [...gitHubApiArgs('POST', `repos/${repo}/hooks`), '--input', '-'], {
+    input: JSON.stringify(payload),
+    captureStdout: true,
+  })
+  const created = JSON.parse(output) as { id?: unknown }
+  if (!Number.isSafeInteger(created.id) || (created.id as number) <= 0) {
+    throw new Error('GitHub created the webhook without returning a valid id')
+  }
+  return created.id as number
+}
+
+export async function updateGitHubRepositoryHook(
+  repo: string,
+  hookId: number,
+  webhookUrl: string,
+  events: readonly string[],
+  secret: string,
+  runner: ProcessRunner = runProcess,
+): Promise<void> {
+  validateGitHubRepo(repo)
+  if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
+  if (!secret) throw new Error('GitHub webhook secret is empty')
+  await runner(
+    'gh',
+    [...gitHubApiArgs('PATCH', `repos/${repo}/hooks/${hookId}`), '--silent', '--input', '-'],
+    { input: JSON.stringify(desiredHookPayload(webhookUrl, secret, events)) },
+  )
+}
+
 export async function updateGitHubRepositoryHookEvents(
   repo: string,
   hook: GitHubRepositoryHook,
@@ -175,4 +298,92 @@ export async function updateGitHubRepositoryHookEvents(
       }),
     },
   )
+}
+
+function parseGitHubRepositoryHookDelivery(value: unknown): GitHubRepositoryHookDelivery {
+  if (value === null || typeof value !== 'object') throw new Error('GitHub returned invalid hook delivery data')
+  const record = value as Record<string, unknown>
+  if (
+    typeof record.guid !== 'string'
+    || record.guid.length === 0
+    || typeof record.event !== 'string'
+    || (record.status_code !== null && typeof record.status_code !== 'number')
+    || (record.delivered_at !== null && typeof record.delivered_at !== 'string')
+  ) {
+    throw new Error('GitHub returned invalid hook delivery data')
+  }
+  return {
+    id: record.guid,
+    event: record.event,
+    statusCode: record.status_code as number | null,
+    deliveredAt: record.delivered_at as string | null,
+  }
+}
+
+export function parseGitHubRepositoryHookDeliveryPages(text: string): GitHubRepositoryHookDelivery[] {
+  let pages: unknown
+  try {
+    pages = JSON.parse(text)
+  } catch {
+    throw new Error('GitHub returned malformed hook delivery data')
+  }
+  if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page))) {
+    throw new Error('GitHub returned invalid hook delivery data')
+  }
+  return pages.flatMap((page) => page.map(parseGitHubRepositoryHookDelivery))
+}
+
+export async function listGitHubRepositoryHookDeliveries(
+  repo: string,
+  hookId: number,
+  runner: ProcessRunner = runProcess,
+): Promise<GitHubRepositoryHookDelivery[]> {
+  validateGitHubRepo(repo)
+  if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
+  const output = await runner('gh', [
+    ...gitHubApiArgs('GET', `repos/${repo}/hooks/${hookId}/deliveries?per_page=100`),
+    '--paginate',
+    '--slurp',
+  ], { captureStdout: true })
+  return parseGitHubRepositoryHookDeliveryPages(output)
+}
+
+export async function triggerGitHubRepositoryHookPing(
+  repo: string,
+  hookId: number,
+  runner: ProcessRunner = runProcess,
+): Promise<void> {
+  validateGitHubRepo(repo)
+  if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
+  await runner('gh', [...gitHubApiArgs('POST', `repos/${repo}/hooks/${hookId}/pings`), '--silent'])
+}
+
+export async function pingAndVerifyGitHubRepositoryHook(
+  repo: string,
+  hookId: number,
+  runner: ProcessRunner = runProcess,
+  polling: GitHubHookPollingOptions = {},
+): Promise<GitHubRepositoryHookDelivery> {
+  const timeoutMs = polling.timeoutMs ?? DEFAULT_PING_TIMEOUT_MS
+  const intervalMs = polling.intervalMs ?? DEFAULT_PING_INTERVAL_MS
+  const now = polling.now ?? Date.now
+  const sleep = polling.sleep ?? ((milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)))
+  if (timeoutMs <= 0 || intervalMs <= 0) throw new Error('GitHub hook polling intervals must be positive')
+
+  const existingIds = new Set((await listGitHubRepositoryHookDeliveries(repo, hookId, runner)).map(({ id }) => id))
+  await triggerGitHubRepositoryHookPing(repo, hookId, runner)
+  const deadline = now() + timeoutMs
+  do {
+    const delivery = (await listGitHubRepositoryHookDeliveries(repo, hookId, runner))
+      .find((candidate) => !existingIds.has(candidate.id) && candidate.event === 'ping')
+    if (delivery?.statusCode !== null && delivery !== undefined) {
+      if (delivery.statusCode < 200 || delivery.statusCode >= 300) {
+        throw new Error(`GitHub webhook ${hookId} in ${repo} returned status ${delivery.statusCode} for ping`)
+      }
+      return delivery
+    }
+    if (now() >= deadline) break
+    await sleep(intervalMs)
+  } while (true)
+  throw new Error(`timed out waiting for GitHub webhook ${hookId} ping delivery in ${repo}`)
 }

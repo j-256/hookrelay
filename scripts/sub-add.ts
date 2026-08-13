@@ -8,7 +8,11 @@ import {
   parseGitHubEventSelection,
   type GitHubEventSelection,
 } from './github-events'
-import { validateGitHubRepo } from './github-repository'
+import {
+  createGitHubRepositoryHook,
+  githubHookPayload,
+  validateGitHubRepo,
+} from './github-repository'
 import { getSourceProfile } from './subscription-sources'
 import {
   addDevVar,
@@ -16,7 +20,6 @@ import {
   envSegment,
   prepareProduction,
   readOptionalText,
-  runProcess,
   type SecretValue,
   writePrivateText,
   writeText,
@@ -284,51 +287,6 @@ export async function prepareSubscription(
   }
 }
 
-export function githubHookPayload(
-  webhookUrl: string,
-  secret: string,
-  selection: GitHubEventSelection,
-): Record<string, unknown> | null {
-  if (!selection.events) return null
-  return {
-    name: 'web',
-    active: true,
-    events: [...selection.events],
-    config: {
-      url: webhookUrl,
-      content_type: 'json',
-      secret,
-      insecure_ssl: '0',
-    },
-  }
-}
-
-async function assertGitHubHookAbsent(repo: string, webhookUrl: string): Promise<void> {
-  const output = await runProcess('gh', ['api', `repos/${repo}/hooks`], { captureStdout: true })
-  const hooks = JSON.parse(output) as Array<{ config?: { url?: string } }>
-  if (hooks.some((hook) => hook.config?.url === webhookUrl)) {
-    throw new Error(`GitHub webhook already exists for this URL in ${repo}`)
-  }
-}
-
-async function createGitHubHook(
-  repo: string,
-  webhookUrl: string,
-  secret: string,
-  selection: GitHubEventSelection,
-): Promise<number> {
-  const payload = githubHookPayload(webhookUrl, secret, selection)
-  if (!payload) throw new Error('manual GitHub event selection cannot create a webhook')
-  await assertGitHubHookAbsent(repo, webhookUrl)
-  const output = await runProcess('gh', ['api', '--method', 'POST', `repos/${repo}/hooks`, '--input', '-'], {
-    input: JSON.stringify(payload),
-    captureStdout: true,
-  })
-  const created = JSON.parse(output) as { id?: number }
-  if (!created.id) throw new Error('GitHub created the webhook without returning an id')
-  return created.id
-}
-
 function printPrepared(options: SubAddOptions, prepared: PreparedSubscription): void {
   console.log(`Prepared subscription ${options.name}`)
   console.log('')
@@ -405,7 +363,7 @@ async function main(): Promise<void> {
     return
   }
 
-  const hookId = await createGitHubHook(
+  const hookId = await createGitHubRepositoryHook(
     options.repo,
     prepared.webhookUrl,
     prepared.senderSecret.value,
