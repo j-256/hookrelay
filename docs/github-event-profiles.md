@@ -40,7 +40,7 @@ GitHub recommends subscribing only to events an integration handles. The catalog
 | `security` | `code_scanning_alert`, `dependabot_alert`, `repository_advisory`, `repository_vulnerability_alert`, `secret_scanning_alert`, `secret_scanning_alert_location`, `secret_scanning_scan`, `security_and_analysis` | Repository security findings and security-feature configuration. |
 | `stars` | `star` | Stars added or removed. |
 | `watchers` | `watch` | A user starting to watch repository notifications. GitHub exposes only the `started` action for this webhook. |
-| `webhooks` | `meta`, `ping` | Webhook lifecycle and connectivity diagnostics. GitHub also sends a ping automatically when a hook is created. |
+| `webhooks` | `meta`, `ping` | Webhook lifecycle and connectivity diagnostics. Hookrelay records pings without delivering them to sinks. GitHub also sends a ping automatically when a hook is created. |
 | `wiki` | `gollum` | Wiki page creation and updates. |
 | `workflows` | `workflow_job`, `workflow_run` | GitHub Actions jobs and runs. Individual jobs can be noisy; Hookrelay records non-terminal workflow runs but only delivers completed runs to sinks. |
 

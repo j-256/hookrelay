@@ -100,6 +100,18 @@ describe('github adapter parse', () => {
     expect(watchEvent.url).toBe('https://github.com/example-owner/example-repo/watchers')
   })
 
+  it('marks ping events as record-only', async () => {
+    const payload = {
+      zen: 'Keep it logically awesome.',
+      hook_id: 123,
+      repository: { full_name: 'example-owner/example-repo' },
+    }
+    const { req, raw } = await makeReq(payload, 'ping', { deliveryId: 'ping-1' })
+    const event = await github.parse(req, raw, sub)
+    expect(event.type).toBe('ping.event')
+    expect(event.shouldDeliver).toBe(false)
+  })
+
   it('throws when X-GitHub-Delivery is missing', async () => {
     const { req, raw } = await makeReq(issuesOpened, 'issues')
     const stripped = new Request(req)

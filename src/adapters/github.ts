@@ -23,6 +23,7 @@ const WORKFLOW_CONCLUSION_SEVERITY: Record<string, Severity> = {
 }
 
 const NON_TERMINAL_WORKFLOW_ACTIONS = new Set(['requested', 'in_progress'])
+const GITHUB_PING_EVENT = 'ping'
 
 interface GitHubSummary {
   type: string
@@ -151,7 +152,7 @@ const adapter: Adapter = {
       body: summary.body,
       url: summary.url,
       severity: summary.severity,
-      shouldDeliver: summary.shouldDeliver,
+      shouldDeliver: eventName === GITHUB_PING_EVENT ? false : summary.shouldDeliver,
       raw: payload,
     }
   },
