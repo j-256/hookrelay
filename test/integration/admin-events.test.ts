@@ -88,6 +88,7 @@ describe('GET /admin/events', () => {
     const res = await worker.fetch(new Request('https://hooks.example.com/admin/events'), env, ctx)
     const html = await res.text()
     expect(res.headers.get('cache-control')).toBe('no-store')
+    expect(res.headers.get('referrer-policy')).toBe('same-origin')
     expect(html).toContain('<meta name="color-scheme" content="dark">')
     expect(html).toContain('color-scheme: dark')
     expect(html).toContain('Event activity')

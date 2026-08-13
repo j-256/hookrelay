@@ -20,6 +20,8 @@ interface Filters {
 const PAGE_SIZE = 50
 const MAX_FILTER_LENGTH = 200
 const SINCE_VALUES = ['1h', '24h', '7d', '30d'] as const
+// Chrome sends Origin: null on form POSTs under no-referrer, breaking the CSRF guard
+const ADMIN_REFERRER_POLICY = 'same-origin'
 
 function optionalFilter(url: URL, name: string): string | undefined {
   const value = url.searchParams.get(name)?.trim()
@@ -532,7 +534,7 @@ export async function handleAdminEvents(req: Request, env: Env): Promise<Respons
       'content-security-policy':
         "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       'x-content-type-options': 'nosniff',
-      'referrer-policy': 'no-referrer',
+      'referrer-policy': ADMIN_REFERRER_POLICY,
     },
   })
 }
