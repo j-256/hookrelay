@@ -121,6 +121,7 @@ function fleetOptions(phase: 'apply' | 'verify', repositories: string[] = []): G
     root: '/repo',
     manifest: 'fleet.json',
     repositories,
+    includePrivate: false,
     secretLimit: 64,
     yes: true,
   }

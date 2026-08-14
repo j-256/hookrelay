@@ -19,9 +19,9 @@ describe('GitHub origin parsing', () => {
 })
 
 describe('GitHub fleet discovery', () => {
-  it('includes sorted public direct-child repositories regardless of owner', async () => {
+  it('includes public repositories by default and only selected private repositories on opt-in', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hookrelay-discovery-'))
-    const children = ['personal', 'organization', 'private', 'archived', 'readonly', 'nongithub', 'nested']
+    const children = ['personal', 'organization', 'private', 'other-private', 'archived', 'readonly', 'nongithub', 'nested']
     try {
       for (const child of children) await mkdir(join(root, child))
       await mkdir(join(root, 'nested', 'actual-root'))
@@ -30,6 +30,7 @@ describe('GitHub fleet discovery', () => {
         personal: 'git@github.com:example-owner/example-repo.git',
         organization: 'https://github.com/example-org/example-site.git',
         private: 'https://github.com/example-owner/private.git',
+        'other-private': 'https://github.com/example-owner/other-private.git',
         archived: 'https://github.com/example-owner/archived.git',
         readonly: 'https://github.com/example-owner/readonly.git',
         nongithub: 'https://gitlab.com/example-owner/elsewhere.git',
@@ -39,6 +40,7 @@ describe('GitHub fleet discovery', () => {
         'example-owner/example-repo': { visibility: 'PUBLIC', isArchived: false, isFork: false, viewerPermission: 'ADMIN' },
         'example-org/example-site': { visibility: 'PUBLIC', isArchived: false, isFork: false, viewerPermission: 'ADMIN' },
         'example-owner/private': { visibility: 'PRIVATE', isArchived: false, isFork: false, viewerPermission: 'ADMIN' },
+        'example-owner/other-private': { visibility: 'PRIVATE', isArchived: false, isFork: false, viewerPermission: 'ADMIN' },
         'example-owner/archived': { visibility: 'PUBLIC', isArchived: true, isFork: false, viewerPermission: 'ADMIN' },
         'example-owner/readonly': { visibility: 'PUBLIC', isArchived: false, isFork: false, viewerPermission: 'WRITE' },
       }
@@ -57,18 +59,31 @@ describe('GitHub fleet discovery', () => {
         return JSON.stringify({ nameWithOwner: repo, ...value })
       }
 
-      const result = await discoverGitHubFleet(root, runner)
+      const result = await discoverGitHubFleet(root, {}, runner)
       expect(result.repositories.map((repo) => repo.nameWithOwner)).toEqual([
         'example-org/example-site',
         'example-owner/example-repo',
       ])
       expect(result.exclusions).toEqual(expect.arrayContaining([
         expect.objectContaining({ child: 'private', reason: expect.stringMatching(/private/) }),
+        expect.objectContaining({ child: 'other-private', reason: expect.stringMatching(/private/) }),
         expect.objectContaining({ child: 'nongithub', reason: expect.stringMatching(/not GitHub/) }),
         expect.objectContaining({ child: 'nested', reason: expect.stringMatching(/direct-child/) }),
       ]))
       expect(result.blockers.join('\n')).toMatch(/archived/)
       expect(result.blockers.join('\n')).toMatch(/admin permission/)
+
+      const optedIn = await discoverGitHubFleet(root, {
+        privateRepositories: new Set(['example-owner/private']),
+      }, runner)
+      expect(optedIn.repositories.map((repo) => repo.nameWithOwner)).toEqual([
+        'example-org/example-site',
+        'example-owner/example-repo',
+        'example-owner/private',
+      ])
+      expect(optedIn.exclusions).toEqual(expect.arrayContaining([
+        expect.objectContaining({ child: 'other-private', reason: expect.stringMatching(/private/) }),
+      ]))
     } finally {
       await rm(root, { recursive: true, force: true })
     }
@@ -98,7 +113,7 @@ describe('GitHub fleet discovery', () => {
           viewerPermission: 'ADMIN',
         })
       }
-      const result = await discoverGitHubFleet(root, runner)
+      const result = await discoverGitHubFleet(root, {}, runner)
       expect(result.blockers.join('\n')).toMatch(/malformed GitHub origin/)
       expect(result.blockers.join('\n')).toMatch(/same HMAC name/)
     } finally {

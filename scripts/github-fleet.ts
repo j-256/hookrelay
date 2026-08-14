@@ -1,7 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, parse as parseJsonc, type FormattingOptions, type ParseError } from 'jsonc-parser'
-import type { GitHubFleetDiscovery } from './github-fleet-discovery'
+import type { GitHubFleetDiscovery, GitHubFleetDiscoveryOptions } from './github-fleet-discovery'
 import { discoverGitHubFleet } from './github-fleet-discovery'
 import {
   generateGitHubFleetManifestRepository,
@@ -55,6 +55,7 @@ export interface GitHubFleetOptions {
   root: string
   manifest: string
   repositories: string[]
+  includePrivate: boolean
   secretLimit: number
   yes: boolean
 }
@@ -90,7 +91,7 @@ export interface GitHubFleetPrepareResult {
 }
 
 export interface GitHubFleetDependencies {
-  discover(root: string): Promise<GitHubFleetDiscovery>
+  discover(root: string, options?: GitHubFleetDiscoveryOptions): Promise<GitHubFleetDiscovery>
   listHooks(repo: string): Promise<GitHubRepositoryHook[]>
   listSecrets(): Promise<Set<string>>
   readKv(): Promise<RemoteKvSnapshot>
@@ -134,6 +135,7 @@ function usage(): string {
     '',
     'options:',
     '  --repo <owner/repo>    select a new repository, repeatable',
+    '  --include-private       admit private repositories selected with --repo',
     `  --secret-limit <count> Worker variable and secret limit (default: ${DEFAULT_SECRET_LIMIT})`,
     '  -y, --yes              apply production changes without prompts',
     '  -h, --help             show this help',
@@ -153,6 +155,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   let root: string | undefined
   let manifest: string | undefined
   const repositories: string[] = []
+  let includePrivate = false
   let secretLimit = DEFAULT_SECRET_LIMIT
   let yes = false
 
@@ -171,6 +174,8 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       if (repositories.includes(repo)) throw new Error(`--repo supplied more than once: ${repo}`)
       repositories.push(repo)
       index += 1
+    } else if (arg === '--include-private') {
+      includePrivate = true
     } else if (arg === '--secret-limit') {
       const raw = optionValue(argv, index, arg)
       secretLimit = Number(raw)
@@ -186,8 +191,15 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   }
   if (!root) throw new Error('--root is required')
   if (!manifest) throw new Error('--manifest is required')
+  if (includePrivate && repositories.length === 0) throw new Error('--include-private requires at least one --repo')
   if (yes && phase !== 'apply') throw new Error('-y is only valid with apply')
-  return { phase: phase as GitHubFleetPhase, root, manifest, repositories, secretLimit, yes }
+  return { phase: phase as GitHubFleetPhase, root, manifest, repositories, includePrivate, secretLimit, yes }
+}
+
+function fleetDiscoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscoveryOptions {
+  return {
+    privateRepositories: new Set(options.includePrivate ? options.repositories : []),
+  }
 }
 
 function fleetPaths(options: GitHubFleetOptions, projectRoot: string): FleetPaths {
@@ -302,7 +314,7 @@ async function loadLocalState(
   generateSelected: boolean,
 ): Promise<FleetLocalState> {
   const paths = fleetPaths(options, projectRoot)
-  const discovery = await dependencies.discover(paths.root)
+  const discovery = await dependencies.discover(paths.root, fleetDiscoveryOptions(options))
   const blockers = [...discovery.blockers]
   const manifestIssue = await privateFileIssue(paths.manifest, dependencies.fileSystem)
   const devVarsIssue = await privateFileIssue(paths.devVars, dependencies.fileSystem)
@@ -322,7 +334,12 @@ async function loadLocalState(
   const discoveredNames = new Set(discovery.repositories.map((repo) => repo.nameWithOwner))
   const selected = new Set(options.repositories.length > 0 ? options.repositories : discoveredNames)
   for (const repo of selected) {
-    if (!discoveredNames.has(repo)) blockers.push(`${repo}: selected repository was not discovered as an eligible public repository`)
+    if (!discoveredNames.has(repo)) {
+      const eligibleVisibility = options.includePrivate
+        ? 'an eligible public or explicitly selected private repository'
+        : 'an eligible public repository; private repositories require --include-private'
+      blockers.push(`${repo}: selected repository was not discovered as ${eligibleVisibility}`)
+    }
   }
 
   const hooks = await readHooks(discovery, dependencies, blockers)
@@ -407,7 +424,7 @@ export async function planGitHubFleet(
     privateFileIssue(paths.devVars, dependencies.fileSystem),
   ])).filter((issue): issue is string => issue !== null)
   if (fileIssues.length > 0) {
-    const discovery = await dependencies.discover(paths.root)
+    const discovery = await dependencies.discover(paths.root, fleetDiscoveryOptions(options))
     const selected = options.repositories.length > 0
       ? [...options.repositories].sort()
       : discovery.repositories.map((repo) => repo.nameWithOwner)

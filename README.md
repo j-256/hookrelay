@@ -284,7 +284,7 @@ GitHub may return the same events in a different order, so order alone does not 
 
 ### Managing a GitHub repository fleet
 
-`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and manages a standard three-hook topology for each repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. The three hooks have distinct private URLs but share one per-repository HMAC.
+`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and can explicitly admit selected private repositories. It manages a standard three-hook topology for each eligible repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. The three hooks have distinct private URLs but share one per-repository HMAC.
 
 The command requires an explicit manifest path so a deployment can choose its own encrypted or otherwise access-controlled secret store without embedding that location in Hookrelay. The JSON manifest is the recovery source for each repository's raw slugs and HMAC. It and `.dev.vars` must be regular, non-symlink files with mode `0600`; `routes.jsonc` stores only slug hashes. Treat the manifest and full GitHub hook URLs as secrets and never commit the manifest unless the repository encrypts it before storage.
 
@@ -320,9 +320,15 @@ pnpm github:fleet apply --root <directory> --manifest <file>
 pnpm github:fleet verify --root <directory> --manifest <file>
 ```
 
-`plan` is read-only. It reports discoveries, exclusions, drift, exact additions, GitHub administration blockers, remote KV differences, and projected Worker variable and secret capacity. `prepare` is local-only: it generates missing manifest values first, then repairs `.dev.vars` and appends missing routes from that manifest. `apply` confirms before production writes, installs missing repository HMACs with Wrangler's [bulk secret command](https://developers.cloudflare.com/workers/wrangler/commands/workers/#secret-bulk), updates only selected subscription and sink KV entries, waits for authenticated routes, and creates or repairs only Hookrelay-owned GitHub hooks. `verify` reports drift without repairing it, but it deliberately sends a fresh GitHub ping to every managed hook so it can prove the unrecoverable GitHub-side secret agrees with Hookrelay. Ping events are accepted without creating sink deliveries.
+`plan` is read-only. It reports discoveries, exclusions, drift, exact additions, GitHub administration blockers, remote KV differences, and projected Worker variable and secret capacity. `prepare` is local-only: it generates missing manifest values first, then repairs `.dev.vars` and appends missing routes from that manifest. `apply` confirms before production writes, installs missing repository HMACs with Wrangler's [bulk secret command](https://developers.cloudflare.com/workers/wrangler/commands/workers/#secret-bulk), updates only selected subscription and sink KV entries, waits for authenticated routes, and creates or repairs only Hookrelay-owned GitHub hooks. `verify` reports drift without repairing it, but it deliberately sends a fresh GitHub ping to every managed hook in the current visibility scope so it can prove the unrecoverable GitHub-side secret agrees with Hookrelay. Ping events are accepted without creating sink deliveries.
 
-Repeat `--repo <owner/repo>` to limit new additions for a canary rollout. Already managed repositories are still audited. Omit `--repo` to select every eligible discovered repository. `--secret-limit` sets the capacity guard, and `-y` is accepted only by `apply` to skip its confirmation.
+Repeat `--repo <owner/repo>` to limit new additions for a canary rollout. Already managed public repositories are still audited. Omit `--repo` to select every eligible discovered public repository. `--secret-limit` sets the capacity guard, and `-y` is accepted only by `apply` to skip its confirmation.
+
+Private repositories require `--include-private` together with one or more `--repo <owner/repo>` selectors. Only those named private repositories become eligible, and future audits must repeat both options; `--include-private` without `--repo` is rejected. Review the configured sinks before opting in because private webhook payloads can contain non-public repository activity and security details.
+
+```sh
+pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/private-repo --include-private
+```
 
 The workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST.
 

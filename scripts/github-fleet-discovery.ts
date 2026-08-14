@@ -6,6 +6,9 @@ import { assertGitHubFleetRepositoryCollisions } from './github-fleet-model'
 
 const execFileP = promisify(execFile)
 
+const GITHUB_PRIVATE_VISIBILITY = 'PRIVATE'
+const GITHUB_PUBLIC_VISIBILITY = 'PUBLIC'
+
 export interface GitHubFleetRepository {
   nameWithOwner: string
   path: string
@@ -21,6 +24,10 @@ export interface GitHubFleetDiscovery {
   repositories: GitHubFleetRepository[]
   exclusions: GitHubFleetDiscoveryExclusion[]
   blockers: string[]
+}
+
+export interface GitHubFleetDiscoveryOptions {
+  privateRepositories?: ReadonlySet<string>
 }
 
 export type GitHubFleetCommandRunner = (command: string, args: string[]) => Promise<string>
@@ -93,6 +100,7 @@ async function childNames(root: string): Promise<string[]> {
 
 export async function discoverGitHubFleet(
   root: string,
+  options: GitHubFleetDiscoveryOptions = {},
   runner: GitHubFleetCommandRunner = defaultRunner,
 ): Promise<GitHubFleetDiscovery> {
   const resolvedRoot = await realpath(root)
@@ -162,7 +170,9 @@ export async function discoverGitHubFleet(
       blockers.push(`${remoteRepo}: metadata lookup failed (${message})`)
       continue
     }
-    if (metadata.visibility !== 'PUBLIC') {
+    const selectedPrivateRepository = metadata.visibility === GITHUB_PRIVATE_VISIBILITY
+      && options.privateRepositories?.has(metadata.nameWithOwner) === true
+    if (metadata.visibility !== GITHUB_PUBLIC_VISIBILITY && !selectedPrivateRepository) {
       exclusions.push({ child, reason: `GitHub visibility is ${metadata.visibility.toLowerCase()}` })
       continue
     }

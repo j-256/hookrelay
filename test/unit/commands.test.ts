@@ -17,6 +17,7 @@ describe('commandReference', () => {
     expect(reference).toContain('pnpm github:fleet prepare --root <directory> --manifest <file>')
     expect(reference).toContain('pnpm github:fleet apply --root <directory> --manifest <file> [production write]')
     expect(reference).toContain('pnpm github:fleet verify --root <directory> --manifest <file>')
+    expect(reference).toContain('--include-private (requires --repo)')
     expect(reference).toContain('fresh nondelivering GitHub pings')
     expect(reference).toContain('pnpm sync\n')
     expect(reference).toContain('pnpm sync -y                         [production write]')

@@ -94,6 +94,7 @@ function options(repositories: string[] = []): GitHubFleetOptions {
     root: '/ignored',
     manifest: 'fleet.json',
     repositories,
+    includePrivate: false,
     secretLimit: 64,
     yes: false,
   }
@@ -124,6 +125,7 @@ describe('GitHub fleet arguments', () => {
       phase: 'plan',
       root: '/repo',
       manifest: '/secure/fleet.json',
+      includePrivate: false,
       secretLimit: 64,
     })
     expect(() => parseGitHubFleetArgs(['plan', '--root', '/repo'])).toThrow(/manifest/)
@@ -136,9 +138,53 @@ describe('GitHub fleet arguments', () => {
       '--secret-limit', '80', '-y',
     ])).toMatchObject({ repositories: [REPO, OTHER_REPO], secretLimit: 80, yes: true })
   })
+
+  it('requires repository selectors when private discovery is enabled', () => {
+    expect(parseGitHubFleetArgs([
+      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--include-private',
+    ])).toMatchObject({ repositories: [REPO], includePrivate: true })
+    expect(() => parseGitHubFleetArgs([
+      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--include-private',
+    ])).toThrow(/requires at least one --repo/)
+  })
 })
 
 describe('GitHub fleet planning and preparation', () => {
+  it('explains the opt-in when a selected private repository is excluded', async () => {
+    const directory = await project()
+    try {
+      const deps = dependencies([])
+      deps.discover = async () => ({
+        repositories: [],
+        exclusions: [{ child: 'example-plugin', reason: 'GitHub visibility is private' }],
+        blockers: [],
+      })
+      const plan = await planGitHubFleet({ ...options([REPO]), phase: 'plan' }, deps, directory)
+      expect(plan.blockers).toContain(
+        `${REPO}: selected repository was not discovered as an eligible public repository; private repositories require --include-private`,
+      )
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('limits private discovery to explicitly selected repositories', async () => {
+    const directory = await project()
+    try {
+      const deps = dependencies()
+      let privateRepositories: string[] = []
+      const discover = deps.discover
+      deps.discover = async (root, discoveryOptions) => {
+        privateRepositories = [...(discoveryOptions?.privateRepositories ?? [])]
+        return discover(root, discoveryOptions)
+      }
+      await planGitHubFleet({ ...options([REPO]), phase: 'plan', includePrivate: true }, deps, directory)
+      expect(privateRepositories).toEqual([REPO])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('plans selected additions read-only with capacity accounting and secret-free output', async () => {
     const directory = await project()
     try {
