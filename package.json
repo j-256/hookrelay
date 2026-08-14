@@ -9,7 +9,7 @@
     "deploy": "wrangler deploy",
     "test": "vitest run",
     "test:watch": "vitest",
-    "types:generate": "wrangler types --include-env=false",
+    "types:generate": "wrangler types --config wrangler.example.jsonc --include-env=false",
     "typecheck": "pnpm types:generate && tsc --noEmit",
     "sync": "tsx scripts/sync.ts",
     "github:fleet": "tsx scripts/github-fleet.ts",

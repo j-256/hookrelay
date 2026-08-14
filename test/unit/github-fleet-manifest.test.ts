@@ -77,38 +77,4 @@ describe('GitHub fleet manifest', () => {
     expect(error?.message).not.toContain('original-secret')
     expect(error?.message).not.toContain('different-secret')
   })
-
-  it('preserves retiring HMACs while requiring them to differ from canonical', () => {
-    const site = {
-      ...entry('example-owner/example-repo'),
-      retiringHmacs: {
-        stars: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_STARS', value: 'retiring-secret' },
-      },
-    }
-    const text = serializeGitHubFleetManifest({ version: 1, repositories: { 'example-owner/example-repo': site } })
-    expect(parseGitHubFleetManifest(text).repositories['example-owner/example-repo']?.retiringHmacs?.stars).toEqual(
-      site.retiringHmacs.stars,
-    )
-    expect(() => serializeGitHubFleetManifest({
-      version: 1,
-      repositories: {
-        'example-owner/example-repo': {
-          ...entry('example-owner/example-repo'),
-          retiringHmacs: { stars: entry('example-owner/example-repo').hmac },
-        },
-      },
-    })).toThrow(/must differ/)
-    expect(() => serializeGitHubFleetManifest({
-      version: 1,
-      repositories: {
-        'example-owner/example-repo': {
-          ...entry('example-owner/example-repo'),
-          retiringHmacs: {
-            stars: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_STARS', value: 'shared-retiring-secret' },
-            alerts: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_ALERTS', value: 'shared-retiring-secret' },
-          },
-        },
-      },
-    })).toThrow(/must be distinct/)
-  })
 })

@@ -37,6 +37,7 @@ Steps:
    git clone https://github.com/j-256/hookrelay.git
    cd hookrelay
    pnpm install
+   cp wrangler.example.jsonc wrangler.jsonc
    ```
 2. Create the Cloudflare resources (one-time):
    ```sh
@@ -47,7 +48,7 @@ Steps:
    npx wrangler queues create hookrelay-delivery
    npx wrangler queues create hookrelay-delivery-dlq
    ```
-   Copy the printed ids into the `kv_namespaces` and `d1_databases` entries in `wrangler.jsonc`. These are opaque, account-scoped resource handles, not secrets – they grant no access without your API token, so they are safe to commit. Queue bindings use the two queue names directly, so keep those names aligned with `wrangler.jsonc`.
+   Copy the printed ids into the `kv_namespaces` and `d1_databases` entries in the ignored `wrangler.jsonc`. These are opaque resource handles rather than credentials, but keeping the deployment config local avoids publishing account-specific identifiers. Queue bindings use the two queue names directly, so keep those names aligned with `wrangler.jsonc`.
 
    > Note: Wrangler names the KV namespaces `hookrelay-SUBS` / `hookrelay-SINKS` (worker name + binding), so that is what shows in the dashboard. `SUBS`/`SINKS` are the *binding* names your code uses (`env.SUBS`); the `id` in `wrangler.jsonc` is what actually links them. Dashboard title and binding name differ by design.
 3. Apply the D1 migration:
@@ -72,7 +73,7 @@ Steps:
    ```
    Then in the Cloudflare dashboard, attach the Worker to a custom domain (`hooks.example.com`). The route is managed in the dashboard rather than in `wrangler.jsonc`, so no hostname is committed to source (`workers_dev` is `false` to keep the Worker off `*.workers.dev`).
 
-   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build): set the branch to `main`, set the build command to `pnpm typecheck && pnpm test`, and set the deploy command to `npx wrangler deploy`. Workers Builds runs the build command before deploying, so a typecheck or test failure blocks the deployment. No build variables are needed – Builds runs in your account's context and infers the account automatically, so there is no `account_id` to set. Apply new D1 migrations before a build deploys code that depends on them.
+   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build). Store the completed `wrangler.jsonc` as a masked `HOOKRELAY_WRANGLER_CONFIG` build secret, set the build command to `printf '%s' "$HOOKRELAY_WRANGLER_CONFIG" > wrangler.jsonc && pnpm typecheck && pnpm test`, and set the deploy command to `npx wrangler deploy`. Workers Builds exposes configured build secrets only to the build, and runs the build command before the deploy command, so the private config is available for deployment without entering Git history. Apply new D1 migrations before a build deploys code that depends on them.
 7. Add a sink. The command reads the Discord webhook URL without echoing it, stores it in `.dev.vars`, adds the secret reference to `routes.jsonc`, and offers to install the Wrangler secret and sync KV:
    ```sh
    pnpm sink:add discord discord
@@ -95,11 +96,11 @@ Steps:
 
 ## Configuration reference
 
-hookrelay splits configuration across four locations by sensitivity. The guiding rule: **nothing secret is committed.** If you are forking this to run your own instance, this section is the "what goes where, and why."
+hookrelay separates configuration by sensitivity. The guiding rule: **nothing secret or deployment-specific is committed.** If you are forking this to run your own instance, this section is the "what goes where, and why."
 
-### 1. `wrangler.jsonc` – committed, safe to make public
+### 1. `wrangler.example.jsonc` and `wrangler.jsonc`
 
-These are opaque, account-scoped *resource handles*. They name a resource but grant no access on their own: every Cloudflare API call still requires your API token, and a binding id from one account cannot be used from another. That is why they are safe to commit.
+`wrangler.example.jsonc` is the committed template with placeholder binding ids. Copy it to the ignored `wrangler.jsonc` and insert the resource handles for your deployment. The handles grant no access on their own, but the private copy keeps account-specific identifiers out of source history.
 
 | Key | What it is |
 | --- | --- |
@@ -308,7 +309,7 @@ The manifest is strict, versioned JSON with this repository shape:
 }
 ```
 
-Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. A legacy migration may temporarily add command-owned `retiringHmacs` entries until its old HMACs are safely removed.
+Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data.
 
 Use the four phases in order:
 
@@ -321,11 +322,11 @@ pnpm github:fleet verify --root <directory> --manifest <file>
 
 `plan` is read-only. It reports discoveries, exclusions, drift, exact additions, GitHub administration blockers, remote KV differences, and projected Worker variable and secret capacity. `prepare` is local-only: it generates missing manifest values first, then repairs `.dev.vars` and appends missing routes from that manifest. `apply` confirms before production writes, installs missing repository HMACs with Wrangler's [bulk secret command](https://developers.cloudflare.com/workers/wrangler/commands/workers/#secret-bulk), updates only selected subscription and sink KV entries, waits for authenticated routes, and creates or repairs only Hookrelay-owned GitHub hooks. `verify` reports drift without repairing it, but it deliberately sends a fresh GitHub ping to every managed hook so it can prove the unrecoverable GitHub-side secret agrees with Hookrelay. Ping events are accepted without creating sink deliveries.
 
-Repeat `--repo <owner/repo>` to limit new additions for a canary rollout. Already managed repositories are still audited, and an unfinished `example-owner/example-repo` HMAC consolidation remains a prerequisite. Omit `--repo` to select every eligible discovered repository. `--secret-limit` sets the capacity guard, and `-y` is accepted only by `apply` to skip its confirmation.
+Repeat `--repo <owner/repo>` to limit new additions for a canary rollout. Already managed repositories are still audited. Omit `--repo` to select every eligible discovered repository. `--secret-limit` sets the capacity guard, and `-y` is accepted only by `apply` to skip its confirmation.
 
-The workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST. Existing `example-owner/example-repo` activity, stars, and alerts names and URLs are preserved while its legacy profile HMACs move to the canonical repository HMAC through expanded, switched, and contracted authentication stages.
+The workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST.
 
-Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating hooks or retiring an old HMAC. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
+Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
 
 `pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
 

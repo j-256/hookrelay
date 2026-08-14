@@ -24,17 +24,9 @@ const slugsSchema = z.object({
   alerts: z.string().regex(SUBSCRIPTION_SLUG_RE),
 }).strict()
 
-const retiringHmacsSchema = z.object({
-  stars: secretSchema.optional(),
-  alerts: secretSchema.optional(),
-}).strict().refine((value) => value.stars !== undefined || value.alerts !== undefined, {
-  message: 'retiringHmacs must contain stars or alerts',
-})
-
 const repositorySchema = z.object({
   hmac: secretSchema,
   slugs: slugsSchema,
-  retiringHmacs: retiringHmacsSchema.optional(),
 }).strict()
 
 const manifestSchema = z.object({
@@ -101,21 +93,6 @@ export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void
     const hmacOwner = hmacValueOwners.get(entry.hmac.value)
     if (hmacOwner) throw new Error(`manifest repositories ${hmacOwner} and ${repo} share an HMAC value`)
     hmacValueOwners.set(entry.hmac.value, repo)
-    const retiringNames = new Set<string>()
-    const retiringValues = new Set<string>()
-    for (const [profile, retiring] of Object.entries(entry.retiringHmacs ?? {})) {
-      if (retiring.name === entry.hmac.name) {
-        throw new Error(`manifest repository ${repo} retiring ${profile} HMAC must differ from its canonical HMAC`)
-      }
-      if (retiring.value === entry.hmac.value) {
-        throw new Error(`manifest repository ${repo} retiring ${profile} HMAC value must differ from its canonical HMAC`)
-      }
-      if (retiringNames.has(retiring.name) || retiringValues.has(retiring.value)) {
-        throw new Error(`manifest repository ${repo} retiring HMACs must be distinct`)
-      }
-      retiringNames.add(retiring.name)
-      retiringValues.add(retiring.value)
-    }
   }
 }
 
@@ -124,12 +101,6 @@ export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): str
   const repositories: GitHubFleetManifest['repositories'] = {}
   for (const repo of Object.keys(manifest.repositories).sort()) {
     const entry = manifest.repositories[repo]!
-    const retiringHmacs = entry.retiringHmacs
-      ? {
-          ...(entry.retiringHmacs.stars ? { stars: entry.retiringHmacs.stars } : {}),
-          ...(entry.retiringHmacs.alerts ? { alerts: entry.retiringHmacs.alerts } : {}),
-        }
-      : undefined
     repositories[repo] = {
       hmac: entry.hmac,
       slugs: {
@@ -137,7 +108,6 @@ export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): str
         stars: entry.slugs.stars,
         alerts: entry.slugs.alerts,
       },
-      ...(retiringHmacs ? { retiringHmacs } : {}),
     }
   }
   return `${JSON.stringify({ version: MANIFEST_VERSION, repositories }, null, 2)}\n`

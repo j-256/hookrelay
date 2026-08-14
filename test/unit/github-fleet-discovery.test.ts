@@ -59,8 +59,8 @@ describe('GitHub fleet discovery', () => {
 
       const result = await discoverGitHubFleet(root, runner)
       expect(result.repositories.map((repo) => repo.nameWithOwner)).toEqual([
-        'example-owner/example-repo',
         'example-org/example-site',
+        'example-owner/example-repo',
       ])
       expect(result.exclusions).toEqual(expect.arrayContaining([
         expect.objectContaining({ child: 'private', reason: expect.stringMatching(/private/) }),

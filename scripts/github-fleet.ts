@@ -63,7 +63,6 @@ export interface GitHubFleetCapacity {
   vars: number
   existingSecrets: number
   plannedSecrets: number
-  retiringSecrets: number
   projected: number
   limit: number
 }
@@ -227,38 +226,26 @@ async function recoverManifestRepository(
   devVarsText: string,
 ): Promise<GitHubFleetManifestRepository> {
   const canonicalName = githubFleetHmacName(repo)
-  const activity = routes.activity
-  if (!activity?.auth || activity.auth.secretEnv !== canonicalName) {
-    throw new Error(`${repo}: activity route must reference ${canonicalName} before it can be imported`)
-  }
   const canonicalValue = getDevVar(devVarsText, canonicalName)
   if (canonicalValue === null) throw new Error(`${repo}: ${canonicalName} is missing from .dev.vars`)
 
   const slugs = {} as Record<GitHubFleetProfileName, string>
-  const retiringHmacs: NonNullable<GitHubFleetManifestRepository['retiringHmacs']> = {}
   for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
     const sub = routes[profile]
     if (!sub?.auth) throw new Error(`${repo}: ${profile} route is missing authenticated configuration`)
+    const secretNames = referencedSecretNames(sub)
+    if (secretNames.length !== 1 || secretNames[0] !== canonicalName) {
+      throw new Error(`${repo}: ${profile} route must reference only ${canonicalName} before it can be imported`)
+    }
     const hook = await requireMatchingGitHubRepositoryHook(hooks, sub.slugHash, sub.name, repo)
     const slug = gitHubRepositoryHookSlug(hook)
     if (!slug) throw new Error(`${repo}: ${profile} webhook does not have a recoverable Hookrelay URL`)
     slugs[profile] = slug
-
-    const nonCanonicalNames = referencedSecretNames(sub).filter((name) => name !== canonicalName)
-    if (nonCanonicalNames.length > 1) throw new Error(`${repo}: ${profile} route references multiple retiring HMACs`)
-    const retiringName = nonCanonicalNames[0]
-    if (retiringName) {
-      if (profile === 'activity') throw new Error(`${repo}: activity route must not reference a retiring HMAC`)
-      const retiringValue = getDevVar(devVarsText, retiringName)
-      if (retiringValue === null) throw new Error(`${repo}: ${retiringName} is missing from .dev.vars`)
-      retiringHmacs[profile] = { name: retiringName, value: retiringValue }
-    }
   }
 
   return {
     hmac: { name: canonicalName, value: canonicalValue },
     slugs,
-    ...(Object.keys(retiringHmacs).length > 0 ? { retiringHmacs } : {}),
   }
 }
 
@@ -284,14 +271,7 @@ async function fleetRouteIssues(
     issues.push('authentication scheme')
   } else {
     const actualNames = referencedSecretNames(sub)
-    const retiring = entry.retiringHmacs?.[profile as 'stars' | 'alerts']
-    const allowedNames = new Set([entry.hmac.name, ...(retiring ? [retiring.name] : [])])
-    if (
-      actualNames.length === 0
-      || new Set(actualNames).size !== actualNames.length
-      || actualNames.some((name) => !allowedNames.has(name))
-      || (!retiring && (actualNames.length !== 1 || actualNames[0] !== entry.hmac.name))
-    ) {
+    if (actualNames.length !== 1 || actualNames[0] !== entry.hmac.name) {
       issues.push('authentication references')
     }
   }
@@ -447,7 +427,6 @@ export async function planGitHubFleet(
         vars: 0,
         existingSecrets: 0,
         plannedSecrets: 0,
-        retiringSecrets: 0,
         projected: 0,
         limit: options.secretLimit,
       },
@@ -509,21 +488,16 @@ export async function planGitHubFleet(
     }
   }
   const plannedSecretNames = new Set<string>()
-  const retiringSecretNames = new Set<string>()
   for (const repo of plannedRepositoryNames(state)) {
     const entry = state.manifest.repositories[repo]
     const hmacName = entry?.hmac.name ?? githubFleetHmacName(repo)
     if (!existingSecrets.has(hmacName)) plannedSecretNames.add(hmacName)
-    for (const retiring of Object.values(entry?.retiringHmacs ?? {})) {
-      if (existingSecrets.has(retiring.name)) retiringSecretNames.add(retiring.name)
-    }
   }
-  const projected = vars + existingSecrets.size + plannedSecretNames.size - retiringSecretNames.size
+  const projected = vars + existingSecrets.size + plannedSecretNames.size
   const capacity: GitHubFleetCapacity = {
     vars,
     existingSecrets: existingSecrets.size,
     plannedSecrets: plannedSecretNames.size,
-    retiringSecrets: retiringSecretNames.size,
     projected,
     limit: options.secretLimit,
   }
@@ -603,11 +577,6 @@ export async function prepareGitHubFleet(
     const beforeCanonical = getDevVar(devVarsText, entry.hmac.name)
     devVarsText = setDevVar(devVarsText, entry.hmac.name, entry.hmac.value)
     if (beforeCanonical === null) devVarAdditions += 1
-    for (const retiring of Object.values(entry.retiringHmacs ?? {})) {
-      const beforeRetiring = getDevVar(devVarsText, retiring.name)
-      devVarsText = setDevVar(devVarsText, retiring.name, retiring.value)
-      if (beforeRetiring === null) devVarAdditions += 1
-    }
   }
   await writePrivateText(paths.devVars, devVarsText, dependencies.fileSystem)
 
@@ -684,7 +653,6 @@ async function main(): Promise<void> {
     const result = await applyGitHubFleet(options)
     console.log(`Installed repository HMACs: ${result.installedSecrets}`)
     console.log(`Reconciled GitHub hooks: ${result.reconciledHooks}`)
-    console.log(`Site HMAC consolidation: ${result.siteConsolidated ? 'completed' : 'already complete'}`)
     return
   }
   const result = await verifyGitHubFleet(options)

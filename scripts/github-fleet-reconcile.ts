@@ -1,7 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import { hmacSha256Hex } from '../src/lib/hmac'
 import { subscriptionKvKey } from '../src/lib/subscription'
 import {
@@ -13,12 +12,9 @@ import {
 } from './github-fleet'
 import {
   parseGitHubFleetManifest,
-  serializeGitHubFleetManifest,
   type GitHubFleetManifest,
-  type GitHubFleetManifestRepository,
 } from './github-fleet-manifest'
 import {
-  GITHUB_FLEET_AUTH_SCHEME,
   GITHUB_FLEET_PROFILE_NAMES,
   GITHUB_FLEET_PROFILES,
   githubFleetSubscriptionName,
@@ -37,14 +33,9 @@ import {
 import { putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from './kv'
 import {
   confirm,
-  deleteWranglerSecretsBulk,
-  getDevVar,
   listWranglerSecrets,
   putWranglerSecretsBulk,
   readPrivateOptionalText,
-  removeDevVar,
-  writePrivateText,
-  writeText,
   type SecretValue,
 } from './setup'
 import { computePlan, parseRoutes, type Routes, type Sub } from './sync'
@@ -55,14 +46,7 @@ export const ROUTE_PROPAGATION_GRACE_MS = 60_000
 export const GITHUB_MUTATION_ATTEMPTS = 3
 export const GITHUB_MUTATION_RETRY_MS = 2_000
 
-const SITE_REPOSITORY = 'example-owner/example-repo'
-const SITE_RETIRING_SECRET_NAMES = Object.freeze([
-  'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_STARS',
-  'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_ALERTS',
-])
 const ROUTES_FILE = 'routes.jsonc'
-const DEV_VARS_FILE = '.dev.vars'
-const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true, tabSize: 2, eol: '\n' })
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -78,7 +62,6 @@ export interface GitHubFleetReconcileDependencies {
   pingHook?: typeof pingAndVerifyGitHubRepositoryHook
   listSecrets?: typeof listWranglerSecrets
   putSecrets?: (secrets: readonly SecretValue[]) => Promise<Set<string>>
-  deleteSecrets?: (names: readonly string[]) => Promise<Set<string>>
   readKv?: () => Promise<RemoteKvSnapshot>
   putKv?: (binding: string, key: string, value: string) => Promise<void>
   routeTimeoutMs?: number
@@ -92,7 +75,6 @@ export interface GitHubFleetApplyResult {
   selected: string[]
   installedSecrets: number
   reconciledHooks: number
-  siteConsolidated: boolean
 }
 
 export interface GitHubFleetVerifyResult {
@@ -113,7 +95,6 @@ interface ResolvedDependencies {
   pingHook: typeof pingAndVerifyGitHubRepositoryHook
   listSecrets: typeof listWranglerSecrets
   putSecrets: (secrets: readonly SecretValue[]) => Promise<Set<string>>
-  deleteSecrets: (names: readonly string[]) => Promise<Set<string>>
   readKv: () => Promise<RemoteKvSnapshot>
   putKv: (binding: string, key: string, value: string) => Promise<void>
   routeTimeoutMs: number
@@ -124,12 +105,6 @@ interface ResolvedDependencies {
 }
 
 interface FleetFiles {
-  routesPath: string
-  devVarsPath: string
-  manifestPath: string
-  routesText: string
-  devVarsText: string
-  manifestText: string
   routes: Routes
   manifest: GitHubFleetManifest
 }
@@ -158,7 +133,6 @@ function resolvedDependencies(input: GitHubFleetReconcileDependencies): Resolved
     pingHook: input.pingHook ?? pingAndVerifyGitHubRepositoryHook,
     listSecrets: input.listSecrets ?? listWranglerSecrets,
     putSecrets: input.putSecrets ?? ((secrets) => putWranglerSecretsBulk(secrets)),
-    deleteSecrets: input.deleteSecrets ?? ((names) => deleteWranglerSecretsBulk(names)),
     readKv: input.readKv ?? readRemoteKvSnapshot,
     putKv: input.putKv ?? putRemoteKv,
     routeTimeoutMs: input.routeTimeoutMs ?? ROUTE_PROPAGATION_TIMEOUT_MS,
@@ -178,22 +152,12 @@ async function readFleetFiles(
   projectRoot: string,
   dependencies: ResolvedDependencies,
 ): Promise<FleetFiles> {
-  const routesPath = projectPath(projectRoot, ROUTES_FILE)
-  const devVarsPath = projectPath(projectRoot, DEV_VARS_FILE)
-  const manifestPath = projectPath(projectRoot, options.manifest)
   const fileSystem = dependencies.planDependencies?.fileSystem
-  const [routesText, devVarsText, manifestText] = await Promise.all([
-    readFile(routesPath, 'utf8'),
-    readPrivateOptionalText(devVarsPath, fileSystem),
-    readPrivateOptionalText(manifestPath, fileSystem),
+  const [routesText, manifestText] = await Promise.all([
+    readFile(projectPath(projectRoot, ROUTES_FILE), 'utf8'),
+    readPrivateOptionalText(projectPath(projectRoot, options.manifest), fileSystem),
   ])
   return {
-    routesPath,
-    devVarsPath,
-    manifestPath,
-    routesText,
-    devVarsText,
-    manifestText,
     routes: parseRoutes(routesText),
     manifest: parseGitHubFleetManifest(manifestText),
   }
@@ -235,27 +199,6 @@ function desiredHook(
     secret: entry.hmac.value,
     events: selection.events,
   }
-}
-
-function updateSubscriptionAuth(
-  routesText: string,
-  subscriptionName: string,
-  secretEnv: string,
-  alternateSecretEnvs?: string[],
-): string {
-  const routes = parseRoutes(routesText)
-  const index = routes.subs.findIndex((sub) => sub.name === subscriptionName)
-  if (index < 0) throw new Error(`subscription not found: ${subscriptionName}`)
-  const auth = {
-    scheme: GITHUB_FLEET_AUTH_SCHEME,
-    secretEnv,
-    ...(alternateSecretEnvs && alternateSecretEnvs.length > 0 ? { alternateSecretEnvs } : {}),
-  }
-  const updated = applyEdits(routesText, modify(routesText, ['subs', index, 'auth'], auth, {
-    formattingOptions: FORMATTING_OPTIONS,
-  }))
-  parseRoutes(updated)
-  return updated.endsWith('\n') ? updated : `${updated}\n`
 }
 
 function targetSubscriptionKeys(routes: Routes, names: readonly string[]): Set<string> {
@@ -340,18 +283,6 @@ export async function waitForUnsignedGitHubRoute(
   await waitForRouteStatus(hook, 401, resolvedDependencies(dependenciesInput))
 }
 
-async function writeRoutesAndSync(
-  files: FleetFiles,
-  routesText: string,
-  subscriptionNames: readonly string[],
-  dependencies: ResolvedDependencies,
-): Promise<FleetFiles> {
-  await writeText(files.routesPath, routesText, dependencies.planDependencies?.fileSystem)
-  const routes = parseRoutes(routesText)
-  await syncSubscriptionRoutes(routes, subscriptionNames, dependencies)
-  return { ...files, routesText, routes }
-}
-
 async function retryMutation<T>(
   action: () => Promise<T>,
   dependencies: ResolvedDependencies,
@@ -375,15 +306,6 @@ async function requireOneManagedHook(hook: DesiredHook, dependencies: ResolvedDe
   return matches[0]!
 }
 
-async function patchAndPingManagedHook(hook: DesiredHook, dependencies: ResolvedDependencies): Promise<void> {
-  const existing = await requireOneManagedHook(hook, dependencies)
-  await retryMutation(
-    () => dependencies.updateHook(hook.repo, existing.id, hook.url, hook.events, hook.secret),
-    dependencies,
-  )
-  await pingWithRetry(hook.repo, existing.id, dependencies)
-}
-
 async function pingWithRetry(repo: string, hookId: number, dependencies: ResolvedDependencies): Promise<void> {
   let lastError: unknown
   for (let attempt = 1; attempt <= dependencies.mutationAttempts; attempt += 1) {
@@ -398,98 +320,6 @@ async function pingWithRetry(repo: string, hookId: number, dependencies: Resolve
     }
   }
   throw lastError
-}
-
-async function transitionSiteProfile(
-  filesInput: FleetFiles,
-  profile: 'stars' | 'alerts',
-  entry: GitHubFleetManifestRepository,
-  retiring: { name: string; value: string },
-  retiringExistsRemotely: boolean,
-  dependencies: ResolvedDependencies,
-): Promise<FleetFiles> {
-  let files = filesInput
-  const subscriptionName = githubFleetSubscriptionName(SITE_REPOSITORY, profile)
-  const hook = () => desiredHook(files.routes, files.manifest, SITE_REPOSITORY, profile)
-
-  if (retiringExistsRemotely) {
-    let routesText = updateSubscriptionAuth(files.routesText, subscriptionName, retiring.name, [entry.hmac.name])
-    files = await writeRoutesAndSync(files, routesText, [subscriptionName], dependencies)
-    await waitForRouteStatus(hook(), 200, dependencies, retiring.value)
-    await waitForRouteStatus(hook(), 200, dependencies, entry.hmac.value)
-
-    await patchAndPingManagedHook(hook(), dependencies)
-
-    routesText = updateSubscriptionAuth(files.routesText, subscriptionName, entry.hmac.name, [retiring.name])
-    files = await writeRoutesAndSync(files, routesText, [subscriptionName], dependencies)
-    await waitForRouteStatus(hook(), 200, dependencies, entry.hmac.value)
-    await waitForRouteStatus(hook(), 200, dependencies, retiring.value)
-  }
-
-  const contracted = updateSubscriptionAuth(files.routesText, subscriptionName, entry.hmac.name)
-  files = await writeRoutesAndSync(files, contracted, [subscriptionName], dependencies)
-  await waitForRouteStatus(hook(), 200, dependencies, entry.hmac.value)
-  if (dependencies.routeGraceMs > 0) await dependencies.sleep(dependencies.routeGraceMs)
-  await waitForRouteStatus(hook(), 401, dependencies, retiring.value)
-  await patchAndPingManagedHook(hook(), dependencies)
-  return files
-}
-
-export async function consolidateSiteHmacs(
-  options: GitHubFleetOptions,
-  projectRoot = process.cwd(),
-  dependenciesInput: GitHubFleetReconcileDependencies = {},
-): Promise<boolean> {
-  const dependencies = resolvedDependencies(dependenciesInput)
-  let files = await readFleetFiles(options, projectRoot, dependencies)
-  const entry = files.manifest.repositories[SITE_REPOSITORY]
-  if (!entry?.retiringHmacs) return false
-  const secretNames = await dependencies.listSecrets()
-  if (!secretNames.has(entry.hmac.name)) throw new Error(`${SITE_REPOSITORY}: canonical Wrangler HMAC is missing`)
-
-  for (const profile of ['stars', 'alerts'] as const) {
-    const retiring = entry.retiringHmacs[profile]
-    if (!retiring) continue
-    files = await transitionSiteProfile(
-      files,
-      profile,
-      entry,
-      retiring,
-      secretNames.has(retiring.name),
-      dependencies,
-    )
-  }
-
-  const retiringNames = Object.values(entry.retiringHmacs).map(({ name }) => name)
-  const existingRetiringNames = retiringNames.filter((name) => secretNames.has(name))
-  if (existingRetiringNames.length > 0) await dependencies.deleteSecrets(existingRetiringNames)
-
-  let devVarsText = files.devVarsText
-  for (const retiring of Object.values(entry.retiringHmacs)) {
-    const localValue = getDevVar(devVarsText, retiring.name)
-    if (localValue !== null && localValue !== retiring.value) {
-      throw new Error(`${SITE_REPOSITORY}: local retiring HMAC ${retiring.name} disagrees with the manifest`)
-    }
-    if (localValue !== null) devVarsText = removeDevVar(devVarsText, retiring.name)
-  }
-  await writePrivateText(files.devVarsPath, devVarsText, dependencies.planDependencies?.fileSystem)
-
-  const manifest: GitHubFleetManifest = {
-    ...files.manifest,
-    repositories: {
-      ...files.manifest.repositories,
-      [SITE_REPOSITORY]: {
-        hmac: entry.hmac,
-        slugs: entry.slugs,
-      },
-    },
-  }
-  await writePrivateText(
-    files.manifestPath,
-    serializeGitHubFleetManifest(manifest),
-    dependencies.planDependencies?.fileSystem,
-  )
-  return true
 }
 
 async function validatePreparedPlan(plan: GitHubFleetPlan): Promise<void> {
@@ -572,8 +402,7 @@ export async function applyGitHubFleet(
     if (!approved) throw new Error('GitHub fleet apply cancelled')
   }
 
-  const siteConsolidated = await consolidateSiteHmacs(options, projectRoot, dependenciesInput)
-  let files = await readFleetFiles(options, projectRoot, dependencies)
+  const files = await readFleetFiles(options, projectRoot, dependencies)
   let secretNames = await dependencies.listSecrets()
   const missingSecrets = selected
     .map((repo) => files.manifest.repositories[repo]?.hmac)
@@ -610,7 +439,7 @@ export async function applyGitHubFleet(
       reconciledHooks += 1
     }
   }
-  return { selected, installedSecrets: missingSecrets.length, reconciledHooks, siteConsolidated }
+  return { selected, installedSecrets: missingSecrets.length, reconciledHooks }
 }
 
 async function remoteRouteIssues(
@@ -651,15 +480,7 @@ export async function verifyGitHubFleet(
       continue
     }
     if (!secretNames.has(entry.hmac.name)) issues.push(`${repo}: Wrangler HMAC is missing`)
-    if (entry.retiringHmacs) issues.push(`${repo}: HMAC consolidation is incomplete`)
   }
-  if (files.manifest.repositories[SITE_REPOSITORY]) {
-    for (const name of SITE_RETIRING_SECRET_NAMES) {
-      if (secretNames.has(name)) issues.push(`${SITE_REPOSITORY}: retiring Wrangler HMAC remains: ${name}`)
-      if (getDevVar(files.devVarsText, name) !== null) issues.push(`${SITE_REPOSITORY}: retiring local HMAC remains: ${name}`)
-    }
-  }
-
   let verifiedHooks = 0
   for (const repo of repositories) {
     if (!files.manifest.repositories[repo]) continue

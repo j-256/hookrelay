@@ -195,7 +195,8 @@ describe('GitHub fleet planning and preparation', () => {
       )
       const result = await prepareGitHubFleet(options(), dependencies(), directory)
       expect(result).toMatchObject({ manifestAdditions: 0, devVarAdditions: 1, subscriptionAdditions: 3 })
-      expect(await readFile(join(directory, '.dev.vars'), 'utf8')).toContain('HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_PLUGIN=')
+      expect(await readFile(join(directory, '.dev.vars'), 'utf8'))
+        .toContain('HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_PLUGIN=')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -239,23 +240,15 @@ describe('GitHub fleet planning and preparation', () => {
 })
 
 describe('existing GitHub fleet import', () => {
-  it('recovers route slugs and retiring site HMACs without parsing a legacy ledger', async () => {
+  it('recovers route slugs and the canonical HMAC without a separate ledger', async () => {
     const canonical: GitHubFleetManifestRepository = {
       hmac: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO', value: 'canonical-site-secret' },
       slugs: SLUGS,
     }
-    const subscriptions = await Promise.all(GITHUB_FLEET_PROFILE_NAMES.map(async (profile) => {
-      const sub = await buildGitHubFleetSubscription(OTHER_REPO, profile, githubFleetManifestValues(canonical))
-      if (profile === 'stars') sub.auth.secretEnv = 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_STARS'
-      if (profile === 'alerts') sub.auth.secretEnv = 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_ALERTS'
-      return sub
-    }))
-    const directory = await project(subscriptions, [
-      'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO=canonical-site-secret',
-      'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_STARS=retiring-stars-secret',
-      'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_ALERTS=retiring-alerts-secret',
-      '',
-    ].join('\n'))
+    const subscriptions = await Promise.all(GITHUB_FLEET_PROFILE_NAMES.map((profile) => (
+      buildGitHubFleetSubscription(OTHER_REPO, profile, githubFleetManifestValues(canonical))
+    )))
+    const directory = await project(subscriptions, 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO=canonical-site-secret\n')
     try {
       const hooks: GitHubRepositoryHook[] = GITHUB_FLEET_PROFILE_NAMES.map((profile, index) => ({
         id: index + 1,
@@ -276,14 +269,7 @@ describe('existing GitHub fleet import', () => {
       const result = await prepareGitHubFleet(options(), deps, directory)
       expect(result.subscriptionAdditions).toBe(0)
       const manifest = parseGitHubFleetManifest(await readFile(join(directory, 'fleet.json'), 'utf8'))
-      expect(manifest.repositories[OTHER_REPO]).toMatchObject({
-        hmac: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO' },
-        retiringHmacs: {
-          stars: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_STARS' },
-          alerts: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO_ALERTS' },
-        },
-      })
-      expect(manifest.repositories[OTHER_REPO]?.slugs).toEqual(SLUGS)
+      expect(manifest.repositories[OTHER_REPO]).toEqual(canonical)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

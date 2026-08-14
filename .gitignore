@@ -7,6 +7,10 @@ node_modules/
 .dev.vars
 worker-configuration.d.ts
 
+# Account-specific deployment config
+# Only wrangler.example.jsonc is tracked
+wrangler.jsonc
+
 # Real routing config may hold ntfy topics, which are bearer secrets
 # Only routes.example.jsonc (the template) is tracked; your filled-in copy is not
 routes.jsonc
