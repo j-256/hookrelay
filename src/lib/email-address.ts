@@ -12,13 +12,19 @@ export interface ParsedEmailRoute {
   slug: string
 }
 
+export function normalizeEmailRouteSlug(value: string): string {
+  const normalized = value.toLowerCase()
+  if (!SUBSCRIPTION_SLUG_RE.test(normalized)) throw new Error('invalid email route slug')
+  return normalized
+}
+
 export function parseEmailRoute(address: string): ParsedEmailRoute | null {
   const at = address.lastIndexOf('@')
   if (at <= 0 || at === address.length - 1) return null
   const local = address.slice(0, at)
   const separator = local.lastIndexOf('+')
   if (separator <= 0) return null
-  const slug = local.slice(separator + 1)
+  const slug = local.slice(separator + 1).toLowerCase()
   if (!SUBSCRIPTION_SLUG_RE.test(slug)) return null
   return { slug }
 }
@@ -42,9 +48,9 @@ export function normalizeEmailBaseAddress(value: string): string {
 
 export function routedEmailAddress(baseAddress: string, slug: string): string {
   const normalized = normalizeEmailBaseAddress(baseAddress)
-  if (!SUBSCRIPTION_SLUG_RE.test(slug)) throw new Error('invalid subscription slug')
+  const normalizedSlug = normalizeEmailRouteSlug(slug)
   const at = normalized.lastIndexOf('@')
-  return `${normalized.slice(0, at)}+${slug}${normalized.slice(at)}`
+  return `${normalized.slice(0, at)}+${normalizedSlug}${normalized.slice(at)}`
 }
 
 export function normalizeSenderRule(value: string): string {

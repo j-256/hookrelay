@@ -237,7 +237,7 @@ With `manual`, use the printed payload URL and sender secret, choose JSON conten
 
 ### Forwarding email notifications
 
-Email ingress is provider-independent. Hookrelay parses MIME with `postal-mime`, prefers a `text/plain` body, converts HTML-only bodies to safe plain text without loading remote content, stores the untouched MIME message in R2, and sends the normalized subject, body, timestamp, and first HTTP link through the same sink pipeline as webhooks. Attachment metadata is retained, but attachment content is not sent to sinks. The Worker rejects a raw message larger than 1 MiB, including attachments.
+Email ingress is provider-independent. Hookrelay parses MIME with `postal-mime`, prefers a `text/plain` body, converts HTML-only bodies to safe plain text without loading remote content, stores the untouched MIME message in R2, and sends the normalized subject, body, timestamp, and first HTTP link through the same sink pipeline as webhooks. Attachment metadata is retained, but attachment content is not sent to sinks. The Worker rejects a raw message larger than 1 MiB, including attachments. Generated email routes use 128-bit lowercase hexadecimal tokens, and the Worker normalizes incoming token case because mailbox providers may lowercase recipient addresses.
 
 Cloudflare setup is one-time:
 

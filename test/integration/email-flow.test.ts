@@ -24,7 +24,7 @@ function incomingEmail(overrides: Partial<IncomingEmailMessage> = {}): IncomingE
   const bytes = new TextEncoder().encode(PLAIN_EMAIL)
   return {
     from: 'notifications@status.openai.com',
-    to: `relay+${SUB_SLUG}@mail.example.com`,
+    to: `relay+${SUB_SLUG.toUpperCase()}@mail.example.com`,
     headers: new Headers(),
     raw: new Blob([bytes]).stream(),
     rawSize: bytes.byteLength,

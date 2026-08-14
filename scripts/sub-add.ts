@@ -5,6 +5,7 @@ import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import {
   EMAIL_SOURCE,
   normalizeEmailBaseAddress,
+  normalizeEmailRouteSlug,
   normalizeSenderRule,
   routedEmailAddress,
 } from '../src/lib/email-address'
@@ -38,6 +39,7 @@ const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
 const DEFAULT_GITHUB_EVENT_SELECTION = 'push'
 const GITHUB_PROFILE_REFERENCE = 'docs/github-event-profiles.md'
+const SUBSCRIPTION_SECRET_BYTES = 16
 const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true, tabSize: 2, eol: '\n' })
 const SUB_ADD_OPTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   '-s': '--sink',
@@ -290,7 +292,12 @@ export async function prepareSubscription(
   }
 
   const sinks = selectSinks(routes.sinks.map((sink) => sink.name), options.sinks)
-  const rawSlug = generated.slug ?? randomBytes(16).toString('base64url')
+  const generatedSlug = generated.slug ?? randomBytes(SUBSCRIPTION_SECRET_BYTES).toString(
+    profile.transport === 'email' ? 'hex' : 'base64url',
+  )
+  const rawSlug = profile.transport === 'email'
+    ? normalizeEmailRouteSlug(generatedSlug)
+    : generatedSlug
   const slugHash = await hashSubscriptionSlug(rawSlug)
   if (routes.subs.some((sub) => sub.slugHash === slugHash)) {
     throw new Error('generated subscription slug collides with an existing subscription')

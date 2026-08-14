@@ -8,6 +8,10 @@ import {
   senderMatchesRule,
   type IncomingEmailMessage,
 } from '../../src/email'
+import {
+  normalizeEmailRouteSlug,
+  routedEmailAddress,
+} from '../../src/lib/email-address'
 import { hashSubscriptionSlug } from '../../src/lib/subscription'
 import type { Subscription } from '../../src/types'
 import HTML_EMAIL from '../fixtures/email/html-only.eml?raw'
@@ -39,11 +43,14 @@ function subscription(allowedSenders: string[] = []): Subscription {
 }
 
 describe('parseEmailRoute', () => {
-  it('extracts a case-sensitive plus route token', () => {
+  it('normalizes plus route token case', () => {
     expect(parseEmailRoute(`relay+${RAW_SLUG}@mail.example.com`)).toEqual({ slug: RAW_SLUG })
     expect(parseEmailRoute(`relay+${RAW_SLUG.toUpperCase()}@mail.example.com`)).toEqual({
-      slug: RAW_SLUG.toUpperCase(),
+      slug: RAW_SLUG,
     })
+    expect(normalizeEmailRouteSlug(RAW_SLUG.toUpperCase())).toBe(RAW_SLUG)
+    expect(routedEmailAddress('relay@mail.example.com', RAW_SLUG.toUpperCase()))
+      .toBe(`relay+${RAW_SLUG}@mail.example.com`)
   })
 
   it('rejects base addresses and malformed route tokens', () => {

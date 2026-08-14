@@ -168,7 +168,7 @@ describe('subscription preparation', () => {
       '@status.openai.com',
     ])
     const prepared = await prepareSubscription(ROUTES, 'CF_ACCESS_AUD=test\n', options, {
-      slug: RAW_SLUG,
+      slug: RAW_SLUG.toUpperCase(),
     })
     const routes = parseRoutes(prepared.routesText)
 
@@ -187,6 +187,21 @@ describe('subscription preparation', () => {
     expect(prepared.webhookUrl).toBeUndefined()
     expect(prepared.senderSecret).toBeNull()
     expect(prepared.devVarsText).toBe('CF_ACCESS_AUD=test\n')
+  })
+
+  it('generates lowercase hexadecimal routes for email providers', async () => {
+    const options = parseSubAddArgs([
+      'openai-status',
+      'email',
+      '--email-base',
+      'relay@mail.example.com',
+    ])
+    const prepared = await prepareSubscription(ROUTES, '', options)
+
+    expect(prepared.rawSlug).toMatch(/^[a-f0-9]{32}$/)
+    expect(prepared.emailAddress).toBe(`relay+${prepared.rawSlug}@mail.example.com`)
+    expect(parseRoutes(prepared.routesText).subs[0]?.slugHash)
+      .toBe(await hashSubscriptionSlug(prepared.rawSlug))
   })
 })
 
