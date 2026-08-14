@@ -1,7 +1,6 @@
 import { getAdapter } from './adapters'
-import { prepareDeliveries } from './delivery'
+import { ingestEvent } from './ingest'
 import { hashSubscriptionSlug, SUBSCRIPTION_SLUG_PATTERN, subscriptionKvKey } from './lib/subscription'
-import { persistEvent, primaryKey } from './persistence'
 import type { Env } from './index'
 import type { Subscription } from './types'
 
@@ -83,37 +82,12 @@ export async function handleHook(
   }
 
   const contentType = request.headers.get('content-type') ?? 'application/octet-stream'
-  const persisted = await persistEvent(env, event, rawBody, contentType, slugHash)
-  const eventId = primaryKey(event)
-  const deliverySinks = event.shouldDeliver === false ? [] : sub.sinks
-  const enqueue = await prepareDeliveries(env, eventId, deliverySinks)
-
-  if (enqueue.deferred > 0) {
-    console.log(JSON.stringify({
-      level: 'warn',
-      msg: 'event.delivery.deferred',
-      eventId,
-      source: event.source,
-      subName: event.subName,
-      count: enqueue.deferred,
-    }))
-  }
-
-  if (persisted.duplicate) {
-    console.log(JSON.stringify({ level: 'info', msg: 'event.duplicate', eventId, source: event.source, subName: event.subName, type: event.type }))
-    return json({ ok: true, eventId, duplicate: true }, 200)
-  }
+  const ingested = await ingestEvent(env, event, rawBody, contentType, slugHash, sub.sinks)
 
   // Sender gets 200 after the event and all per-sink delivery intents are durable
-  console.log(JSON.stringify({
-    level: 'info',
-    msg: 'event.accepted',
-    eventId,
-    source: event.source,
-    subName: event.subName,
-    type: event.type,
-    severity: event.severity ?? null,
-    sinks: deliverySinks,
-  }))
-  return json({ ok: true, eventId }, 200)
+  return json({
+    ok: true,
+    eventId: ingested.eventId,
+    ...(ingested.duplicate ? { duplicate: true } : {}),
+  }, 200)
 }

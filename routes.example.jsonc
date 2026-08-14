@@ -1,8 +1,10 @@
 // Copy this file to routes.jsonc, then use `pnpm sink:add` and `pnpm sub:add`
-// sub:add discovers a single Cloudflare Worker custom domain automatically
+// sub:add discovers a single Cloudflare Worker custom domain for HTTP sources
 {
   // Optional when automatic custom-domain discovery is unavailable or ambiguous
   // "baseUrl": "https://hooks.example.com",
+  // Required for email subscriptions after Email Routing is configured
+  // "emailBaseAddress": "relay@mail.example.com",
   "subs": [],
   "sinks": []
 }

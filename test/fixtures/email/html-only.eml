@@ -1,0 +1,18 @@
+From: Status Robot <robot@example.net>
+To: Hookrelay <relay+a7f3b2c8d9e1f4g6h8j0k2@mail.example.com>
+Subject: Service recovered
+Message-ID: <recovered-456@example.net>
+Date: Thu, 13 Aug 2026 20:15:00 +0000
+MIME-Version: 1.0
+Content-Type: text/html; charset=utf-8
+
+<!doctype html>
+<html>
+  <head><style>.hidden { display: none; }</style></head>
+  <body>
+    <h1>Resolved</h1>
+    <p>All systems are operational &amp; traffic is healthy.</p>
+    <p><a href="https://status.example.net/incidents/456">View incident</a></p>
+    <img src="pixel.gif" alt="Status logo">
+  </body>
+</html>

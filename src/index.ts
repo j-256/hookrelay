@@ -4,6 +4,7 @@ import {
   enqueuePendingDeliveries,
   handleQueueBatch,
 } from './delivery'
+import { handleEmail, type IncomingEmailMessage } from './email'
 import { handleHook } from './router'
 import type { DeliveryMessage } from './types'
 
@@ -64,6 +65,10 @@ export default {
 
   async queue(batch: MessageBatch<unknown>, env: Env): Promise<void> {
     await handleQueueBatch(batch, env)
+  },
+
+  async email(message: IncomingEmailMessage, env: Env, ctx: ExecutionContext): Promise<void> {
+    await handleEmail(message, env, ctx)
   },
 
   async scheduled(_controller: ScheduledController, env: Env): Promise<void> {

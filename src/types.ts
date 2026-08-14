@@ -20,12 +20,17 @@ export interface SubAuth {
   alternateSecretEnvs?: string[]
 }
 
+export interface EmailSubscriptionConfig {
+  allowedSenders: string[]
+}
+
 export interface Subscription {
   name: string
   source: string
   enabled: boolean
   sinks: string[]
   auth: SubAuth | null
+  email?: EmailSubscriptionConfig
 }
 
 export type DeliveryStatus =

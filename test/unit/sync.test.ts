@@ -3,6 +3,7 @@ import { computePlan, parseRoutes, parseSyncArgs, printableKvKey, validateRoutes
 
 const CLAUDE_HASH = 'a'.repeat(64)
 const GITHUB_HASH = 'b'.repeat(64)
+const EMAIL_HASH = 'c'.repeat(64)
 
 const ROUTES = `
 {
@@ -41,6 +42,25 @@ const ROTATING_ROUTES = ROUTES.replace(
   '"auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH", "alternateSecretEnvs": ["HMAC_GH_NEXT"] }',
 )
 
+const EMAIL_ROUTES = `
+{
+  "emailBaseAddress": "relay@mail.example.com",
+  "subs": [
+    {
+      "name": "openai-status",
+      "source": "email",
+      "slugHash": "${EMAIL_HASH}",
+      "enabled": true,
+      "sinks": ["discord"],
+      "email": { "allowedSenders": ["@status.openai.com"] }
+    }
+  ],
+  "sinks": [
+    { "name": "discord", "type": "discord", "urlEnv": "SINK_DISCORD_URL" }
+  ]
+}
+`
+
 describe('parseSyncArgs', () => {
   it('accepts short and long apply options', () => {
     expect(parseSyncArgs([])).toEqual({ yes: false })
@@ -77,6 +97,13 @@ describe('parseRoutes', () => {
       secretEnv: 'HMAC_GH',
       alternateSecretEnvs: ['HMAC_GH_NEXT'],
     })
+  })
+
+  it('parses email ingress configuration', () => {
+    const cfg = parseRoutes(EMAIL_ROUTES)
+    expect(cfg.emailBaseAddress).toBe('relay@mail.example.com')
+    expect(cfg.subs[0]?.email).toEqual({ allowedSenders: ['@status.openai.com'] })
+    expect(cfg.subs[0]?.auth).toBeNull()
   })
 })
 
@@ -227,6 +254,53 @@ describe('validateRoutes', () => {
     })
     expect(issues.join('\n')).toMatch(/invalid setup\.github\.eventProfiles/)
   })
+
+  it('validates email base addresses and sender rules', () => {
+    const cfg = parseRoutes(EMAIL_ROUTES.replace(
+      '"@status.openai.com"',
+      '"@status.openai.com", "@status.openai.com", "not-an-address"',
+    ))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['email']),
+      knownSinkTypes: new Set(['discord']),
+      sinkSchemas: { discord: { urlEnv: 'string' } } as any,
+      secretsAvailable: new Set(['SINK_DISCORD_URL']),
+    })
+    expect(issues).toContain("sub 'openai-status': duplicate email sender rule: @status.openai.com")
+    expect(issues.join('\n')).toMatch(/invalid sender address rule/)
+  })
+
+  it('requires email metadata only on email subscriptions', () => {
+    const missingEmail = parseRoutes(EMAIL_ROUTES.replace(
+      ',\n      "email": { "allowedSenders": ["@status.openai.com"] }',
+      '',
+    ))
+    const wrongSource = parseRoutes(EMAIL_ROUTES.replace('"source": "email"', '"source": "statuspage"'))
+    const context = {
+      knownSources: new Set(['email', 'statuspage']),
+      knownSinkTypes: new Set(['discord']),
+      sinkSchemas: { discord: { urlEnv: 'string' } } as any,
+      secretsAvailable: new Set(['SINK_DISCORD_URL']),
+    }
+    expect(validateRoutes(missingEmail, context).join('\n')).toMatch(/require email configuration/)
+    expect(validateRoutes(wrongSource, context).join('\n')).toMatch(/only valid for email subscriptions/)
+  })
+
+  it('requires a valid email base address for email subscriptions', () => {
+    const missingBase = parseRoutes(EMAIL_ROUTES.replace(
+      '  "emailBaseAddress": "relay@mail.example.com",\n',
+      '',
+    ))
+    const invalidBase = parseRoutes(EMAIL_ROUTES.replace('relay@mail.example.com', 'relay+tag@mail.example.com'))
+    const context = {
+      knownSources: new Set(['email']),
+      knownSinkTypes: new Set(['discord']),
+      sinkSchemas: { discord: { urlEnv: 'string' } } as any,
+      secretsAvailable: new Set(['SINK_DISCORD_URL']),
+    }
+    expect(validateRoutes(missingBase, context).join('\n')).toMatch(/require emailBaseAddress/)
+    expect(validateRoutes(invalidBase, context).join('\n')).toMatch(/emailBaseAddress is invalid/)
+  })
 })
 
 describe('computePlan', () => {
@@ -264,6 +338,19 @@ describe('computePlan', () => {
       scheme: 'github-sha256',
       secretEnv: 'HMAC_GH',
       alternateSecretEnvs: ['HMAC_GH_NEXT'],
+    })
+  })
+
+  it('serializes email sender rules into runtime subscription configuration', () => {
+    const cfg = parseRoutes(EMAIL_ROUTES)
+    const plan = computePlan(cfg, { subs: {}, sinks: {} })
+    expect(JSON.parse(plan.subPuts[0]!.value)).toEqual({
+      name: 'openai-status',
+      source: 'email',
+      enabled: true,
+      sinks: ['discord'],
+      auth: null,
+      email: { allowedSenders: ['@status.openai.com'] },
     })
   })
 })

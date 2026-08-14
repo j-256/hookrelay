@@ -1,0 +1,29 @@
+From: OpenAI Status <notifications@status.openai.com>
+To: Hookrelay <relay+a7f3b2c8d9e1f4g6h8j0k2@mail.example.com>
+Subject: Elevated errors for ChatGPT
+Message-ID: <incident-123-update-1@status.openai.com>
+Date: Thu, 13 Aug 2026 18:42:00 +0000
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="mixed-boundary"
+
+--mixed-boundary
+Content-Type: multipart/alternative; boundary="alternative-boundary"
+
+--alternative-boundary
+Content-Type: text/plain; charset=utf-8
+
+Investigating - We are investigating elevated errors for ChatGPT.
+
+Follow updates at https://status.openai.com/incidents/example.
+--alternative-boundary
+Content-Type: text/html; charset=utf-8
+
+<p>HTML fallback should not replace the available plain-text update.</p>
+--alternative-boundary--
+--mixed-boundary
+Content-Type: text/plain; name="details.txt"
+Content-Disposition: attachment; filename="details.txt"
+Content-Transfer-Encoding: base64
+
+aW50ZXJuYWwgYXR0YWNobWVudAo=
+--mixed-boundary--

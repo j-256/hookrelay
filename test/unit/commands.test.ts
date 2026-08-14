@@ -11,6 +11,7 @@ describe('commandReference', () => {
     expect(reference).toContain('pnpm sink:rename <old-name> <new-name>')
     expect(reference).toContain('pnpm sink:secret:rename <sink> <old-secret> <new-secret>')
     expect(reference).toContain('pnpm sub:add <name> <source> [-s <sink>]')
+    expect(reference).toContain('--email-base, --allow-sender')
     expect(reference).toContain('pnpm sub:events <name> [-e <profiles>]')
     expect(reference).toContain('pnpm github:fleet plan --root <directory> --manifest <file>')
     expect(reference).toContain('pnpm github:fleet prepare --root <directory> --manifest <file>')

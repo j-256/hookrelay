@@ -6,6 +6,7 @@ import {
   parseSubAddArgs,
   prepareSubscription,
   resolveSubscriptionBaseUrl,
+  resolveSubscriptionEmailBaseAddress,
   selectSinks,
 } from '../../scripts/sub-add'
 import { parseRoutes } from '../../scripts/sync'
@@ -77,6 +78,39 @@ describe('parseSubAddArgs', () => {
     expect(() => parseSubAddArgs(['claude', 'statuspage', '--events', 'push'])).toThrow(/only valid for GitHub/)
     expect(() => parseSubAddArgs(['site', 'github'])).toThrow(/require --repo/)
   })
+
+  it('accepts repeatable sender rules for email subscriptions', () => {
+    const options = parseSubAddArgs([
+      'openai-status',
+      'email',
+      '--email-base',
+      'Relay@Mail.Example.com',
+      '--allow-sender',
+      '@Status.OpenAI.com',
+      '--allow-sender',
+      'notifications@example.net',
+    ])
+    expect(options).toMatchObject({
+      source: 'email',
+      emailBaseAddress: 'Relay@Mail.Example.com',
+      allowedSenders: ['@status.openai.com', 'notifications@example.net'],
+    })
+  })
+
+  it('keeps transport-specific options on their matching source', () => {
+    expect(() => parseSubAddArgs([
+      'openai-status', 'email', '--base-url', 'https://hooks.example.com',
+    ])).toThrow(/not valid for email/)
+    expect(() => parseSubAddArgs([
+      'claude', 'statuspage', '--email-base', 'relay@mail.example.com',
+    ])).toThrow(/only valid for email/)
+    expect(() => parseSubAddArgs([
+      'claude', 'statuspage', '--allow-sender', '@example.com',
+    ])).toThrow(/only valid for email/)
+    expect(() => parseSubAddArgs([
+      'service', 'email', '--allow-sender', '@example.com', '--allow-sender', '@EXAMPLE.COM',
+    ])).toThrow(/rule supplied more than once/)
+  })
 })
 
 describe('subscription preparation', () => {
@@ -123,6 +157,37 @@ describe('subscription preparation', () => {
     expect(() => selectSinks(['discord', 'phone'], [])).toThrow(/multiple sinks/)
     expect(selectSinks(['discord', 'phone'], ['phone', 'discord'])).toEqual(['phone', 'discord'])
   })
+
+  it('writes a generic email route and prints an address without an HTTP endpoint', async () => {
+    const options = parseSubAddArgs([
+      'openai-status',
+      'email',
+      '--email-base',
+      'relay@mail.example.com',
+      '--allow-sender',
+      '@status.openai.com',
+    ])
+    const prepared = await prepareSubscription(ROUTES, 'CF_ACCESS_AUD=test\n', options, {
+      slug: RAW_SLUG,
+    })
+    const routes = parseRoutes(prepared.routesText)
+
+    expect(prepared.routesText).not.toContain(RAW_SLUG)
+    expect(routes.emailBaseAddress).toBe('relay@mail.example.com')
+    expect(routes.subs[0]).toEqual({
+      name: 'openai-status',
+      source: 'email',
+      slugHash: await hashSubscriptionSlug(RAW_SLUG),
+      enabled: true,
+      sinks: ['discord'],
+      auth: null,
+      email: { allowedSenders: ['@status.openai.com'] },
+    })
+    expect(prepared.emailAddress).toBe(`relay+${RAW_SLUG}@mail.example.com`)
+    expect(prepared.webhookUrl).toBeUndefined()
+    expect(prepared.senderSecret).toBeNull()
+    expect(prepared.devVarsText).toBe('CF_ACCESS_AUD=test\n')
+  })
 })
 
 describe('base URL resolution', () => {
@@ -143,6 +208,16 @@ describe('base URL resolution', () => {
     await expect(resolveSubscriptionBaseUrl(ROUTES, undefined, discover))
       .resolves.toBe('https://discovered.example.com')
     expect(discover).toHaveBeenCalledTimes(1)
+  })
+
+  it('uses an explicit or saved email base address without discovery', () => {
+    const saved = ROUTES.replace('{', '{\n  "emailBaseAddress": "saved@mail.example.com",')
+    expect(resolveSubscriptionEmailBaseAddress(saved, 'EXPLICIT@MAIL.EXAMPLE.COM'))
+      .toBe('explicit@mail.example.com')
+    expect(resolveSubscriptionEmailBaseAddress(saved, undefined)).toBe('saved@mail.example.com')
+    expect(() => resolveSubscriptionEmailBaseAddress(ROUTES, undefined)).toThrow(/--email-base/)
+    expect(() => resolveSubscriptionEmailBaseAddress(ROUTES, 'relay+tag@mail.example.com'))
+      .toThrow(/must not contain plus/)
   })
 })
 

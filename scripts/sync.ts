@@ -7,6 +7,11 @@ import {
   SUBSCRIPTION_KEY_PREFIX,
   subscriptionKvKey,
 } from '../src/lib/subscription'
+import {
+  EMAIL_SOURCE,
+  normalizeEmailBaseAddress,
+  normalizeSenderRule,
+} from '../src/lib/email-address'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { parseGitHubEventSelection } from './github-events'
 import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
@@ -30,6 +35,12 @@ const subSchema = z
       .nullable()
       .optional()
       .default(null),
+    email: z
+      .object({
+        allowedSenders: z.array(z.string().min(1)).default([]),
+      })
+      .strict()
+      .optional(),
     setup: z
       .object({
         github: z
@@ -55,6 +66,7 @@ const sinkSchema = z
 const routesSchema = z
   .object({
     baseUrl: z.string().url().optional(),
+    emailBaseAddress: z.string().min(1).optional(),
     subs: z.array(subSchema),
     sinks: z.array(sinkSchema),
   })
@@ -109,6 +121,16 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
   const issues: string[] = []
   const declaredSinkNames = new Set(routes.sinks.map((s) => s.name))
   const slugHashOwners = new Map<string, string>() // hash -> first sub.name to claim it
+  let normalizedEmailBaseAddress: string | undefined
+
+  if (routes.emailBaseAddress) {
+    try {
+      normalizedEmailBaseAddress = normalizeEmailBaseAddress(routes.emailBaseAddress)
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err)
+      issues.push(`emailBaseAddress is invalid: ${message}`)
+    }
+  }
 
   for (const sub of routes.subs) {
     const prevOwner = slugHashOwners.get(sub.slugHash)
@@ -120,6 +142,32 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
 
     if (!ctx.knownSources.has(sub.source)) {
       issues.push(`sub '${sub.name}': unknown source: ${sub.source}`)
+    }
+    if (sub.source === EMAIL_SOURCE) {
+      if (!sub.email) {
+        issues.push(`sub '${sub.name}': email subscriptions require email configuration`)
+      }
+      if (!normalizedEmailBaseAddress) {
+        issues.push(`sub '${sub.name}': email subscriptions require emailBaseAddress`)
+      }
+      if (sub.auth) {
+        issues.push(`sub '${sub.name}': email subscriptions do not use auth configuration`)
+      }
+      const normalizedRules = new Set<string>()
+      for (const rule of sub.email?.allowedSenders ?? []) {
+        try {
+          const normalized = normalizeSenderRule(rule)
+          if (normalizedRules.has(normalized)) {
+            issues.push(`sub '${sub.name}': duplicate email sender rule: ${rule}`)
+          }
+          normalizedRules.add(normalized)
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          issues.push(`sub '${sub.name}': ${message}`)
+        }
+      }
+    } else if (sub.email) {
+      issues.push(`sub '${sub.name}': email configuration is only valid for email subscriptions`)
     }
     for (const sinkName of sub.sinks) {
       if (!declaredSinkNames.has(sinkName)) {
@@ -232,6 +280,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
       enabled: sub.enabled,
       sinks: sub.sinks,
       auth: sub.auth ?? null,
+      ...(sub.email ? { email: sub.email } : {}),
     })
     const existing = current.subs[key]
     const existingCanon = existing != null ? canonicalizeJson(existing) : null

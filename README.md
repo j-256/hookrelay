@@ -2,17 +2,18 @@
 
 Run `pnpm commands` for a one-screen reference to routine setup, sync, development, and deployment commands.
 
-A small, extensible webhook receiver for Cloudflare Workers. Drop in adapters for new webhook senders (Statuspage, GitHub, your own scripts) and sinks for where notifications go (push, chat, log). Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
+A small, extensible notification receiver for Cloudflare Workers. Drop in adapters for new webhook senders (Statuspage, GitHub, your own scripts), receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
 
 ## What it does
 
-Receives webhooks at `/hook/<source>/<slug>` from a configurable list of senders, normalizes the payload, persists every event to D1+R2, then queues one durable delivery per subscription sink (ntfy push, Discord channel, etc). Failed sink requests retry independently, and exhausted deliveries remain visible and manually retryable in the admin page.
+Receives webhooks at `/hook/<source>/<slug>` or MIME email through Cloudflare Email Routing, normalizes the payload, persists every event to D1+R2, then queues one durable delivery per subscription sink (ntfy push, Discord channel, etc). Failed sink requests retry independently, and exhausted deliveries remain visible and manually retryable in the admin page.
 
-Built-in adapters (v1):
+Built-in sources (v1):
 - Statuspage incidents and scheduled maintenance (Atlassian)
 - GitHub repo webhooks
 - Cloudflare Notifications
 - UptimeRobot
+- Generic email, including multipart plain text and HTML messages
 
 Built-in sinks (v1):
 - ntfy.sh push (also self-hostable)
@@ -80,7 +81,9 @@ Steps:
    ```sh
    pnpm sub:add claude-status statuspage
    pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events activity,alerts
+   pnpm sub:add openai-status email --email-base relay@mail.example.com
    ```
+   Email subscriptions require the one-time Email Routing setup described in [Forwarding email notifications](#forwarding-email-notifications).
 9. (Optional) Deploy the edge WAF rule that keeps scanner traffic off the Worker:
    ```sh
    ./scripts/deploy-waf.sh hooks.example.com          # dry-run, shows the plan
@@ -137,23 +140,25 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | Field | What it is |
 | --- | --- |
 | `baseUrl` | Optional public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. Without it, the command discovers the single production custom domain attached to the Worker through Cloudflare's API and saves the result here. This local setup value is not written to KV. |
+| `emailBaseAddress` | Base address for Cloudflare Email Routing, such as `relay@mail.example.com`. `pnpm sub:add` appends a private plus-address route token. This local setup value is not written to KV. |
 | `subs[].slugHash` | Lowercase SHA-256 digest of the private slug. The Worker hashes the incoming path segment and uses `sub:sha256:<slugHash>` for KV lookup; neither KV nor this file needs the raw slug. Generate it with `pnpm sub:add` rather than choosing a low-entropy slug. |
-| `subs[].source` | Adapter name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`). |
+| `subs[].source` | Source name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`, `email`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
 | `subs[].auth` | Optional `{ scheme, secretEnv }` for signature/secret verification on top of the slug. |
+| `subs[].email.allowedSenders` | Optional email noise filter containing exact mailboxes or exact domains written as `@example.com`. Both the SMTP envelope sender and parsed `From`/`Sender` identities must match when the list is nonempty. |
 | `subs[].setup` | Local-only provider setup metadata, including a GitHub repository and event profile names. `pnpm sync` validates it but does not write it to KV. |
 | `sinks[].type: ntfy` -> `topic` | **Bearer secret for unreserved topics.** Anyone who knows an unreserved topic can read its notifications. Use a long random topic and treat it like a password. |
 | `sinks[].type: ntfy` -> `server` | Optional. Base URL of a self-hosted ntfy server; defaults to `https://ntfy.sh`. |
 | `sinks[].type: ntfy` -> `tokenEnv` | Optional Wrangler secret name containing an ntfy access token. Strongly recommended for Cloudflare Workers so publishes use the account's quota instead of a shared anonymous egress-IP quota. Authentication does not make an unreserved topic private. |
 | `sinks[].type: discord` -> `urlEnv` | Name of the Wrangler secret holding the Discord webhook URL (not the URL itself). |
 
-The incoming slug and Discord webhook URL are both bearer secrets, but Hookrelay uses them differently. It hashes the slug because it only needs to recognize an incoming value. It keeps the Discord URL in a Worker secret because it must recover that value to make an outbound request. Guard generated webhook URLs, unreserved ntfy topics, and sink credentials in a password manager and keep them out of logs, screenshots, and commits.
+Incoming HTTP slugs, email plus-route tokens, and Discord webhook URLs are bearer values, but Hookrelay uses them differently. It hashes route tokens because it only needs to recognize an incoming value. It keeps the Discord URL in a Worker secret because it must recover that value to make an outbound request. Guard generated webhook URLs and email addresses, unreserved ntfy topics, and sink credentials in a password manager and keep them out of logs, screenshots, and commits.
 
 ## Guided setup lifecycle
 
 `sink:add` and `sub:add` follow this order:
 
-1. Read and validate gitignored `routes.jsonc` and `.dev.vars`. `sink:add` reads the Discord URL through concealed input. `sub:add` generates its private values and resolves the base URL.
+1. Read and validate gitignored `routes.jsonc` and `.dev.vars`. `sink:add` reads the Discord URL through concealed input. `sub:add` generates its private values and resolves the HTTP origin or email base address for the selected source.
 2. Write the local desired state. Routing and hash-only subscription data go to `routes.jsonc`; Worker-readable secrets go to `.dev.vars`, which is kept at mode `600`. The commands do not populate Miniflare's local KV.
 3. Print anything that belongs in your password manager. In particular, the raw incoming slug is not added to `.dev.vars`, because the Worker only needs its hash.
 4. Ask before changing production. Approval installs any new Wrangler secret, then runs `pnpm sync` to compare `routes.jsonc` with remote Worker KV.
@@ -215,7 +220,7 @@ pnpm sub:add <subscription-name> <source> [-s <sink-name>]
 
 If exactly one sink exists, it is selected automatically. Repeat `-s` or `--sink` to route to several sinks. The command generates a private incoming slug, stores only its SHA-256 hash in `routes.jsonc`, and prints the raw slug as `SUB_<NAME>_SLUG` for your password manager. Signed providers also get a per-subscription sender secret, mirrored into `.dev.vars` and offered to Wrangler. Production changes are previewed and confirmed unless `-y` or `--yes` is supplied.
 
-`sub:add` also accepts `-b` for `--base-url`, `-r` for `--repo`, and `-e` for `--events`. Run any setup command with `-h` or `--help` for its complete usage.
+`sub:add` also accepts `-b` for `--base-url`, `--email-base` for an Email Routing address, repeated `--allow-sender` filters, `-r` for `--repo`, and `-e` for `--events`. Run any setup command with `-h` or `--help` for its complete usage.
 
 For a GitHub repository, pass the repository separately instead of deriving it from the subscription name. Subscription names may still use a readable namespace such as `github:example-owner/example-repo`:
 
@@ -228,6 +233,35 @@ The `--events` value accepts comma-separated profiles. Profiles compose by set u
 The base URL resolves from an explicit `--base-url`, then the value already saved in `routes.jsonc`, then the single production custom domain attached to the Worker named in `wrangler.jsonc`. Automatic discovery uses `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; an absent or ambiguous domain produces an error asking for `--base-url`.
 
 With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and KV route are live.
+
+### Forwarding email notifications
+
+Email ingress is provider-independent. Hookrelay parses MIME with `postal-mime`, prefers a `text/plain` body, converts HTML-only bodies to safe plain text without loading remote content, stores the untouched MIME message in R2, and sends the normalized subject, body, timestamp, and first HTTP link through the same sink pipeline as webhooks. Attachment metadata is retained, but attachment content is not sent to sinks. The Worker rejects a raw message larger than 1 MiB, including attachments.
+
+Cloudflare setup is one-time:
+
+1. Deploy this Worker, then open Compute > Email Service > Email Routing in the Cloudflare dashboard. Onboard the zone or, preferably, [add a dedicated routing subdomain](https://developers.cloudflare.com/email-service/configuration/subdomains/) such as `mail.example.com` so existing apex-domain mail remains untouched.
+2. In Email Routing > Settings, enable [subaddressing](https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/#subaddressing).
+3. In Routing Rules, create the base address, such as `relay@mail.example.com`, choose `Send to a Worker`, and select the Hookrelay Worker. One rule handles every generated `relay+<route>@mail.example.com` address because Cloudflare preserves the plus detail in `message.to`.
+4. Add and sync a subscription, then paste the printed email address into the provider's email subscription form:
+
+   ```sh
+   pnpm sub:add openai-status email --email-base relay@mail.example.com
+   ```
+
+This works for OpenAI status notifications without knowing their template in advance. The parser handles multipart encodings generically, and the provider's confirmation message follows the same path to Discord or another selected sink.
+
+If the provider's sender identity is already known, add one or more exact mailboxes or exact domains:
+
+```sh
+pnpm sub:add service-status email --email-base relay@mail.example.com \
+  --allow-sender notifications@example.com \
+  --allow-sender @mailer.example.com
+```
+
+If the identity is not documented, omit the allowlist. `View raw` in `/admin/events` exposes the original headers when troubleshooting, while the normalized R2 object records the envelope sender. Add filters only after confirming every legitimate identity, then run `pnpm sync` and `pnpm sync -y`. The allowlist is a noise filter, not cryptographic authentication: the documented [Email Worker message interface](https://developers.cloudflare.com/email-service/api/route-emails/email-handler/) exposes envelope fields, headers, and raw MIME, but no verified SPF or DKIM result.
+
+Treat each generated address as a bearer route. Cloudflare preserves the full plus address in Email Routing activity logs, and Hookrelay's protected raw MIME contains the recipient plus any confirmation or unsubscribe links. Hookrelay does not copy the route token into D1, normalized R2 objects, queue messages, or its own logs. Restrict access to the Cloudflare account, R2 bucket, admin page, and destination sink accordingly.
 
 ### Updating GitHub event profiles
 
@@ -293,7 +327,7 @@ The workflow is additive-only: it does not prune unmanaged hooks, stale manifest
 
 Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating hooks or retiring an old HMAC. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
 
-`pnpm new-sub <name> <source>` remains available as a low-level generator. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks.
+`pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.
 
@@ -350,7 +384,9 @@ curl -s -X POST -H 'content-type: application/json' \
   -d @test/fixtures/uptime/down.json
 ```
 
-Expected: each returns `{"ok":true,"eventId":"..."}` after the event and delivery intent are durable. The event appears at `/admin/events`, normally moving from `queued` or `processing` to `delivered` within seconds.
+Expected for each webhook command: it returns `{"ok":true,"eventId":"..."}` after the event and delivery intent are durable. The event appears at `/admin/events`, normally moving from `queued` or `processing` to `delivered` within seconds.
+
+For email, send a message to the address printed by `pnpm sub:add`, or complete a provider's email-subscription confirmation flow. If an allowlist is active, send from an allowed identity. Email has no HTTP response to inspect; the event should appear with source `email` and type `email.received`.
 
 ## Writing an adapter
 
@@ -390,7 +426,7 @@ To support a new webhook source ("Linear"):
    // ...
    registerAdapter(linear)
    ```
-3. Add the source name to `knownSources` in `scripts/sync.ts` (until that script learns to import from registry).
+3. Add an HTTP transport profile and any sender-authentication scheme to `scripts/subscription-sources.ts`.
 4. Write tests in `test/unit/adapters/linear.test.ts` -- see existing adapter tests for the shape.
 
 ## Writing a sink
@@ -430,6 +466,8 @@ To support a new destination ("Slack"):
 
 See `src/` for components and `test/` for unit and integration tests. Key files:
 - `src/router.ts` – request pipeline (slug parse, KV lookup, verify, parse, persist, enqueue)
+- `src/email.ts` – MIME parsing, sender filtering, email normalization, and routing
+- `src/ingest.ts` – shared durable persistence and delivery preparation for HTTP and email
 - `src/delivery.ts` – D1 outbox, queue consumers, retries, dead-letter handling, and manual redrive
 - `src/persistence.ts` – D1 idempotent insert plus R2 raw and normalized objects
 - `src/fanout.ts` – validation and dispatch for one sink attempt

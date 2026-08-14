@@ -2,6 +2,12 @@ import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
+import {
+  EMAIL_SOURCE,
+  normalizeEmailBaseAddress,
+  normalizeSenderRule,
+  routedEmailAddress,
+} from '../src/lib/email-address'
 import { hashSubscriptionSlug } from '../src/lib/subscription'
 import { discoverWorkerBaseUrl } from './cloudflare-domains'
 import {
@@ -47,6 +53,8 @@ export interface SubAddOptions {
   source: string
   sinks: string[]
   baseUrl?: string
+  emailBaseAddress?: string
+  allowedSenders: string[]
   repo?: string
   githubEvents: GitHubEventSelection
   yes: boolean
@@ -67,6 +75,9 @@ interface NewSubscriptionConfig {
     scheme: string
     secretEnv: string
   }
+  email?: {
+    allowedSenders: string[]
+  }
   setup?: {
     github: {
       repo: string
@@ -78,7 +89,8 @@ interface NewSubscriptionConfig {
 export interface PreparedSubscription {
   routesText: string
   devVarsText: string
-  webhookUrl: string
+  webhookUrl?: string
+  emailAddress?: string
   rawSlug: string
   slugSecretName: string
   senderSecret: SecretValue | null
@@ -92,6 +104,8 @@ export function subAddUsage(): string {
     'options:',
     '  -s, --sink <name>       select a sink, repeatable',
     '  -b, --base-url <url>    set the Hookrelay base URL',
+    '      --email-base <addr> set the Email Routing base address',
+    '      --allow-sender <id> allow an email mailbox or @domain, repeatable',
     '  -r, --repo <owner/repo> GitHub repository target',
     '  -e, --events <profiles> comma-separated GitHub profiles (default: push)',
     '  -y, --yes               apply remote changes without prompts',
@@ -111,6 +125,8 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   const positional: string[] = []
   const sinks: string[] = []
   let baseUrl: string | undefined
+  let emailBaseAddress: string | undefined
+  const allowedSenders: string[] = []
   let repo: string | undefined
   let githubEvents = parseGitHubEventSelection(DEFAULT_GITHUB_EVENT_SELECTION)
   let githubEventsSpecified = false
@@ -125,6 +141,13 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
     } else if (option === '--base-url') {
       if (baseUrl !== undefined) throw new Error('--base-url may only be supplied once')
       baseUrl = optionValue(argv, i, arg)
+      i += 1
+    } else if (option === '--email-base') {
+      if (emailBaseAddress !== undefined) throw new Error('--email-base may only be supplied once')
+      emailBaseAddress = optionValue(argv, i, arg)
+      i += 1
+    } else if (option === '--allow-sender') {
+      allowedSenders.push(optionValue(argv, i, arg))
       i += 1
     } else if (option === '--repo') {
       if (repo !== undefined) throw new Error('--repo may only be supplied once')
@@ -156,7 +179,27 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
     throw new Error('--repo and --events are only valid for GitHub subscriptions')
   }
 
-  return { name, source, sinks, baseUrl, repo, githubEvents, yes }
+  if (source === EMAIL_SOURCE) {
+    if (baseUrl) throw new Error('--base-url is not valid for email subscriptions')
+  } else if (emailBaseAddress || allowedSenders.length > 0) {
+    throw new Error('--email-base and --allow-sender are only valid for email subscriptions')
+  }
+  const normalizedAllowedSenders = allowedSenders.map(normalizeSenderRule)
+  if (new Set(normalizedAllowedSenders).size !== normalizedAllowedSenders.length) {
+    throw new Error('email sender rule supplied more than once')
+  }
+
+  return {
+    name,
+    source,
+    sinks,
+    baseUrl,
+    emailBaseAddress,
+    allowedSenders: normalizedAllowedSenders,
+    repo,
+    githubEvents,
+    yes,
+  }
 }
 
 export function normalizeBaseUrl(value: string): string {
@@ -179,6 +222,16 @@ export async function resolveSubscriptionBaseUrl(
   return normalizeBaseUrl(await discover())
 }
 
+export function resolveSubscriptionEmailBaseAddress(
+  routesText: string,
+  explicitEmailBaseAddress: string | undefined,
+): string {
+  if (explicitEmailBaseAddress) return normalizeEmailBaseAddress(explicitEmailBaseAddress)
+  const savedEmailBaseAddress = parseRoutes(routesText).emailBaseAddress
+  if (savedEmailBaseAddress) return normalizeEmailBaseAddress(savedEmailBaseAddress)
+  throw new Error('routes.jsonc has no emailBaseAddress; pass --email-base <address>')
+}
+
 export function selectSinks(configuredNames: string[], requestedNames: string[]): string[] {
   if (configuredNames.length === 0) throw new Error('routes.jsonc has no sinks; add a sink first')
   if (requestedNames.length === 0) {
@@ -195,11 +248,21 @@ export function selectSinks(configuredNames: string[], requestedNames: string[])
   return [...selected]
 }
 
-function updateRoutesText(text: string, baseUrl: string, subscription: NewSubscriptionConfig): string {
+function updateRoutesText(
+  text: string,
+  endpoint: { baseUrl?: string; emailBaseAddress?: string },
+  subscription: NewSubscriptionConfig,
+): string {
   let updated = text
   const parsed = parseRoutes(text)
-  if (parsed.baseUrl !== baseUrl) {
-    updated = applyEdits(updated, modify(updated, ['baseUrl'], baseUrl, { formattingOptions: FORMATTING_OPTIONS }))
+  if (endpoint.baseUrl && parsed.baseUrl !== endpoint.baseUrl) {
+    updated = applyEdits(updated, modify(updated, ['baseUrl'], endpoint.baseUrl, { formattingOptions: FORMATTING_OPTIONS }))
+  }
+  if (endpoint.emailBaseAddress && parsed.emailBaseAddress !== endpoint.emailBaseAddress) {
+    updated = applyEdits(
+      updated,
+      modify(updated, ['emailBaseAddress'], endpoint.emailBaseAddress, { formattingOptions: FORMATTING_OPTIONS }),
+    )
   }
   updated = applyEdits(
     updated,
@@ -227,9 +290,6 @@ export async function prepareSubscription(
   }
 
   const sinks = selectSinks(routes.sinks.map((sink) => sink.name), options.sinks)
-  const baseUrlValue = options.baseUrl ?? routes.baseUrl
-  if (!baseUrlValue) throw new Error('routes.jsonc has no baseUrl; pass --base-url <url>')
-  const baseUrl = normalizeBaseUrl(baseUrlValue)
   const rawSlug = generated.slug ?? randomBytes(16).toString('base64url')
   const slugHash = await hashSubscriptionSlug(rawSlug)
   if (routes.subs.some((sub) => sub.slugHash === slugHash)) {
@@ -259,6 +319,9 @@ export async function prepareSubscription(
     enabled: true,
     sinks,
     ...(auth ? { auth } : {}),
+    ...(profile.transport === 'email'
+      ? { email: { allowedSenders: options.allowedSenders.map(normalizeSenderRule) } }
+      : {}),
     ...(options.source === 'github' && options.repo
       ? {
           setup: {
@@ -270,8 +333,21 @@ export async function prepareSubscription(
         }
       : {}),
   }
-  const webhookUrl = `${baseUrl}/hook/${options.source}/${rawSlug}`
-  const updatedRoutesText = updateRoutesText(routesText, baseUrl, subscription)
+  let webhookUrl: string | undefined
+  let emailAddress: string | undefined
+  let endpoint: { baseUrl?: string; emailBaseAddress?: string }
+  if (profile.transport === 'email') {
+    const emailBaseAddress = resolveSubscriptionEmailBaseAddress(routesText, options.emailBaseAddress)
+    emailAddress = routedEmailAddress(emailBaseAddress, rawSlug)
+    endpoint = { emailBaseAddress }
+  } else {
+    const baseUrlValue = options.baseUrl ?? routes.baseUrl
+    if (!baseUrlValue) throw new Error('routes.jsonc has no baseUrl; pass --base-url <url>')
+    const baseUrl = normalizeBaseUrl(baseUrlValue)
+    webhookUrl = `${baseUrl}/hook/${options.source}/${rawSlug}`
+    endpoint = { baseUrl }
+  }
+  const updatedRoutesText = updateRoutesText(routesText, endpoint, subscription)
   const updatedDevVarsText = senderSecret
     ? addDevVar(devVarsText, senderSecret.name, senderSecret.value)
     : devVarsText
@@ -280,6 +356,7 @@ export async function prepareSubscription(
     routesText: updatedRoutesText,
     devVarsText: updatedDevVarsText,
     webhookUrl,
+    emailAddress,
     rawSlug,
     slugSecretName,
     senderSecret,
@@ -294,7 +371,8 @@ function printPrepared(options: SubAddOptions, prepared: PreparedSubscription): 
   console.log(`  ${prepared.slugSecretName}=${prepared.rawSlug}`)
   if (prepared.senderSecret) console.log(`  ${prepared.senderSecret.name}=${prepared.senderSecret.value}`)
   console.log('')
-  console.log(`Webhook URL: ${prepared.webhookUrl}`)
+  if (prepared.emailAddress) console.log(`Email address: ${prepared.emailAddress}`)
+  if (prepared.webhookUrl) console.log(`Webhook URL: ${prepared.webhookUrl}`)
 
   if (options.source === 'github') {
     console.log(`GitHub repository: ${options.repo}`)
@@ -316,8 +394,17 @@ async function main(): Promise<void> {
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')
   const devVarsText = await readOptionalText(devVarsPath)
-  const baseUrl = await resolveSubscriptionBaseUrl(routesText, options.baseUrl)
-  const resolvedOptions = { ...options, baseUrl }
+  const profile = getSourceProfile(options.source)
+  if (!profile) throw new Error(`unknown source: ${options.source}`)
+  const resolvedOptions = profile.transport === 'email'
+    ? {
+        ...options,
+        emailBaseAddress: resolveSubscriptionEmailBaseAddress(routesText, options.emailBaseAddress),
+      }
+    : {
+        ...options,
+        baseUrl: await resolveSubscriptionBaseUrl(routesText, options.baseUrl),
+      }
   const prepared = await prepareSubscription(routesText, devVarsText, resolvedOptions)
 
   await writeText(routesPath, prepared.routesText)
@@ -352,7 +439,9 @@ async function main(): Promise<void> {
     return
   }
 
-  if (!prepared.senderSecret || !options.repo) throw new Error('GitHub setup is missing sender authentication or repository')
+  if (!prepared.senderSecret || !prepared.webhookUrl || !options.repo) {
+    throw new Error('GitHub setup is missing sender authentication, webhook URL, or repository')
+  }
   const selectedEvents = options.githubEvents.events!
   const selectionLabel = options.githubEvents.names.join(',')
   const create = options.yes || await confirm(

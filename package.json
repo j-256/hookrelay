@@ -32,5 +32,8 @@
     "vitest": "^4.1.9",
     "wrangler": "^4.122.0",
     "zod": "^4.4.3"
+  },
+  "dependencies": {
+    "postal-mime": "^3.0.0"
   }
 }

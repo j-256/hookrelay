@@ -17,4 +17,9 @@ describe('new-sub', () => {
     expect(JSON.stringify(generated.stub)).not.toContain(slug)
     expect(generated.webhookUrl).toBe(`https://hooks.example.com/hook/statuspage/${slug}`)
   })
+
+  it('directs email sources to the guided address setup', async () => {
+    await expect(createSubscription('openai-status', 'email'))
+      .rejects.toThrow(/sub:add with --email-base/)
+  })
 })

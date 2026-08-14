@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { EMAIL_SOURCE } from '../src/lib/email-address'
 import { hashSubscriptionSlug } from '../src/lib/subscription'
 
 function slug(): string {
@@ -6,6 +7,9 @@ function slug(): string {
 }
 
 export async function createSubscription(name: string, source: string, generatedSlug = slug()) {
+  if (source === EMAIL_SOURCE) {
+    throw new Error('email subscriptions require pnpm sub:add with --email-base')
+  }
   return {
     stub: {
       name,
