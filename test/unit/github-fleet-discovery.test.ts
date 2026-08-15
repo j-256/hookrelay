@@ -21,7 +21,17 @@ describe('GitHub origin parsing', () => {
 describe('GitHub fleet discovery', () => {
   it('includes public repositories by default and only selected private repositories on opt-in', async () => {
     const root = await mkdtemp(join(tmpdir(), 'hookrelay-discovery-'))
-    const children = ['personal', 'organization', 'private', 'other-private', 'archived', 'readonly', 'nongithub', 'nested']
+    const children = [
+      'personal',
+      'organization',
+      'private',
+      'other-private',
+      'archived',
+      'readonly',
+      'nongithub',
+      'misleading',
+      'nested',
+    ]
     try {
       for (const child of children) await mkdir(join(root, child))
       await mkdir(join(root, 'nested', 'actual-root'))
@@ -34,6 +44,7 @@ describe('GitHub fleet discovery', () => {
         archived: 'https://github.com/example-owner/archived.git',
         readonly: 'https://github.com/example-owner/readonly.git',
         nongithub: 'https://gitlab.com/example-owner/elsewhere.git',
+        misleading: 'https://example.net/github.com/example-owner/misleading.git',
         nested: 'https://github.com/example-owner/nested.git',
       }
       const metadata: Record<string, Record<string, unknown>> = {
@@ -68,6 +79,7 @@ describe('GitHub fleet discovery', () => {
         expect.objectContaining({ child: 'private', reason: expect.stringMatching(/private/) }),
         expect.objectContaining({ child: 'other-private', reason: expect.stringMatching(/private/) }),
         expect.objectContaining({ child: 'nongithub', reason: expect.stringMatching(/not GitHub/) }),
+        expect.objectContaining({ child: 'misleading', reason: expect.stringMatching(/not GitHub/) }),
         expect.objectContaining({ child: 'nested', reason: expect.stringMatching(/direct-child/) }),
       ]))
       expect(result.blockers.join('\n')).toMatch(/archived/)

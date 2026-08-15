@@ -95,6 +95,11 @@ describe('htmlToPlainText', () => {
     expect(result).not.toContain('alert')
     expect(result).not.toContain('secret style')
   })
+
+  it('keeps removed hidden content from joining adjacent text', () => {
+    expect(htmlToPlainText('safe<!-- hidden -->word')).toBe('safe word')
+    expect(htmlToPlainText('safe<script>hidden</script>word')).toBe('safe word')
+  })
 })
 
 describe('normalizeEmail', () => {

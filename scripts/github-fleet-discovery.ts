@@ -70,6 +70,16 @@ export function parseGitHubOrigin(remote: string): string | null {
   return repositoryFromPath(url.pathname)
 }
 
+function referencesGitHubHost(remote: string): boolean {
+  const value = remote.trim()
+  if (/^(?:[^@\s]+@)?github\.com:/i.test(value)) return true
+  try {
+    return new URL(value).hostname.toLowerCase() === 'github.com'
+  } catch {
+    return false
+  }
+}
+
 function parseRepositoryMetadata(text: string): GitHubRepositoryMetadata {
   let value: unknown
   try {
@@ -151,7 +161,7 @@ export async function discoverGitHubFleet(
     }
     const remoteRepo = parseGitHubOrigin(remote)
     if (!remoteRepo) {
-      if (remote.toLowerCase().includes('github.com')) blockers.push(`${child}: malformed GitHub origin`)
+      if (referencesGitHubHost(remote)) blockers.push(`${child}: malformed GitHub origin`)
       else exclusions.push({ child, reason: 'origin is not GitHub' })
       continue
     }

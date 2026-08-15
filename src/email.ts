@@ -94,8 +94,8 @@ function collapseText(value: string): string {
 
 export function htmlToPlainText(html: string): string {
   const withoutHiddenContent = html
-    .replace(/<!--[^]*?-->/g, '')
-    .replace(/<(head|script|style|svg)\b[^>]*>[^]*?<\/\1\s*>/gi, '')
+    .replace(/<!--[^]*?-->/g, ' ')
+    .replace(/<(head|script|style|svg)\b[^>]*>[^]*?<\/\1\s*>/gi, ' ')
   const withLinks = withoutHiddenContent.replace(
     /<a\b[^>]*\bhref\s*=\s*(?:"(https?:\/\/[^"<>]+)"|'(https?:\/\/[^'<>]+)'|(https?:\/\/[^\s>]+))[^>]*>([^]*?)<\/a\s*>/gi,
     (_match, doubleQuoted: string | undefined, singleQuoted: string | undefined, bare: string | undefined, labelHtml: string) => {

@@ -24,6 +24,10 @@ const ROUTES = `
 }
 `
 
+function routesWithLocalSettings(settings: { baseUrl?: string; emailBaseAddress?: string }): string {
+  return JSON.stringify({ ...parseRoutes(ROUTES), ...settings })
+}
+
 describe('parseSubAddArgs', () => {
   it('uses push as the GitHub default without parsing the subscription name', () => {
     const options = parseSubAddArgs(['github:example-owner/example-repo', 'github', '--repo', 'example-owner/example-repo'])
@@ -249,7 +253,7 @@ describe('base URL resolution', () => {
 
   it('prefers an explicit URL, then saved local config, then discovery', async () => {
     const discover = vi.fn(async () => 'https://discovered.example.com')
-    const saved = ROUTES.replace('{', '{\n  "baseUrl": "https://saved.example.com",')
+    const saved = routesWithLocalSettings({ baseUrl: 'https://saved.example.com' })
 
     await expect(resolveSubscriptionBaseUrl(saved, 'https://explicit.example.com', discover))
       .resolves.toBe('https://explicit.example.com')
@@ -261,7 +265,7 @@ describe('base URL resolution', () => {
   })
 
   it('uses an explicit or saved email base address without discovery', () => {
-    const saved = ROUTES.replace('{', '{\n  "emailBaseAddress": "saved@mail.example.com",')
+    const saved = routesWithLocalSettings({ emailBaseAddress: 'saved@mail.example.com' })
     expect(resolveSubscriptionEmailBaseAddress(saved, 'EXPLICIT@MAIL.EXAMPLE.COM'))
       .toBe('explicit@mail.example.com')
     expect(resolveSubscriptionEmailBaseAddress(saved, undefined)).toBe('saved@mail.example.com')
