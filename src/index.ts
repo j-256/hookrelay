@@ -1,15 +1,20 @@
 import './registry'
 import { handleAdminEvents, handleAdminRaw, handleAdminRetry } from './admin/events'
+import { handleAdminBulkRetry } from './admin/bulk-retry'
+import { handleAdminHealth } from './admin/health'
 import {
   enqueuePendingDeliveries,
   handleQueueBatch,
 } from './delivery'
 import { handleEmail, type IncomingEmailMessage } from './email'
 import { handleHook } from './router'
+import { runOperationalMaintenance } from './operations'
 import type { DeliveryMessage } from './types'
 
 const ADMIN_ROOT_PATH = '/admin'
 const ADMIN_EVENTS_PATH = '/admin/events'
+const ADMIN_HEALTH_PATH = '/admin/health'
+const ADMIN_BULK_RETRY_PATH = '/admin/events/retry'
 
 export interface Env {
   SUBS: KVNamespace
@@ -37,6 +42,12 @@ export default {
     }
     if (url.pathname === ADMIN_EVENTS_PATH) {
       return handleAdminEvents(request, env)
+    }
+    if (url.pathname === ADMIN_HEALTH_PATH) {
+      return handleAdminHealth(request, env)
+    }
+    if (url.pathname === ADMIN_BULK_RETRY_PATH) {
+      return handleAdminBulkRetry(request, env)
     }
     const rawMatch = /^\/admin\/events\/([^/]+)\/raw$/.exec(url.pathname)
     if (rawMatch) {
@@ -79,6 +90,19 @@ export default {
         msg: 'delivery.outbox.swept',
         queued: result.queued,
         deferred: result.deferred,
+      }))
+    }
+    const operations = await runOperationalMaintenance(env)
+    if (
+      operations.imported > 0 ||
+      operations.stale > 0 ||
+      operations.delivered > 0 ||
+      operations.failed > 0
+    ) {
+      console.log(JSON.stringify({
+        level: operations.failed > 0 ? 'warn' : 'info',
+        msg: 'operations.maintenance.completed',
+        ...operations,
       }))
     }
   },

@@ -5,16 +5,14 @@ export interface Adapter {
   readonly sourceType: string
 
   /**
-   * Verify the request was actually sent by this source. Throws on failure.
-   * MUST NOT include req.url, the slug, or any path-derived value in
-   * thrown error messages -- the router logs err.message and slugs are
-   * bearer tokens (spec sec 9).
+   * Verify the request was actually sent by this source and throw on failure
+   * Keep thrown errors free of req.url, the slug, and path-derived values
    */
   verify(req: Request, raw: Uint8Array, sub: Subscription, env: Env): Promise<void>
 
   /**
-   * Parse the (verified) body and produce a NormalizedEvent.
-   * Same constraint on error messages as verify.
+   * Parse the verified body and produce a NormalizedEvent
+   * Keep thrown errors within the same boundary as verify
    */
   parse(req: Request, raw: Uint8Array, sub: Subscription): Promise<NormalizedEvent>
 }

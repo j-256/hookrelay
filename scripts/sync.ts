@@ -15,6 +15,11 @@ import {
 import { normalizeEmailLinkLabel } from '../src/lib/email-links'
 import { EVENT_TYPE_FILTER_PATTERN_RE } from '../src/lib/event-filter'
 import { normalizeFallbackUrl } from '../src/lib/public-url'
+import {
+  OPERATIONS_CONFIG_KEY,
+  OPERATIONS_FALLBACK_PREFIX,
+  RETENTION_CONFIG_KEY,
+} from '../src/lib/runtime-config'
 import { SEVERITIES } from '../src/types'
 import { getSourceProfile, KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { githubEventTypeFilter, parseGitHubEventSelection } from './github-events'
@@ -103,10 +108,30 @@ const sinkSchema = z
   })
   .passthrough()
 
+const operationsSchema = z
+  .object({
+    sinks: z.array(z.string().min(1)).min(1),
+    alertCooldownMinutes: z.number().int().positive(),
+    staleDeliveryMinutes: z.number().int().positive(),
+  })
+  .strict()
+
+const retentionSchema = z
+  .object({
+    r2Days: z.number().int().positive().optional(),
+    d1Days: z.number().int().positive().optional(),
+  })
+  .strict()
+  .refine((retention) => retention.r2Days !== undefined || retention.d1Days !== undefined, {
+    message: 'retention requires r2Days or d1Days',
+  })
+
 const routesSchema = z
   .object({
     baseUrl: z.string().url().optional(),
     emailBaseAddress: z.string().min(1).optional(),
+    operations: operationsSchema.optional(),
+    retention: retentionSchema.optional(),
     subs: z.array(subSchema),
     sinks: z.array(sinkSchema),
   })
@@ -162,6 +187,19 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
   const declaredSinkNames = new Set(routes.sinks.map((s) => s.name))
   const slugHashOwners = new Map<string, string>() // hash -> first sub.name to claim it
   let normalizedEmailBaseAddress: string | undefined
+
+  if (routes.operations) {
+    const operationSinks = new Set<string>()
+    for (const sinkName of routes.operations.sinks) {
+      if (!declaredSinkNames.has(sinkName)) {
+        issues.push(`operations: unknown sink: ${sinkName}`)
+      }
+      if (operationSinks.has(sinkName)) {
+        issues.push(`operations: duplicate sink: ${sinkName}`)
+      }
+      operationSinks.add(sinkName)
+    }
+  }
 
   if (routes.emailBaseAddress) {
     try {
@@ -367,6 +405,22 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
   const sinkDeletes: string[] = []
 
   const desiredSubKeys = new Set<string>()
+  if (routes.operations) {
+    desiredSubKeys.add(OPERATIONS_CONFIG_KEY)
+    const value = canonicalize(routes.operations)
+    const existing = current.subs[OPERATIONS_CONFIG_KEY]
+    if ((existing == null ? null : canonicalizeJson(existing)) !== value) {
+      subPuts.push({ key: OPERATIONS_CONFIG_KEY, value })
+    }
+  }
+  if (routes.retention) {
+    desiredSubKeys.add(RETENTION_CONFIG_KEY)
+    const value = canonicalize(routes.retention)
+    const existing = current.subs[RETENTION_CONFIG_KEY]
+    if ((existing == null ? null : canonicalizeJson(existing)) !== value) {
+      subPuts.push({ key: RETENTION_CONFIG_KEY, value })
+    }
+  }
   for (const sub of routes.subs) {
     const key = subscriptionKvKey(sub.slugHash)
     desiredSubKeys.add(key)
@@ -397,6 +451,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
     if (existingCanon !== value) subPuts.push({ key, value })
   }
   for (const key of Object.keys(current.subs)) {
+    if (key.startsWith(OPERATIONS_FALLBACK_PREFIX)) continue
     if (!desiredSubKeys.has(key)) subDeletes.push(key)
   }
 

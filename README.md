@@ -21,7 +21,7 @@ Built-in sinks (v1):
 - Discord channel webhook
 - Signed structured CloudEvents webhook
 
-Admin: `/admin` redirects to the Cloudflare Access-protected `/admin/events` dashboard for browsing recent events, inspecting per-sink delivery state, and retrying exhausted deliveries.
+Admin: `/admin` redirects to the Cloudflare Access-protected `/admin/events` dashboard for browsing recent events, inspecting per-sink delivery state, and retrying exhausted deliveries. `/admin/health` summarizes delivery state, redacted operational signals, alert attempts, route activity, and retention configuration.
 
 ## Deploy your own
 
@@ -145,6 +145,8 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | --- | --- |
 | `baseUrl` | Optional public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. Without it, the command discovers the single production custom domain attached to the Worker through Cloudflare's API and saves the result here. This local setup value is not written to KV. |
 | `emailBaseAddress` | Base address for Cloudflare Email Routing, such as `relay@mail.example.com`. `pnpm sub:add` appends a private plus-address route token. This local setup value is not written to KV. |
+| `operations` | Optional `{ sinks, alertCooldownMinutes, staleDeliveryMinutes }` configuration for proactive health alerts. Every named alert sink must exist in `sinks[]`; alert delivery bypasses subscription fanout and skips a sink implicated by the signal. |
+| `retention` | Optional `{ r2Days?, d1Days? }` lifecycle configuration. At least one lifetime must be present. |
 | `subs[].slugHash` | Lowercase SHA-256 digest of the private slug. The Worker hashes the incoming path segment and uses `sub:sha256:<slugHash>` for KV lookup; neither KV nor this file needs the raw slug. Generate it with `pnpm sub:add` rather than choosing a low-entropy slug. |
 | `subs[].source` | Source name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`, `cloudevents`, `email`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
@@ -402,6 +404,16 @@ The primary queue retries failures with bounded exponential backoff and honors a
 If queue publication itself fails, the row remains `pending`. The Cron Trigger republishes pending rows every five minutes, so recovery does not depend on the webhook provider sending the event again. Every publication reserves a new generation first, which makes late messages from an uncertain earlier publish or manual-retry cycle harmless.
 
 Delivery is at least once. The D1 claim and lease suppress ordinary duplicate queue messages, but a sink can still receive a duplicate if it accepts a request and the Worker stops before recording success. That tradeoff avoids silently losing the notification.
+
+## Operational health
+
+Hookrelay records actionable known-route ingress failures, exhausted deliveries, and stale active deliveries as fixed-code operational signals. Signal summaries are selected from constants, aggregate by a secret-free fingerprint, and never contain request paths, slugs, payloads, exception text, or sink credentials. Unknown routes remain unrecorded so internet scanning cannot create health data.
+
+If D1 is temporarily unavailable while a signal is being recorded, the Worker writes a compact fixed-field record with an expiration under `ops-fallback:` in the `SUBS` namespace. Scheduled maintenance imports and deletes those records after D1 recovers. `pnpm sync` preserves fallback keys while reconciling subscriptions and the special operations configuration key.
+
+When `operations` is configured, scheduled maintenance detects deliveries that exceed `staleDeliveryMinutes` and sends due alerts directly to the named sinks. Per-signal, per-sink state enforces `alertCooldownMinutes`; an alert skips the sink implicated by that signal, and alert-send failures store only a fixed error without generating another signal. A successful delivery or manual redrive resolves the corresponding current delivery condition while retaining its aggregate history.
+
+The Access-protected `/admin/health` page shows delivery totals, the oldest active delivery, recent redacted signals, alert state, last accepted event per subscription, last successful delivery per sink, and configured retention. From a filtered `Needs attention` view, `Retry matching deliveries` opens a confirmation page that rechecks the filters on POST, requires the browser's same origin, redrives only still-exhausted rows, enforces a fixed batch maximum, and reports succeeded, skipped, and capped selections. Individual retry remains available for a single exhausted sink.
 
 For an existing deployment that predates queues, the D1 migration imports old successful fanout results as `delivered` and old failures as `exhausted`. The Worker performs the same import lazily if it encounters an old event that was written after the migration. Roll out in this order so the Worker never references missing resources or schema:
 

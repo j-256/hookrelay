@@ -2,6 +2,9 @@ import { applyD1Migrations, env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import worker from '../../src/index'
 import type { Env } from '../../src/index'
+import { MAX_BULK_RETRY_DELIVERIES } from '../../src/admin/bulk-retry'
+import { OPERATIONS_CONFIG_KEY, RETENTION_CONFIG_KEY } from '../../src/lib/runtime-config'
+import { recordOperationalSignal } from '../../src/operations'
 import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 
 const SUB_HASH = 'a'.repeat(64)
@@ -12,7 +15,9 @@ beforeAll(async () => {
 
 beforeEach(async () => {
   delete (env as unknown as Record<string, unknown>).TEST_BYPASS_ACCESS
-  await env.EVENTS_DB.exec('DELETE FROM deliveries; DELETE FROM events;')
+  await env.EVENTS_DB.exec('DELETE FROM operational_alert_deliveries; DELETE FROM operational_signals; DELETE FROM maintenance_state; DELETE FROM deliveries; DELETE FROM events;')
+  await env.SUBS.delete(OPERATIONS_CONFIG_KEY)
+  await env.SUBS.delete(RETENTION_CONFIG_KEY)
 
   const events = [
     { id: 'github:d1', source: 'github', sub_name: 'gh', type: 'issues.opened', received_at: '2026-06-06T10:00:00Z', title: 'A' },
@@ -92,6 +97,7 @@ describe('GET /admin/events', () => {
     expect(html).toContain('<meta name="color-scheme" content="dark">')
     expect(html).toContain('color-scheme: dark')
     expect(html).toContain('Event activity')
+    expect(html).toContain('href="/admin/health"')
     expect(html).toContain('Needs attention')
     expect(html).toContain('name="q"')
   })
@@ -348,5 +354,127 @@ describe('GET /admin/events', () => {
       ctx,
     )
     expect(res.status).toBe(403)
+  })
+
+  it('protects and hardens the operational health view', async () => {
+    const forbidden = await worker.fetch(
+      new Request('https://hooks.example.com/admin/health'),
+      env,
+      ctx,
+    )
+    expect(forbidden.status).toBe(403)
+
+    bypassAccess()
+    await insertDelivery('github:d1', 'exhausted', 'phone')
+    await recordOperationalSignal(env as unknown as Env, {
+      code: 'delivery-exhausted',
+      source: 'github',
+      subName: 'gh',
+      eventId: 'github:d1',
+      sinkName: 'phone',
+    })
+    await env.SUBS.put(OPERATIONS_CONFIG_KEY, JSON.stringify({
+      sinks: ['operations'],
+      alertCooldownMinutes: 60,
+      staleDeliveryMinutes: 15,
+    }))
+    await env.SUBS.put(RETENTION_CONFIG_KEY, JSON.stringify({ r2Days: 30, d1Days: 90 }))
+
+    const response = await worker.fetch(
+      new Request('https://hooks.example.com/admin/health'),
+      env,
+      ctx,
+    )
+    const html = await response.text()
+    expect(response.status).toBe(200)
+    expect(response.headers.get('cache-control')).toBe('no-store')
+    expect(response.headers.get('content-security-policy')).toContain("default-src 'none'")
+    expect(response.headers.get('referrer-policy')).toBe('same-origin')
+    expect(html).toContain('Operational health')
+    expect(html).toContain('A sink delivery exhausted automatic retries')
+    expect(html).toContain('R2 raw payloads: 30 days / D1 events: 90 days')
+    expect(html).not.toContain('raw-bearer-value')
+  })
+
+  it('previews and retries only exhausted deliveries matching the confirmed filters', async () => {
+    bypassAccess()
+    await insertDelivery('github:d1', 'exhausted', 'phone')
+    await insertDelivery('statuspage:s1', 'exhausted', 'other')
+    const previewUrl = 'https://hooks.example.com/admin/events/retry?delivery=attention&source=github'
+
+    const preview = await worker.fetch(new Request(previewUrl), env, ctx)
+    const previewHtml = await preview.text()
+    expect(preview.status).toBe(200)
+    expect(previewHtml).toContain('<strong>1</strong> exhausted delivery matches')
+    expect(previewHtml).toContain(`At most <strong>${MAX_BULK_RETRY_DELIVERIES}</strong>`)
+
+    const crossOrigin = await worker.fetch(new Request(previewUrl, {
+      method: 'POST',
+      headers: { origin: 'https://evil.example' },
+    }), env, ctx)
+    expect(crossOrigin.status).toBe(403)
+
+    const queue = recordingQueue()
+    const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
+    const result = await worker.fetch(new Request(previewUrl, {
+      method: 'POST',
+      headers: { origin: 'https://hooks.example.com' },
+    }), testEnv, ctx)
+    const resultHtml = await result.text()
+    expect(result.status).toBe(200)
+    expect(resultHtml).toContain('<dt>Succeeded</dt><dd>1</dd>')
+    expect(resultHtml).toContain('<dt>Skipped</dt><dd>0</dd>')
+    expect(resultHtml).toContain('<dt>Capped</dt><dd>0</dd>')
+    expect(queue.messages).toEqual([
+      { version: 1, eventId: 'github:d1', sinkName: 'phone', generation: 2 },
+    ])
+    await expect(
+      env.EVENTS_DB.prepare(
+        'SELECT status FROM deliveries WHERE event_id = ? AND sink_name = ?',
+      ).bind('statuspage:s1', 'other').first(),
+    ).resolves.toEqual({ status: 'exhausted' })
+  })
+
+  it('enforces the bulk retry cap after re-running the filter', async () => {
+    bypassAccess()
+    const total = MAX_BULK_RETRY_DELIVERIES + 1
+    const statements: D1PreparedStatement[] = []
+    for (let index = 0; index < total; index += 1) {
+      const eventId = `bulk-retry:${index}`
+      const timestamp = new Date(Date.UTC(2026, 5, 8, 0, 0, index)).toISOString()
+      statements.push(env.EVENTS_DB.prepare(
+        `INSERT INTO events
+         (id, received_at, sub_slug, sub_name, source, type, title, r2_key, fanout_results)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, '{}')`,
+      ).bind(eventId, timestamp, SUB_HASH, 'bulk-retry', 'bulk-retry', 'bulk.event', eventId, `events/${eventId}.raw`))
+      statements.push(env.EVENTS_DB.prepare(
+        `INSERT INTO deliveries
+         (event_id, sink_name, generation, status, attempts, created_at, updated_at)
+         VALUES (?, 'phone', 1, 'exhausted', 3, ?, ?)`,
+      ).bind(eventId, timestamp, timestamp))
+    }
+    for (let offset = 0; offset < statements.length; offset += 50) {
+      await env.EVENTS_DB.batch(statements.slice(offset, offset + 50))
+    }
+
+    const queue = recordingQueue()
+    const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
+    const result = await worker.fetch(new Request(
+      'https://hooks.example.com/admin/events/retry?delivery=attention&source=bulk-retry',
+      {
+        method: 'POST',
+        headers: { origin: 'https://hooks.example.com' },
+      },
+    ), testEnv, ctx)
+    const html = await result.text()
+    expect(result.status).toBe(200)
+    expect(html).toContain(`<dt>Succeeded</dt><dd>${MAX_BULK_RETRY_DELIVERIES}</dd>`)
+    expect(html).toContain('<dt>Capped</dt><dd>1</dd>')
+    expect(queue.messages).toHaveLength(MAX_BULK_RETRY_DELIVERIES)
+    await expect(
+      env.EVENTS_DB.prepare(
+        "SELECT COUNT(*) AS total FROM deliveries WHERE status = 'exhausted' AND event_id LIKE 'bulk-retry:%'",
+      ).first(),
+    ).resolves.toEqual({ total: 1 })
   })
 })

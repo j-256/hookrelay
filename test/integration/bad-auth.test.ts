@@ -13,6 +13,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
+  await env.EVENTS_DB.exec('DELETE FROM operational_alert_deliveries; DELETE FROM operational_signals')
   await env.SUBS.put(
     SUB_KEY,
     JSON.stringify({
@@ -47,6 +48,17 @@ describe('bad HMAC signature', () => {
       ctx,
     )
     expect(res.status).toBe(401)
+    await expect(
+      env.EVENTS_DB.prepare(
+        'SELECT code, summary, source, sub_name, occurrences FROM operational_signals',
+      ).first(),
+    ).resolves.toEqual({
+      code: 'ingress-authentication-rejected',
+      summary: 'A known route rejected webhook authentication',
+      source: 'github',
+      sub_name: 'badauth',
+      occurrences: 1,
+    })
   })
 
   it('returns 401 when X-Hub-Signature-256 is missing', async () => {

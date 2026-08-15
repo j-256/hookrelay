@@ -121,6 +121,20 @@ const EMAIL_ROUTES = `
 }
 `
 
+const OPERATIONS_ROUTES = ROUTES.replace(
+  '  "subs": [',
+  `  "operations": {
+    "sinks": ["phone"],
+    "alertCooldownMinutes": 60,
+    "staleDeliveryMinutes": 15
+  },
+  "retention": {
+    "r2Days": 30,
+    "d1Days": 90
+  },
+  "subs": [`,
+)
+
 describe('parseSyncArgs', () => {
   it('accepts short and long apply options', () => {
     expect(parseSyncArgs([])).toEqual({ yes: false })
@@ -211,6 +225,16 @@ describe('parseRoutes', () => {
     })
   })
 
+  it('parses operations and retention configuration', () => {
+    const cfg = parseRoutes(OPERATIONS_ROUTES)
+    expect(cfg.operations).toEqual({
+      sinks: ['phone'],
+      alertCooldownMinutes: 60,
+      staleDeliveryMinutes: 15,
+    })
+    expect(cfg.retention).toEqual({ r2Days: 30, d1Days: 90 })
+  })
+
   it('rejects empty filters and invalid wildcard placement', () => {
     expect(() => parseRoutes(FILTERED_ROUTES.replace(
       '"include": ["pull_request.opened", "pull_request.closed"],',
@@ -238,6 +262,19 @@ describe('validateRoutes', () => {
       secretsAvailable: new Set(['HMAC_GH']),
     })
     expect(issues).toEqual([])
+  })
+
+  it('requires operations sinks to be declared and unique', () => {
+    const invalid = OPERATIONS_ROUTES
+      .replace('"sinks": ["phone"]', '"sinks": ["missing", "missing"]')
+    const issues = validateRoutes(parseRoutes(invalid), {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH']),
+    })
+    expect(issues).toContain('operations: unknown sink: missing')
+    expect(issues).toContain('operations: duplicate sink: missing')
   })
 
   it('reports unknown source', () => {
@@ -611,6 +648,28 @@ describe('computePlan', () => {
         primaryLinkLabels: ['view incident'],
       },
     })
+  })
+
+  it('syncs runtime maintenance configuration without deleting fallback signals', () => {
+    const cfg = parseRoutes(OPERATIONS_ROUTES)
+    const fallbackKey = `ops-fallback:${'d'.repeat(64)}:record`
+    const plan = computePlan(cfg, {
+      subs: { [fallbackKey]: '{"version":1}' },
+      sinks: {},
+    })
+    expect(plan.subPuts.map((entry) => entry.key)).toEqual([
+      'config:operations',
+      'config:retention',
+      `sub:sha256:${CLAUDE_HASH}`,
+      `sub:sha256:${GITHUB_HASH}`,
+    ])
+    expect(JSON.parse(plan.subPuts[0]!.value)).toEqual({
+      alertCooldownMinutes: 60,
+      sinks: ['phone'],
+      staleDeliveryMinutes: 15,
+    })
+    expect(JSON.parse(plan.subPuts[1]!.value)).toEqual({ d1Days: 90, r2Days: 30 })
+    expect(plan.subDeletes).not.toContain(fallbackKey)
   })
 })
 

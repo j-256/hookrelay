@@ -46,7 +46,7 @@ beforeAll(async () => {
 })
 
 beforeEach(async () => {
-  await env.EVENTS_DB.exec('DELETE FROM events')
+  await env.EVENTS_DB.exec('DELETE FROM operational_alert_deliveries; DELETE FROM operational_signals; DELETE FROM events')
   await env.SUBS.put(SUB_KEY, JSON.stringify(sub))
 })
 
@@ -93,6 +93,9 @@ describe('handleHook', () => {
       ctx,
     )
     expect(res.status).toBe(404)
+    await expect(
+      env.EVENTS_DB.prepare('SELECT COUNT(*) AS total FROM operational_signals').first(),
+    ).resolves.toEqual({ total: 0 })
   })
 
   it('returns 404 for slug-source mismatch', async () => {
@@ -126,6 +129,16 @@ describe('handleHook', () => {
       ctx,
     )
     expect(res.status).toBe(413)
+    const signal = await env.EVENTS_DB.prepare(
+      'SELECT code, summary, source, sub_name FROM operational_signals',
+    ).first()
+    expect(signal).toEqual({
+      code: 'ingress-payload-too-large',
+      summary: 'A known route rejected an oversized payload',
+      source: 'fixture',
+      sub_name: 'fixture-sub',
+    })
+    expect(JSON.stringify(signal)).not.toContain(big.slice(0, 100))
   })
 
   it('persists event and returns 200 on happy path', async () => {

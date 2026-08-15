@@ -286,6 +286,86 @@ export const ADMIN_STYLES = String.raw`
     box-shadow: var(--shadow);
   }
 
+  .health-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 0.8rem;
+    margin-bottom: 1.25rem;
+  }
+
+  .metric-card,
+  .config-card,
+  .confirm-card {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-lg);
+    padding: 1rem 1.1rem;
+    background: var(--surface);
+    box-shadow: var(--shadow);
+  }
+
+  .metric-card {
+    display: flex;
+    min-width: 0;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+
+  .metric-card span,
+  .metric-card small {
+    color: var(--text-muted);
+  }
+
+  .metric-card strong {
+    font-size: 2rem;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .health-section {
+    margin-bottom: 1.25rem;
+  }
+
+  .health-split {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 1.25rem;
+  }
+
+  .health-split table {
+    min-width: 28rem;
+  }
+
+  .config-card,
+  .confirm-card {
+    margin-top: 1.25rem;
+  }
+
+  .config-card h2,
+  .confirm-card h2 {
+    margin-top: 0;
+  }
+
+  .result-list {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 0.8rem;
+  }
+
+  .result-list div {
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.8rem;
+  }
+
+  .result-list dt {
+    color: var(--text-muted);
+  }
+
+  .result-list dd {
+    margin: 0.2rem 0 0;
+    font-size: 1.6rem;
+    font-weight: 700;
+  }
+
   .table-toolbar {
     display: flex;
     align-items: center;
@@ -731,6 +811,14 @@ export const ADMIN_STYLES = String.raw`
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
 
+    .health-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .health-split {
+      grid-template-columns: 1fr;
+    }
+
     .table-scroll {
       overflow: visible;
     }
@@ -828,6 +916,11 @@ export const ADMIN_STYLES = String.raw`
     }
 
     .filters {
+      grid-template-columns: 1fr;
+    }
+
+    .health-grid,
+    .result-list {
       grid-template-columns: 1fr;
     }
 

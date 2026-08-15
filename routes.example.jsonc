@@ -5,6 +5,17 @@
   // "baseUrl": "https://hooks.example.com",
   // Required for email subscriptions after Email Routing is configured
   // "emailBaseAddress": "relay@mail.example.com",
+  // Optional proactive health alerting; every name must also exist in sinks[]
+  // "operations": {
+  //   "sinks": ["ntfy:operations"],
+  //   "alertCooldownMinutes": 60,
+  //   "staleDeliveryMinutes": 15
+  // },
+  // Optional raw-object and event-metadata lifetimes
+  // "retention": {
+  //   "r2Days": 30,
+  //   "d1Days": 90
+  // },
   "subs": [
     // `sub:add` writes subscriptions here; guarded email links can use this shape
     // {
@@ -47,6 +58,13 @@
     // }
   ],
   "sinks": [
+    // An operations sink uses an ordinary sink definition but bypasses subscription fanout
+    // {
+    //   "name": "ntfy:operations",
+    //   "type": "ntfy",
+    //   "topic": "<private-topic>",
+    //   "tokenEnv": "SINK_NTFY_OPERATIONS_TOKEN"
+    // },
     // `sink:add` writes only secret references for a signed webhook
     // {
     //   "name": "automation",

@@ -1,6 +1,7 @@
 import { dispatchSink } from './fanout'
 import type { Env } from './index'
 import { loadNormalizedEvent, updateFanoutResult } from './persistence'
+import { recordDeliverySignal, resolveDeliverySignals } from './operations'
 import type {
   DeliveryDecisionReason,
   DeliveryMessage,
@@ -397,6 +398,7 @@ async function markDelivered(env: Env, row: DeliveryRow): Promise<boolean> {
     row.sink_name,
     displayResult('delivered', row.attempts, timestamp),
   )
+  await resolveDeliverySignals(env, row.event_id, row.sink_name)
   return true
 }
 
@@ -539,6 +541,8 @@ async function markExhausted(env: Env, row: DeliveryRow): Promise<boolean> {
     row.sink_name,
     displayResult('exhausted', row.attempts, timestamp, error),
   )
+  await resolveDeliverySignals(env, row.event_id, row.sink_name)
+  await recordDeliverySignal(env, 'delivery-exhausted', row.event_id, row.sink_name)
   return true
 }
 
@@ -654,6 +658,7 @@ export async function redriveDelivery(
     sinkName,
     displayResult('pending', pending.attempts, timestamp),
   )
+  await resolveDeliverySignals(env, eventId, sinkName)
   await publishPendingRows(env, [pending])
   return { ok: true }
 }

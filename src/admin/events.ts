@@ -7,7 +7,7 @@ import { ADMIN_STYLES } from './styles'
 const DELIVERY_VIEWS = ['attention', 'active', 'delivered'] as const
 type DeliveryView = (typeof DELIVERY_VIEWS)[number]
 
-interface Filters {
+export interface Filters {
   q?: string
   source?: string
   sub?: string
@@ -21,7 +21,7 @@ const PAGE_SIZE = 50
 const MAX_FILTER_LENGTH = 200
 const SINCE_VALUES = ['1h', '24h', '7d', '30d'] as const
 // Chrome sends Origin: null on form POSTs under no-referrer, breaking the CSRF guard
-const ADMIN_REFERRER_POLICY = 'same-origin'
+export const ADMIN_REFERRER_POLICY = 'same-origin'
 
 function optionalFilter(url: URL, name: string): string | undefined {
   const value = url.searchParams.get(name)?.trim()
@@ -34,7 +34,7 @@ function parsePage(value: string | null): number {
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : 1
 }
 
-function parseFilters(url: URL): Filters {
+export function parseFilters(url: URL): Filters {
   const since = url.searchParams.get('since')
   const delivery = url.searchParams.get('delivery')
   return {
@@ -88,7 +88,7 @@ interface EventPage {
   total: number
 }
 
-function buildEventWhere(f: Filters): { clause: string; binds: unknown[] } {
+export function buildEventWhere(f: Filters): { clause: string; binds: unknown[] } {
   const where: string[] = []
   const binds: unknown[] = []
   if (f.q) {
@@ -194,7 +194,7 @@ async function queryEvents(env: Env, f: Filters): Promise<EventPage> {
   }
 }
 
-function escapeHtml(s: string): string {
+export function escapeHtml(s: string): string {
   return s.replace(/[&<>"']/g, (c) =>
     c === '&' ? '&amp;' : c === '<' ? '&lt;' : c === '>' ? '&gt;' : c === '"' ? '&quot;' : '&#39;',
   )
@@ -235,7 +235,7 @@ function formatTimestamp(value: string): { date: string; time: string } {
   return { date, time: `${time} UTC` }
 }
 
-function eventsHref(f: Filters, overrides: Partial<Filters> = {}): string {
+export function eventsHref(f: Filters, overrides: Partial<Filters> = {}): string {
   const merged = { ...f, ...overrides }
   const params = new URLSearchParams()
   if (merged.q) params.set('q', merged.q)
@@ -405,6 +405,10 @@ function renderPage(result: EventPage, f: Filters): string {
         </div>
       </div>
       <div class="header-actions">
+        <a class="button button-secondary" href="/admin/health">Health</a>
+        ${f.delivery === 'attention'
+          ? `<a class="button button-secondary" href="${escapeHtml(eventsHref(f, { page: 1 }).replace('/admin/events', '/admin/events/retry'))}">Retry matching deliveries</a>`
+          : ''}
         <a class="button button-secondary" href="${escapeHtml(returnTo)}"><span aria-hidden="true">&#8635;</span> Refresh</a>
       </div>
     </header>
@@ -490,6 +494,20 @@ export async function ensureAuthorized(req: Request, env: Env): Promise<boolean>
   return id !== null
 }
 
+export function adminHtmlResponse(body: string, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'content-security-policy':
+        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+      'x-content-type-options': 'nosniff',
+      'referrer-policy': ADMIN_REFERRER_POLICY,
+    },
+  })
+}
+
 const R2_RETENTION_DAYS = 90
 
 interface RawRow {
@@ -534,17 +552,7 @@ export async function handleAdminEvents(req: Request, env: Env): Promise<Respons
   const url = new URL(req.url)
   const filters = parseFilters(url)
   const result = await queryEvents(env, filters)
-  return new Response(renderPage(result, filters), {
-    status: 200,
-    headers: {
-      'content-type': 'text/html; charset=utf-8',
-      'cache-control': 'no-store',
-      'content-security-policy':
-        "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-      'x-content-type-options': 'nosniff',
-      'referrer-policy': ADMIN_REFERRER_POLICY,
-    },
-  })
+  return adminHtmlResponse(renderPage(result, filters))
 }
 
 function retryReturnLocation(url: URL): string {

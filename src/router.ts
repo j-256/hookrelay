@@ -2,6 +2,8 @@ import { getAdapter } from './adapters'
 import { ingestEvent } from './ingest'
 import { withSubscriptionFallbackUrl } from './lib/event-url'
 import { hashSubscriptionSlug, SUBSCRIPTION_SLUG_PATTERN, subscriptionKvKey } from './lib/subscription'
+import { recordOperationalSignal } from './operations'
+import { primaryKey } from './persistence'
 import type { Env } from './index'
 import type { Subscription } from './types'
 
@@ -52,24 +54,45 @@ export async function handleHook(
   if (!sub.enabled) return new Response(null, { status: 204 })
 
   const declared = Number(request.headers.get('content-length') ?? '0')
-  if (declared > MAX_BODY_BYTES) return new Response('payload too large', { status: 413 })
+  if (declared > MAX_BODY_BYTES) {
+    await recordOperationalSignal(env, {
+      code: 'ingress-payload-too-large',
+      source: sub.source,
+      subName: sub.name,
+    })
+    return new Response('payload too large', { status: 413 })
+  }
 
   const rawBody = new Uint8Array(await request.arrayBuffer())
   if (rawBody.byteLength > MAX_BODY_BYTES) {
+    await recordOperationalSignal(env, {
+      code: 'ingress-payload-too-large',
+      source: sub.source,
+      subName: sub.name,
+    })
     return new Response('payload too large', { status: 413 })
   }
 
   const adapter = getAdapter(sourceType)
   if (!adapter) {
+    await recordOperationalSignal(env, {
+      code: 'ingress-adapter-missing',
+      source: sub.source,
+      subName: sub.name,
+    })
     console.log(JSON.stringify({ level: 'error', msg: 'adapter.missing', sourceType }))
     return new Response('internal error', { status: 500 })
   }
 
   try {
     await adapter.verify(request, rawBody, sub, env)
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    console.log(JSON.stringify({ level: 'warn', msg: 'verify.rejected', sourceType, errMsg }))
+  } catch {
+    await recordOperationalSignal(env, {
+      code: 'ingress-authentication-rejected',
+      source: sub.source,
+      subName: sub.name,
+    })
+    console.log(JSON.stringify({ level: 'warn', msg: 'verify.rejected', sourceType }))
     return new Response('unauthorized', { status: 401 })
   }
 
@@ -77,14 +100,30 @@ export async function handleHook(
   try {
     event = await adapter.parse(request, rawBody, sub)
     event = withSubscriptionFallbackUrl(event, sub)
-  } catch (err) {
-    const errMsg = err instanceof Error ? err.message : String(err)
-    console.log(JSON.stringify({ level: 'warn', msg: 'parse.failed', sourceType, errMsg }))
+  } catch {
+    await recordOperationalSignal(env, {
+      code: 'ingress-parse-rejected',
+      source: sub.source,
+      subName: sub.name,
+    })
+    console.log(JSON.stringify({ level: 'warn', msg: 'parse.failed', sourceType }))
     return new Response('unprocessable entity', { status: 422 })
   }
 
   const contentType = request.headers.get('content-type') ?? 'application/octet-stream'
-  const ingested = await ingestEvent(env, event, rawBody, contentType, slugHash, sub)
+  let ingested
+  try {
+    ingested = await ingestEvent(env, event, rawBody, contentType, slugHash, sub)
+  } catch {
+    await recordOperationalSignal(env, {
+      code: 'ingress-persistence-rejected',
+      source: sub.source,
+      subName: sub.name,
+      eventId: primaryKey(event),
+    })
+    console.log(JSON.stringify({ level: 'error', msg: 'ingress.persistence.rejected' }))
+    return new Response('internal error', { status: 500 })
+  }
 
   // Sender gets 200 after the event and all per-sink delivery intents are durable
   return json({
