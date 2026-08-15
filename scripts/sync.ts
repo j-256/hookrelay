@@ -16,7 +16,7 @@ import { normalizeEmailLinkLabel } from '../src/lib/email-links'
 import { EVENT_TYPE_FILTER_PATTERN_RE } from '../src/lib/event-filter'
 import { normalizeFallbackUrl } from '../src/lib/public-url'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
-import { parseGitHubEventSelection } from './github-events'
+import { githubEventTypeFilter, parseGitHubEventSelection } from './github-events'
 import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
 import { listWranglerSecrets } from './setup'
 
@@ -324,6 +324,10 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
   for (const sub of routes.subs) {
     const key = subscriptionKvKey(sub.slugHash)
     desiredSubKeys.add(key)
+    const githubFilter = sub.setup?.github
+      ? githubEventTypeFilter(parseGitHubEventSelection(sub.setup.github.eventProfiles.join(',')))
+      : undefined
+    const runtimeFilter = sub.filter ?? githubFilter
     const value = canonicalize({
       name: sub.name,
       source: sub.source,
@@ -339,7 +343,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
             },
           }
         : {}),
-      ...(sub.filter ? { filter: sub.filter } : {}),
+      ...(runtimeFilter ? { filter: runtimeFilter } : {}),
     })
     const existing = current.subs[key]
     const existingCanon = existing != null ? canonicalizeJson(existing) : null

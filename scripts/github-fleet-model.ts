@@ -1,46 +1,23 @@
 import { hashSubscriptionSlug } from '../src/lib/subscription'
-import type { SubscriptionFilter } from '../src/types'
 import { envSegment } from './setup'
 
 export const GITHUB_FLEET_AUTH_SCHEME = 'github-sha256'
-export const GITHUB_ACTIVITY_DELIVERY_TYPES = Object.freeze([
-  'push.*',
-  'workflow_run.*',
-  'pull_request.opened',
-  'pull_request.closed',
-])
-
-interface ReadonlySubscriptionFilter {
-  readonly eventTypes: {
-    readonly include?: readonly string[]
-    readonly exclude?: readonly string[]
-  }
-}
-
-const GITHUB_ACTIVITY_FILTER: ReadonlySubscriptionFilter = Object.freeze({
-  eventTypes: Object.freeze({
-    include: GITHUB_ACTIVITY_DELIVERY_TYPES,
-  }),
-})
 
 export const GITHUB_FLEET_PROFILES = Object.freeze({
   activity: Object.freeze({
     suffix: '',
     eventProfiles: Object.freeze(['activity']),
     sink: 'discord:repo-activity',
-    filter: GITHUB_ACTIVITY_FILTER,
   }),
   stars: Object.freeze({
     suffix: ':stars',
     eventProfiles: Object.freeze(['stars', 'watchers']),
     sink: 'discord:github-stars',
-    filter: undefined,
   }),
   alerts: Object.freeze({
     suffix: ':alerts',
     eventProfiles: Object.freeze(['alerts']),
     sink: 'discord:repo-alerts',
-    filter: undefined,
   }),
 })
 
@@ -65,7 +42,6 @@ export interface GitHubFleetSubscription {
     scheme: typeof GITHUB_FLEET_AUTH_SCHEME
     secretEnv: string
   }
-  filter?: SubscriptionFilter
   setup: {
     github: {
       repo: string
@@ -98,20 +74,6 @@ export async function buildGitHubFleetSubscription(
       scheme: GITHUB_FLEET_AUTH_SCHEME,
       secretEnv: values.hmacName,
     },
-    ...(definition.filter
-      ? {
-          filter: {
-            eventTypes: {
-              ...(definition.filter.eventTypes.include
-                ? { include: [...definition.filter.eventTypes.include] }
-                : {}),
-              ...(definition.filter.eventTypes.exclude
-                ? { exclude: [...definition.filter.eventTypes.exclude] }
-                : {}),
-            },
-          },
-        }
-      : {}),
     setup: {
       github: {
         repo,

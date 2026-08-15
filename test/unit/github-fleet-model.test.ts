@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest'
 import {
-  GITHUB_ACTIVITY_DELIVERY_TYPES,
   GITHUB_FLEET_PROFILE_NAMES,
   assertGitHubFleetRepositoryCollisions,
   buildGitHubFleetSubscription,
@@ -35,11 +34,7 @@ describe('GitHub fleet model', () => {
       'discord:github-stars',
       'discord:repo-alerts',
     ])
-    expect(subscriptions.map((sub) => sub.filter)).toEqual([
-      { eventTypes: { include: [...GITHUB_ACTIVITY_DELIVERY_TYPES] } },
-      undefined,
-      undefined,
-    ])
+    expect(subscriptions.every((sub) => !Object.prototype.hasOwnProperty.call(sub, 'filter'))).toBe(true)
   })
 
   it('shares one HMAC while keeping three distinct slug hashes', async () => {

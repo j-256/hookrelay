@@ -227,7 +227,7 @@ If exactly one sink exists, it is selected automatically. Repeat `-s` or `--sink
 
 `fallbackUrl` never replaces an event URL supplied by an adapter. For example, a Statuspage incident keeps its incident shortlink while a component status change can link to the provider's canonical status page.
 
-Configure `filter.eventTypes` directly in a subscription when only selected normalized event types should reach its sinks:
+GitHub event profiles can supply a shared filter for every subscription using that profile. Configure `filter.eventTypes` directly in a subscription only when it needs an explicit override:
 
 ```json
 "filter": {
@@ -238,7 +238,7 @@ Configure `filter.eventTypes` directly in a subscription when only selected norm
 }
 ```
 
-An omitted `include` accepts every type, an omitted `exclude` rejects none, and at least one must be present. Filtering happens after authentication and normalization. Filtered events are still recorded in D1 and R2 and receive the ordinary successful sender response, but they do not create delivery rows or queue messages. A subscription filter can suppress delivery but cannot re-enable an event that an adapter has already marked record-only.
+An omitted `include` accepts every type, an omitted `exclude` rejects none, and at least one must be present. Filtering happens after authentication and normalization. Filtered events are still recorded in D1 and R2 and receive the ordinary successful sender response, but they do not create delivery rows or queue messages. An explicit subscription filter replaces its profile-derived filter, can suppress delivery, and cannot re-enable an event that an adapter has already marked record-only.
 
 For a GitHub repository, pass the repository separately instead of deriving it from the subscription name. Subscription names may still use a readable namespace such as `github:example-owner/example-repo`:
 
@@ -305,7 +305,7 @@ GitHub may return the same events in a different order, so order alone does not 
 
 ### Managing a GitHub repository fleet
 
-`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and can explicitly admit selected private repositories. It manages a standard three-hook topology for each eligible repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, with a delivery filter that admits pushes, workflow runs, and only opened or closed pull requests. Stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. The three hooks have distinct private URLs but share one per-repository HMAC.
+`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and can explicitly admit selected private repositories. It manages a standard three-hook topology for each eligible repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, whose shared delivery rule admits pushes, workflow runs, and only opened or closed pull requests without adding filters to individual repository routes. Stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. The three hooks have distinct private URLs but share one per-repository HMAC.
 
 The command requires an explicit manifest path so a deployment can choose its own encrypted or otherwise access-controlled secret store without embedding that location in Hookrelay. The JSON manifest is the recovery source for each repository's raw slugs and HMAC. It and `.dev.vars` must be regular, non-symlink files with mode `0600`; `routes.jsonc` stores only slug hashes. Treat the manifest and full GitHub hook URLs as secrets and never commit the manifest unless the repository encrypts it before storage.
 

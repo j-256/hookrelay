@@ -54,6 +54,11 @@ const FILTERED_ROUTES = ROUTES.replace(
       },`,
 )
 
+const ACTIVITY_ROUTES = ROUTES.replace(
+  '"eventProfiles": ["recommended", "stars"]',
+  '"eventProfiles": ["activity"]',
+)
+
 const EMAIL_ROUTES = `
 {
   "emailBaseAddress": "relay@mail.example.com",
@@ -437,6 +442,23 @@ describe('computePlan', () => {
       eventTypes: {
         include: ['pull_request.opened', 'pull_request.closed'],
         exclude: ['pull_request.synchronize'],
+      },
+    })
+  })
+
+  it('compiles shared GitHub profile filters without per-repository route configuration', () => {
+    const cfg = parseRoutes(ACTIVITY_ROUTES)
+    expect(cfg.subs[1]?.filter).toBeUndefined()
+    const plan = computePlan(cfg, { subs: {}, sinks: {} })
+    const githubPut = plan.subPuts.find((entry) => entry.key === `sub:sha256:${GITHUB_HASH}`)
+    expect(JSON.parse(githubPut!.value).filter).toEqual({
+      eventTypes: {
+        include: [
+          'push.*',
+          'workflow_run.*',
+          'pull_request.opened',
+          'pull_request.closed',
+        ],
       },
     })
   })

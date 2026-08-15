@@ -1,3 +1,5 @@
+import type { SubscriptionFilter } from '../src/types'
+
 const events = <T extends readonly string[]>(...values: T): Readonly<T> => Object.freeze(values)
 
 export const GITHUB_ACTIVITY_EVENTS = events('push', 'workflow_run', 'pull_request')
@@ -46,6 +48,14 @@ export const GITHUB_EVENT_PROFILES = Object.freeze({
 
 export type GitHubEventProfileName = keyof typeof GITHUB_EVENT_PROFILES
 
+export const GITHUB_EVENT_PROFILE_DELIVERY_TYPES: Readonly<
+  Partial<Record<GitHubEventProfileName, Readonly<Record<string, readonly string[]>>>>
+> = Object.freeze({
+  activity: Object.freeze({
+    pull_request: events('pull_request.opened', 'pull_request.closed'),
+  }),
+})
+
 export const GITHUB_RECOMMENDED_EVENTS = events(
   'branch_protection_configuration',
   'branch_protection_rule',
@@ -93,6 +103,44 @@ function isGitHubEventPreset(value: string): value is GitHubEventPreset {
   return GITHUB_EVENT_PRESETS.some((preset) => preset === value)
 }
 
+function eventsForSelectionName(name: GitHubEventSelectionName): readonly string[] {
+  return name === 'recommended'
+    ? GITHUB_RECOMMENDED_EVENTS
+    : GITHUB_EVENT_PROFILES[name as GitHubEventProfileName]
+}
+
+export function githubEventTypeFilter(selection: GitHubEventSelection): SubscriptionFilter | undefined {
+  if (selection.kind !== 'events' || selection.events === null) return undefined
+
+  const deliveryTypes = new Map<string, Set<string> | null>()
+  for (const name of selection.names) {
+    const profileDeliveryTypes = name === 'recommended'
+      ? undefined
+      : GITHUB_EVENT_PROFILE_DELIVERY_TYPES[name as GitHubEventProfileName]
+    for (const event of eventsForSelectionName(name)) {
+      const restrictedTypes = profileDeliveryTypes?.[event]
+      if (restrictedTypes === undefined) {
+        deliveryTypes.set(event, null)
+        continue
+      }
+      const existing = deliveryTypes.get(event)
+      if (existing === null) continue
+      const combined = existing ?? new Set<string>()
+      for (const type of restrictedTypes) combined.add(type)
+      deliveryTypes.set(event, combined)
+    }
+  }
+
+  if (![...deliveryTypes.values()].some((types) => types instanceof Set)) return undefined
+  const include: string[] = []
+  for (const event of selection.events) {
+    const restrictedTypes = deliveryTypes.get(event)
+    if (restrictedTypes instanceof Set) include.push(...restrictedTypes)
+    else include.push(`${event}.*`)
+  }
+  return { eventTypes: { include } }
+}
+
 export function parseGitHubEventSelection(value: string): GitHubEventSelection {
   const rawNames = value.split(',').map((name) => name.trim())
   if (rawNames.some((name) => name.length === 0)) {
@@ -125,9 +173,7 @@ export function parseGitHubEventSelection(value: string): GitHubEventSelection {
   const expanded: string[] = []
   const seen = new Set<string>()
   for (const name of names) {
-    const profileEvents = name === 'recommended'
-      ? GITHUB_RECOMMENDED_EVENTS
-      : GITHUB_EVENT_PROFILES[name as GitHubEventProfileName]
+    const profileEvents = eventsForSelectionName(name)
     for (const event of profileEvents) {
       if (seen.has(event)) continue
       seen.add(event)

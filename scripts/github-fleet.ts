@@ -265,17 +265,6 @@ function sameStrings(left: readonly string[] | undefined, right: readonly string
   return left !== undefined && left.length === right.length && left.every((value, index) => value === right[index])
 }
 
-function sameOptionalStrings(left: readonly string[] | undefined, right: readonly string[] | undefined): boolean {
-  if (left === undefined || right === undefined) return left === right
-  return sameStrings(left, right)
-}
-
-function sameSubscriptionFilter(left: Sub['filter'], right: GitHubFleetSubscription['filter']): boolean {
-  if (left === undefined || right === undefined) return left === right
-  return sameOptionalStrings(left.eventTypes.include, right.eventTypes.include)
-    && sameOptionalStrings(left.eventTypes.exclude, right.eventTypes.exclude)
-}
-
 async function fleetRouteIssues(
   repo: string,
   profile: GitHubFleetProfileName,
@@ -288,7 +277,6 @@ async function fleetRouteIssues(
   if (sub.slugHash !== desired.slugHash) issues.push('slug hash')
   if (sub.enabled !== desired.enabled) issues.push('enabled state')
   if (!sameStrings(sub.sinks, desired.sinks)) issues.push('sink mapping')
-  if (!sameSubscriptionFilter(sub.filter, desired.filter)) issues.push('delivery filter')
   if (sub.setup?.github?.repo !== repo) issues.push('GitHub repository metadata')
   if (!sameStrings(sub.setup?.github?.eventProfiles, desired.setup.github.eventProfiles)) issues.push('event profiles')
   if (!sub.auth || sub.auth.scheme !== desired.auth.scheme) {

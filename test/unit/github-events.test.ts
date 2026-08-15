@@ -4,6 +4,7 @@ import {
   GITHUB_ALERT_EVENTS,
   GITHUB_EVENT_PROFILES,
   GITHUB_RECOMMENDED_EVENTS,
+  githubEventTypeFilter,
   parseGitHubEventSelection,
 } from '../../scripts/github-events'
 
@@ -84,6 +85,38 @@ describe('GitHub event profiles', () => {
       'secret_scanning_alert_location',
       'security_and_analysis',
     ])
+  })
+
+  it('derives one shared activity delivery rule from event profiles', () => {
+    expect(githubEventTypeFilter(parseGitHubEventSelection('activity'))).toEqual({
+      eventTypes: {
+        include: [
+          'push.*',
+          'workflow_run.*',
+          'pull_request.opened',
+          'pull_request.closed',
+        ],
+      },
+    })
+    expect(githubEventTypeFilter(parseGitHubEventSelection('activity,alerts'))).toEqual({
+      eventTypes: {
+        include: [
+          'push.*',
+          'workflow_run.*',
+          'pull_request.opened',
+          'pull_request.closed',
+          'code_scanning_alert.*',
+          'dependabot_alert.*',
+          'secret_scanning_alert.*',
+        ],
+      },
+    })
+  })
+
+  it('lets an unrestricted profile broaden an overlapping event', () => {
+    expect(githubEventTypeFilter(parseGitHubEventSelection('activity,pull-requests'))).toBeUndefined()
+    expect(githubEventTypeFilter(parseGitHubEventSelection('recommended,activity'))).toBeUndefined()
+    expect(githubEventTypeFilter(parseGitHubEventSelection('pull-requests'))).toBeUndefined()
   })
 
   it('composes profiles in order and expands stars and watchers separately', () => {

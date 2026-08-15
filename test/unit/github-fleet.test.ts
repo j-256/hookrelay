@@ -227,31 +227,6 @@ describe('GitHub fleet planning and preparation', () => {
     }
   })
 
-  it('reports a missing activity delivery filter as managed route drift', async () => {
-    const directory = await project()
-    try {
-      await prepareGitHubFleet(options(), dependencies(), directory)
-      const routesPath = join(directory, 'routes.jsonc')
-      const routes = JSON.parse(await readFile(routesPath, 'utf8')) as {
-        subs: Array<{ name: string; filter?: unknown }>
-      }
-      const activity = routes.subs.find((sub) => sub.name === `github:${REPO}`)
-      expect(activity).toBeDefined()
-      delete activity!.filter
-      await writeFile(routesPath, `${JSON.stringify(routes, null, 2)}\n`)
-
-      const plan = await planGitHubFleet(
-        { ...options(), phase: 'plan' },
-        dependencies(),
-        directory,
-      )
-      expect(plan.routeDrift).toContain(`github:${REPO}: delivery filter`)
-      expect(plan.blockers).toContain(`route drift: github:${REPO}: delivery filter`)
-    } finally {
-      await rm(directory, { recursive: true, force: true })
-    }
-  })
-
   it('repairs an interrupted prepare from saved manifest values', async () => {
     const directory = await project()
     try {
