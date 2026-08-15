@@ -13,6 +13,7 @@ import {
   normalizeSenderRule,
 } from '../src/lib/email-address'
 import { normalizeEmailLinkLabel } from '../src/lib/email-links'
+import { EVENT_TYPE_FILTER_PATTERN_RE } from '../src/lib/event-filter'
 import { normalizeFallbackUrl } from '../src/lib/public-url'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { parseGitHubEventSelection } from './github-events'
@@ -20,6 +21,24 @@ import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } fro
 import { listWranglerSecrets } from './setup'
 
 export { printableKvKey } from './kv'
+
+const eventTypePatternSchema = z.string().regex(EVENT_TYPE_FILTER_PATTERN_RE)
+
+const eventTypeFilterSchema = z
+  .object({
+    include: z.array(eventTypePatternSchema).min(1).optional(),
+    exclude: z.array(eventTypePatternSchema).min(1).optional(),
+  })
+  .strict()
+  .refine((filter) => filter.include !== undefined || filter.exclude !== undefined, {
+    message: 'eventTypes requires include or exclude',
+  })
+
+const subscriptionFilterSchema = z
+  .object({
+    eventTypes: eventTypeFilterSchema,
+  })
+  .strict()
 
 const subSchema = z
   .object({
@@ -45,6 +64,7 @@ const subSchema = z
       })
       .strict()
       .optional(),
+    filter: subscriptionFilterSchema.optional(),
     setup: z
       .object({
         github: z
@@ -194,6 +214,11 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
     } else if (sub.email) {
       issues.push(`sub '${sub.name}': email configuration is only valid for email subscriptions`)
     }
+    for (const [mode, patterns] of Object.entries(sub.filter?.eventTypes ?? {})) {
+      if (patterns && new Set(patterns).size !== patterns.length) {
+        issues.push(`sub '${sub.name}': duplicate event type ${mode} pattern`)
+      }
+    }
     for (const sinkName of sub.sinks) {
       if (!declaredSinkNames.has(sinkName)) {
         issues.push(`sub '${sub.name}': sink '${sinkName}' not declared in sinks[]`)
@@ -314,6 +339,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
             },
           }
         : {}),
+      ...(sub.filter ? { filter: sub.filter } : {}),
     })
     const existing = current.subs[key]
     const existingCanon = existing != null ? canonicalizeJson(existing) : null

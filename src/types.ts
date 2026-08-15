@@ -25,6 +25,15 @@ export interface EmailSubscriptionConfig {
   primaryLinkLabels?: string[]
 }
 
+export interface EventTypeFilter {
+  include?: string[]
+  exclude?: string[]
+}
+
+export interface SubscriptionFilter {
+  eventTypes: EventTypeFilter
+}
+
 export interface Subscription {
   name: string
   source: string
@@ -33,6 +42,7 @@ export interface Subscription {
   auth: SubAuth | null
   fallbackUrl?: string
   email?: EmailSubscriptionConfig
+  filter?: SubscriptionFilter
 }
 
 export type DeliveryStatus =

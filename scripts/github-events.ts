@@ -1,6 +1,6 @@
 const events = <T extends readonly string[]>(...values: T): Readonly<T> => Object.freeze(values)
 
-export const GITHUB_ACTIVITY_EVENTS = events('push', 'workflow_run')
+export const GITHUB_ACTIVITY_EVENTS = events('push', 'workflow_run', 'pull_request')
 
 export const GITHUB_ALERT_EVENTS = events(
   'code_scanning_alert',

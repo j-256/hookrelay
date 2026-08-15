@@ -14,6 +14,11 @@
     //   "enabled": true,
     //   "sinks": ["discord:service-status"],
     //   "fallbackUrl": "https://status.example.com/",
+    //   "filter": {
+    //     "eventTypes": {
+    //       "include": ["email.received"]
+    //     }
+    //   },
     //   "email": {
     //     "allowedSenders": ["@mailer.example.com"],
     //     "primaryLinkLabels": ["view incident"]

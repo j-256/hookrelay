@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  GITHUB_ACTIVITY_DELIVERY_TYPES,
   GITHUB_FLEET_PROFILE_NAMES,
   assertGitHubFleetRepositoryCollisions,
   buildGitHubFleetSubscription,
@@ -33,6 +34,11 @@ describe('GitHub fleet model', () => {
       'discord:repo-activity',
       'discord:github-stars',
       'discord:repo-alerts',
+    ])
+    expect(subscriptions.map((sub) => sub.filter)).toEqual([
+      { eventTypes: { include: [...GITHUB_ACTIVITY_DELIVERY_TYPES] } },
+      undefined,
+      undefined,
     ])
   })
 

@@ -25,7 +25,7 @@ GitHub recommends subscribing only to events an integration handles. The curated
 | Profile | GitHub events | Use it for |
 | --- | --- | --- |
 | `access` | `deploy_key`, `member`, `team_add` | Repository access and deploy-key changes. |
-| `activity` | `push`, `workflow_run` | Source changes and completed workflow outcomes. Hookrelay records requested and in-progress workflow runs without delivering them to sinks. |
+| `activity` | `push`, `workflow_run`, `pull_request` | Source changes, completed workflow outcomes, and pull request lifecycle activity. Hookrelay records requested and in-progress workflow runs without delivering them to sinks. |
 | `alerts` | `code_scanning_alert`, `dependabot_alert`, `secret_scanning_alert` | Actionable code, dependency, and leaked-secret findings. Resolution events remain visible at informational severity. |
 | `branches` | `create`, `delete` | Branch and tag creation or deletion. |
 | `checks` | `check_run`, `check_suite`, `status` | Check and commit-status transitions. This can be noisy in active repositories. |
@@ -50,8 +50,10 @@ GitHub recommends subscribing only to events an integration handles. The curated
 
 `stars` and `watchers` are intentionally separate. GitHub uses `star` for starring activity and `watch` for repository notification subscriptions.
 
+GitHub repository hooks select `pull_request` as a whole rather than individual actions. Fleet activity subscriptions therefore use Hookrelay's normalized event-type filter to deliver `pull_request.opened` and `pull_request.closed` while retaining other pull request actions as record-only events. The standalone `pull-requests` profile remains unfiltered so it can represent every pull request and review surface.
+
 `repository_vulnerability_alert` is omitted because GitHub is closing it down in favor of `dependabot_alert`. `secret_scanning_scan` is also omitted because it reports scan completion rather than a finding. Hooks created with `all` or `manual` can still send either event; Hookrelay records secret-scanning completion without delivering it to sinks.
 
 Security summaries never copy the raw secret value from a `secret_scanning_alert`. The original authenticated payload remains subject to Hookrelay's normal restricted persistence model.
 
-The selected profile names and repository are saved under `subs[].setup.github` in local `routes.jsonc`. They are setup metadata and are not copied into Worker KV. The expanded raw events are stored on the GitHub webhook itself. `pnpm sub:events` requires the sender secret mirrored in `.dev.vars` because GitHub's general webhook update clears an omitted secret; it resends that secret and the unchanged hook config through stdin while replacing the event array. `manual` leaves the remote selection unchanged.
+The selected profile names and repository are saved under `subs[].setup.github` in local `routes.jsonc`. They are setup metadata and are not copied into Worker KV. Subscription delivery filters are runtime configuration and are copied into Worker KV. The expanded raw events are stored on the GitHub webhook itself. `pnpm sub:events` requires the sender secret mirrored in `.dev.vars` because GitHub's general webhook update clears an omitted secret; it resends that secret and the unchanged hook config through stdin while replacing the event array. `manual` leaves the remote selection unchanged.

@@ -1,5 +1,6 @@
 import { getAdapter } from './adapters'
 import { ingestEvent } from './ingest'
+import { applySubscriptionFilter } from './lib/event-filter'
 import { withSubscriptionFallbackUrl } from './lib/event-url'
 import { hashSubscriptionSlug, SUBSCRIPTION_SLUG_PATTERN, subscriptionKvKey } from './lib/subscription'
 import type { Env } from './index'
@@ -77,6 +78,7 @@ export async function handleHook(
   try {
     event = await adapter.parse(request, rawBody, sub)
     event = withSubscriptionFallbackUrl(event, sub)
+    event = applySubscriptionFilter(event, sub.filter)
   } catch (err) {
     const errMsg = err instanceof Error ? err.message : String(err)
     console.log(JSON.stringify({ level: 'warn', msg: 'parse.failed', sourceType, errMsg }))

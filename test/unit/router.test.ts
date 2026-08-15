@@ -225,6 +225,56 @@ describe('handleHook', () => {
     expect(deliveries?.count).toBe(0)
   })
 
+  it('persists filtered events while creating deliveries only for matches', async () => {
+    await env.SUBS.put(SUB_KEY, JSON.stringify({
+      ...sub,
+      sinks: ['phone'],
+      filter: { eventTypes: { include: ['fixture.event'], exclude: ['fixture.blocked'] } },
+    }))
+    const matching = await handleHook(
+      new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
+        method: 'POST',
+        body: 'filtered-match',
+      }),
+      env,
+      ctx,
+    )
+    expect(matching.status).toBe(200)
+
+    await env.SUBS.put(SUB_KEY, JSON.stringify({
+      ...sub,
+      sinks: ['phone'],
+      filter: { eventTypes: { include: ['other.*'] } },
+    }))
+    const nonmatching = await handleHook(
+      new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
+        method: 'POST',
+        body: 'filtered-nonmatch',
+      }),
+      env,
+      ctx,
+    )
+    expect(nonmatching.status).toBe(200)
+
+    const events = await env.EVENTS_DB.prepare(
+      `SELECT id FROM events WHERE id IN (?, ?) ORDER BY id`,
+    )
+      .bind('fixture:filtered-match', 'fixture:filtered-nonmatch')
+      .all<{ id: string }>()
+    const deliveries = await env.EVENTS_DB.prepare(
+      `SELECT event_id, sink_name FROM deliveries WHERE event_id IN (?, ?) ORDER BY event_id`,
+    )
+      .bind('fixture:filtered-match', 'fixture:filtered-nonmatch')
+      .all<{ event_id: string; sink_name: string }>()
+    expect(events.results?.map((event) => event.id)).toEqual([
+      'fixture:filtered-match',
+      'fixture:filtered-nonmatch',
+    ])
+    expect(deliveries.results).toEqual([
+      { event_id: 'fixture:filtered-match', sink_name: 'phone' },
+    ])
+  })
+
   it('returns 401 when adapter.verify throws', async () => {
     const guarded: Adapter = {
       sourceType: 'guarded',

@@ -72,6 +72,7 @@ describe('GitHub event profiles', () => {
   })
 
   it('expands purpose-specific activity and alert profiles', () => {
+    expect(GITHUB_ACTIVITY_EVENTS).toEqual(['push', 'workflow_run', 'pull_request'])
     expect(parseGitHubEventSelection('activity,alerts')).toEqual({
       kind: 'events',
       names: ['activity', 'alerts'],

@@ -43,6 +43,17 @@ const ROTATING_ROUTES = ROUTES.replace(
   '"auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH", "alternateSecretEnvs": ["HMAC_GH_NEXT"] }',
 )
 
+const FILTERED_ROUTES = ROUTES.replace(
+  '      "auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH" },',
+  `      "auth": { "scheme": "github-sha256", "secretEnv": "HMAC_GH" },
+      "filter": {
+        "eventTypes": {
+          "include": ["pull_request.opened", "pull_request.closed"],
+          "exclude": ["pull_request.synchronize"]
+        }
+      },`,
+)
+
 const EMAIL_ROUTES = `
 {
   "emailBaseAddress": "relay@mail.example.com",
@@ -91,6 +102,7 @@ describe('parseRoutes', () => {
     expect(parseRoutes(ROUTES_EXAMPLE)).toMatchObject({ subs: [], sinks: [] })
     expect(ROUTES_EXAMPLE).toContain('"fallbackUrl"')
     expect(ROUTES_EXAMPLE).toContain('"primaryLinkLabels"')
+    expect(ROUTES_EXAMPLE).toContain('"eventTypes"')
   })
 
   it('throws on malformed JSON', () => {
@@ -119,6 +131,32 @@ describe('parseRoutes', () => {
       primaryLinkLabels: ['View incident'],
     })
     expect(cfg.subs[0]?.auth).toBeNull()
+  })
+
+  it('parses source-independent event type filters', () => {
+    const cfg = parseRoutes(FILTERED_ROUTES)
+    expect(cfg.subs[1]?.filter).toEqual({
+      eventTypes: {
+        include: ['pull_request.opened', 'pull_request.closed'],
+        exclude: ['pull_request.synchronize'],
+      },
+    })
+  })
+
+  it('rejects empty filters and invalid wildcard placement', () => {
+    expect(() => parseRoutes(FILTERED_ROUTES.replace(
+      '"include": ["pull_request.opened", "pull_request.closed"],',
+      '"include": [],',
+    ))).toThrow()
+    expect(() => parseRoutes(FILTERED_ROUTES.replace(
+      'pull_request.opened',
+      'pull_*_opened',
+    ))).toThrow()
+    expect(() => parseRoutes(FILTERED_ROUTES.replace(
+      `"include": ["pull_request.opened", "pull_request.closed"],
+          "exclude": ["pull_request.synchronize"]`,
+      '',
+    ))).toThrow(/include or exclude/)
   })
 })
 
@@ -259,6 +297,17 @@ describe('validateRoutes', () => {
     expect(issues.join('\n')).toMatch(/duplicate sub slugHash/)
   })
 
+  it('reports duplicate event type filter patterns', () => {
+    const cfg = parseRoutes(FILTERED_ROUTES.replace('pull_request.closed', 'pull_request.opened'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH']),
+    })
+    expect(issues).toContain("sub 'gh': duplicate event type include pattern")
+  })
+
   it('reports invalid local GitHub setup metadata', () => {
     const cfg = parseRoutes(ROUTES.replace('"recommended", "stars"', '"all", "stars"'))
     const issues = validateRoutes(cfg, {
@@ -377,6 +426,18 @@ describe('computePlan', () => {
       scheme: 'github-sha256',
       secretEnv: 'HMAC_GH',
       alternateSecretEnvs: ['HMAC_GH_NEXT'],
+    })
+  })
+
+  it('serializes event filters into runtime subscription configuration', () => {
+    const cfg = parseRoutes(FILTERED_ROUTES)
+    const plan = computePlan(cfg, { subs: {}, sinks: {} })
+    const githubPut = plan.subPuts.find((entry) => entry.key === `sub:sha256:${GITHUB_HASH}`)
+    expect(JSON.parse(githubPut!.value).filter).toEqual({
+      eventTypes: {
+        include: ['pull_request.opened', 'pull_request.closed'],
+        exclude: ['pull_request.synchronize'],
+      },
     })
   })
 
