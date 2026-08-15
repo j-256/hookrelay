@@ -60,7 +60,7 @@ const eventFilterSchema = z
     message: 'filter requires eventTypes or severities',
   })
 
-const subSchema = z
+export const subSchema = z
   .object({
     name: z.string().min(1),
     source: z.string().min(1),
@@ -101,7 +101,7 @@ const subSchema = z
   })
   .strict()
 
-const sinkSchema = z
+export const sinkSchema = z
   .object({
     name: z.string().min(1),
     type: z.string().min(1),
@@ -134,6 +134,7 @@ const routesSchema = z
     retention: retentionSchema.optional(),
     subs: z.array(subSchema),
     sinks: z.array(sinkSchema),
+    retiredSinks: z.array(sinkSchema).optional(),
   })
   .strict()
 
@@ -184,14 +185,27 @@ export interface ValidateContext {
 
 export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
   const issues: string[] = []
-  const declaredSinkNames = new Set(routes.sinks.map((s) => s.name))
+  const activeSinkNames = new Set(routes.sinks.map((sink) => sink.name))
+  const retiredSinkNames = new Set((routes.retiredSinks ?? []).map((sink) => sink.name))
+  const declaredSinkNames = new Set([...activeSinkNames, ...retiredSinkNames])
   const slugHashOwners = new Map<string, string>() // hash -> first sub.name to claim it
   let normalizedEmailBaseAddress: string | undefined
+
+  for (const sink of routes.sinks) {
+    if (retiredSinkNames.has(sink.name)) issues.push(`sink '${sink.name}': declared as both active and retired`)
+  }
+  for (const collection of [routes.sinks, routes.retiredSinks ?? []]) {
+    const names = new Set<string>()
+    for (const sink of collection) {
+      if (names.has(sink.name)) issues.push(`sink '${sink.name}': declared more than once`)
+      names.add(sink.name)
+    }
+  }
 
   if (routes.operations) {
     const operationSinks = new Set<string>()
     for (const sinkName of routes.operations.sinks) {
-      if (!declaredSinkNames.has(sinkName)) {
+      if (!activeSinkNames.has(sinkName)) {
         issues.push(`operations: unknown sink: ${sinkName}`)
       }
       if (operationSinks.has(sinkName)) {
@@ -297,7 +311,9 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
     }
     for (const sinkName of sub.sinks) {
       if (!declaredSinkNames.has(sinkName)) {
-        issues.push(`sub '${sub.name}': sink '${sinkName}' not declared in sinks[]`)
+        issues.push(`sub '${sub.name}': sink '${sinkName}' not declared in sinks[] or retiredSinks[]`)
+      } else if (sub.enabled && !activeSinkNames.has(sinkName)) {
+        issues.push(`sub '${sub.name}': enabled subscriptions cannot reference retired sink '${sinkName}'`)
       }
     }
     if (sub.auth) {
@@ -341,7 +357,7 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
     }
   }
 
-  for (const sink of routes.sinks) {
+  for (const sink of [...routes.sinks, ...(routes.retiredSinks ?? [])]) {
     if (!ctx.knownSinkTypes.has(sink.type)) {
       issues.push(`sink '${sink.name}': unknown sink type: ${sink.type}`)
       continue
@@ -456,7 +472,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
   }
 
   const desiredSinkKeys = new Set<string>()
-  for (const sink of routes.sinks) {
+  for (const sink of [...routes.sinks, ...(routes.retiredSinks ?? [])]) {
     const key = `sink:${sink.name}`
     desiredSinkKeys.add(key)
     const { name: _name, ...rest } = sink

@@ -72,5 +72,7 @@
     //   "urlEnv": "SINK_AUTOMATION_URL",
     //   "signingSecretEnv": "SINK_AUTOMATION_SIGNING_SECRET"
     // }
-  ]
+  ],
+  // `sink:retire` moves a disabled sink here while its KV configuration remains recoverable
+  "retiredSinks": []
 }

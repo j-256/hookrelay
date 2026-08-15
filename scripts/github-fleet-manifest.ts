@@ -9,7 +9,7 @@ import {
   type GitHubFleetValues,
 } from './github-fleet-model'
 
-const MANIFEST_VERSION = 1
+const MANIFEST_VERSION = 2
 const REPOSITORY_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
 const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/
 
@@ -24,18 +24,48 @@ const slugsSchema = z.object({
   alerts: z.string().regex(SUBSCRIPTION_SLUG_RE),
 }).strict()
 
-const repositorySchema = z.object({
+const baseRepositorySchema = z.object({
   hmac: secretSchema,
   slugs: slugsSchema,
+}).strict()
+
+const hookRetirementSchema = z.object({
+  id: z.number().int().positive(),
+  deleted: z.boolean(),
+}).strict()
+
+const retirementSchema = z.object({
+  preparedAt: z.string().datetime(),
+  hooks: z.object({
+    activity: hookRetirementSchema.optional(),
+    stars: hookRetirementSchema.optional(),
+    alerts: hookRetirementSchema.optional(),
+  }).strict(),
+  routesRemoved: z.boolean(),
+  kvRemoved: z.boolean(),
+  secretRemoved: z.boolean(),
+}).strict()
+
+const repositorySchema = baseRepositorySchema.extend({
+  state: z.enum(['active', 'retiring']),
+  retirement: retirementSchema.optional(),
+}).strict()
+
+const retiredRepositorySchema = baseRepositorySchema.extend({
+  retiredAt: z.string().datetime(),
 }).strict()
 
 const manifestSchema = z.object({
   version: z.literal(MANIFEST_VERSION),
   repositories: z.record(z.string().regex(REPOSITORY_RE), repositorySchema),
+  retiredRepositories: z.record(z.string().regex(REPOSITORY_RE), retiredRepositorySchema),
 }).strict()
 
 export type GitHubFleetSecret = z.infer<typeof secretSchema>
+export type GitHubFleetRetirement = z.infer<typeof retirementSchema>
+export type GitHubFleetRetirementHook = z.infer<typeof hookRetirementSchema>
 export type GitHubFleetManifestRepository = z.infer<typeof repositorySchema>
+export type GitHubFleetRetiredRepository = z.infer<typeof retiredRepositorySchema>
 export type GitHubFleetManifest = z.infer<typeof manifestSchema>
 
 export interface GitHubFleetRandomValues {
@@ -49,7 +79,7 @@ const DEFAULT_RANDOM_VALUES: GitHubFleetRandomValues = Object.freeze({
 })
 
 export function emptyGitHubFleetManifest(): GitHubFleetManifest {
-  return { version: MANIFEST_VERSION, repositories: {} }
+  return { version: MANIFEST_VERSION, repositories: {}, retiredRepositories: {} }
 }
 
 export function parseGitHubFleetManifest(text: string): GitHubFleetManifest {
@@ -70,13 +100,24 @@ export function parseGitHubFleetManifest(text: string): GitHubFleetManifest {
 }
 
 export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void {
-  const repositories = Object.keys(manifest.repositories)
+  const retiredRepositories = manifest.retiredRepositories
+  const repositories = [...Object.keys(manifest.repositories), ...Object.keys(retiredRepositories)]
   assertGitHubFleetRepositoryCollisions(repositories)
   const slugOwners = new Map<string, string>()
   const hmacValueOwners = new Map<string, string>()
 
-  for (const repo of repositories) {
+  for (const repo of Object.keys(manifest.repositories)) {
     const entry = manifest.repositories[repo]!
+    if (entry.state === 'retiring' && !entry.retirement) {
+      throw new Error(`manifest repository ${repo} is retiring without phase state`)
+    }
+    if (entry.state === 'active' && entry.retirement) {
+      throw new Error(`manifest repository ${repo} is active with retirement phase state`)
+    }
+  }
+
+  for (const repo of repositories) {
+    const entry = manifest.repositories[repo] ?? retiredRepositories[repo]!
     const expectedName = githubFleetHmacName(repo)
     if (entry.hmac.name !== expectedName) {
       throw new Error(`manifest repository ${repo} must use HMAC name ${expectedName}`)
@@ -99,6 +140,7 @@ export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void
 export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): string {
   validateGitHubFleetManifest(manifest)
   const repositories: GitHubFleetManifest['repositories'] = {}
+  const retiredRepositories: Record<string, GitHubFleetRetiredRepository> = {}
   for (const repo of Object.keys(manifest.repositories).sort()) {
     const entry = manifest.repositories[repo]!
     repositories[repo] = {
@@ -108,9 +150,35 @@ export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): str
         stars: entry.slugs.stars,
         alerts: entry.slugs.alerts,
       },
+      state: entry.state,
+      ...(entry.retirement
+        ? {
+            retirement: {
+              preparedAt: entry.retirement.preparedAt,
+              hooks: Object.fromEntries(GITHUB_FLEET_PROFILE_NAMES
+                .filter((profile) => entry.retirement?.hooks[profile] !== undefined)
+                .map((profile) => [profile, { ...entry.retirement!.hooks[profile]! }])),
+              routesRemoved: entry.retirement.routesRemoved,
+              kvRemoved: entry.retirement.kvRemoved,
+              secretRemoved: entry.retirement.secretRemoved,
+            },
+          }
+        : {}),
     }
   }
-  return `${JSON.stringify({ version: MANIFEST_VERSION, repositories }, null, 2)}\n`
+  for (const repo of Object.keys(manifest.retiredRepositories).sort()) {
+    const entry = manifest.retiredRepositories[repo]!
+    retiredRepositories[repo] = {
+      hmac: entry.hmac,
+      slugs: {
+        activity: entry.slugs.activity,
+        stars: entry.slugs.stars,
+        alerts: entry.slugs.alerts,
+      },
+      retiredAt: entry.retiredAt,
+    }
+  }
+  return `${JSON.stringify({ version: MANIFEST_VERSION, repositories, retiredRepositories }, null, 2)}\n`
 }
 
 export function generateGitHubFleetManifestRepository(
@@ -127,6 +195,7 @@ export function generateGitHubFleetManifestRepository(
       stars: randomValues.slug(),
       alerts: randomValues.slug(),
     },
+    state: 'active',
   }
 }
 
@@ -149,12 +218,95 @@ export function withGitHubFleetManifestRepository(
   const next: GitHubFleetManifest = {
     version: MANIFEST_VERSION,
     repositories: { ...manifest.repositories, [repo]: existing ?? entry },
+    retiredRepositories: { ...manifest.retiredRepositories },
   }
   validateGitHubFleetManifest(next)
   return next
 }
 
-export function githubFleetManifestValues(entry: GitHubFleetManifestRepository): GitHubFleetValues {
+export function beginGitHubFleetRepositoryRetirement(
+  manifest: GitHubFleetManifest,
+  repo: string,
+  preparedAt: string,
+): GitHubFleetManifest {
+  if (manifest.retiredRepositories[repo]) return manifest
+  const entry = manifest.repositories[repo]
+  if (!entry) throw new Error(`manifest repository is missing: ${repo}`)
+  if (entry.state === 'retiring') return manifest
+  const next: GitHubFleetManifest = {
+    ...manifest,
+    repositories: {
+      ...manifest.repositories,
+      [repo]: {
+        ...entry,
+        state: 'retiring',
+        retirement: {
+          preparedAt,
+          hooks: {},
+          routesRemoved: false,
+          kvRemoved: false,
+          secretRemoved: false,
+        },
+      },
+    },
+  }
+  validateGitHubFleetManifest(next)
+  return next
+}
+
+export function updateGitHubFleetRepositoryRetirement(
+  manifest: GitHubFleetManifest,
+  repo: string,
+  update: Partial<GitHubFleetRetirement>,
+): GitHubFleetManifest {
+  const entry = manifest.repositories[repo]
+  if (!entry || entry.state !== 'retiring' || !entry.retirement) {
+    throw new Error(`manifest repository is not retiring: ${repo}`)
+  }
+  const next: GitHubFleetManifest = {
+    ...manifest,
+    repositories: {
+      ...manifest.repositories,
+      [repo]: {
+        ...entry,
+        retirement: { ...entry.retirement, ...update },
+      },
+    },
+  }
+  validateGitHubFleetManifest(next)
+  return next
+}
+
+export function completeGitHubFleetRepositoryRetirement(
+  manifest: GitHubFleetManifest,
+  repo: string,
+  retiredAt: string,
+): GitHubFleetManifest {
+  if (manifest.retiredRepositories[repo]) return manifest
+  const entry = manifest.repositories[repo]
+  if (!entry || entry.state !== 'retiring' || !entry.retirement) {
+    throw new Error(`manifest repository is not retiring: ${repo}`)
+  }
+  const { [repo]: _removed, ...repositories } = manifest.repositories
+  const next: GitHubFleetManifest = {
+    version: MANIFEST_VERSION,
+    repositories,
+    retiredRepositories: {
+      ...manifest.retiredRepositories,
+      [repo]: {
+        hmac: entry.hmac,
+        slugs: entry.slugs,
+        retiredAt,
+      },
+    },
+  }
+  validateGitHubFleetManifest(next)
+  return next
+}
+
+export function githubFleetManifestValues(
+  entry: GitHubFleetManifestRepository | GitHubFleetRetiredRepository,
+): GitHubFleetValues {
   return {
     hmacName: entry.hmac.name,
     slugs: { ...entry.slugs } as Record<GitHubFleetProfileName, string>,

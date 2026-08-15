@@ -103,5 +103,10 @@ describe('Discord sink preparation', () => {
     const first = prepareDiscordSink(ROUTES, '', 'discord', DISCORD_URL)
     expect(() => prepareDiscordSink(first.routesText, first.devVarsText, 'discord', DISCORD_URL)).toThrow(/already exists/)
     expect(() => prepareDiscordSink(first.routesText, '', 'DISCORD', DISCORD_URL)).toThrow(/secret name/)
+    const retired = ROUTES.replace(
+      '"sinks": []',
+      '"sinks": [],\n  "retiredSinks": [{ "name": "discord", "type": "discord", "urlEnv": "SINK_DISCORD_URL" }]',
+    )
+    expect(() => prepareDiscordSink(retired, '', 'discord', DISCORD_URL)).toThrow(/already exists/)
   })
 })

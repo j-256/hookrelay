@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   createGitHubRepositoryHook,
+  deleteGitHubRepositoryHook,
   gitHubRepositoryHookMatches,
   githubHookPayload,
   listGitHubRepositoryHooks,
@@ -57,6 +58,22 @@ describe('GitHub repository hook reads', () => {
     expect(() => parseGitHubRepositoryHookPages('not json')).toThrow(/malformed/)
     expect(() => parseGitHubRepositoryHookPages('{}')).toThrow(/invalid/)
     expect(() => parseGitHubRepositoryHookPages('[[{"id": 1}]]')).toThrow(/invalid/)
+  })
+})
+
+describe('GitHub repository hook deletion', () => {
+  it('deletes one exact hook through the versioned API request', async () => {
+    const runner = vi.fn(async (_command: string, _args: string[]) => '')
+    await deleteGitHubRepositoryHook('example-owner/example-repo', 123, runner)
+    expect(runner).toHaveBeenCalledOnce()
+    expect(runner.mock.calls[0]?.[0]).toBe('gh')
+    expect(runner.mock.calls[0]?.[1]).toEqual(expect.arrayContaining([
+      '--method',
+      'DELETE',
+      'repos/example-owner/example-repo/hooks/123',
+      '--silent',
+    ]))
+    await expect(deleteGitHubRepositoryHook('invalid', 123, runner)).rejects.toThrow(/invalid GitHub repository/)
   })
 })
 

@@ -135,6 +135,24 @@ const OPERATIONS_ROUTES = ROUTES.replace(
   "subs": [`,
 )
 
+const RETIRED_SINK_ROUTES = `
+{
+  "subs": [
+    {
+      "name": "disabled",
+      "source": "statuspage",
+      "slugHash": "${CLAUDE_HASH}",
+      "enabled": false,
+      "sinks": ["retiring"]
+    }
+  ],
+  "sinks": [],
+  "retiredSinks": [
+    { "name": "retiring", "type": "ntfy", "topic": "retained-topic" }
+  ]
+}
+`
+
 describe('parseSyncArgs', () => {
   it('accepts short and long apply options', () => {
     expect(parseSyncArgs([])).toEqual({ yes: false })
@@ -297,6 +315,39 @@ describe('validateRoutes', () => {
       secretsAvailable: new Set(['HMAC_GH']),
     })
     expect(issues.join('\n')).toMatch(/sink 'missing' not declared/)
+  })
+
+  it('allows disabled subscriptions to retain retired sinks but blocks active use', () => {
+    const context = {
+      knownSources: new Set(['statuspage']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { safeParse: () => ({ success: true }) } as any },
+      secretsAvailable: new Set<string>(),
+    }
+    expect(validateRoutes(parseRoutes(RETIRED_SINK_ROUTES), context)).toEqual([])
+    const enabled = parseRoutes(RETIRED_SINK_ROUTES.replace('"enabled": false', '"enabled": true'))
+    expect(validateRoutes(enabled, context)).toContain(
+      "sub 'disabled': enabled subscriptions cannot reference retired sink 'retiring'",
+    )
+    const operations = parseRoutes(RETIRED_SINK_ROUTES.replace(
+      '  "subs":',
+      '  "operations": { "sinks": ["retiring"], "alertCooldownMinutes": 60, "staleDeliveryMinutes": 15 },\n  "subs":',
+    ))
+    expect(validateRoutes(operations, context)).toContain('operations: unknown sink: retiring')
+  })
+
+  it('requires sink names to be unique across active and retired collections', () => {
+    const duplicate = parseRoutes(RETIRED_SINK_ROUTES.replace(
+      '"sinks": []',
+      '"sinks": [{ "name": "retiring", "type": "ntfy", "topic": "duplicate" }]',
+    ))
+    const issues = validateRoutes(duplicate, {
+      knownSources: new Set(['statuspage']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { safeParse: () => ({ success: true }) } as any },
+      secretsAvailable: new Set<string>(),
+    })
+    expect(issues).toContain("sink 'retiring': declared as both active and retired")
   })
 
   it('reports missing secret for sub auth', () => {
@@ -578,6 +629,16 @@ describe('computePlan', () => {
     const githubPut = plan.subPuts.find((entry) => entry.key === `sub:sha256:${GITHUB_HASH}`)
     expect(JSON.parse(githubPut!.value)).not.toHaveProperty('setup')
     expect(plan.sinkPuts).toHaveLength(0)
+    expect(plan.sinkDeletes).toEqual([])
+  })
+
+  it('keeps retired sink configuration in KV until finalization', () => {
+    const cfg = parseRoutes(RETIRED_SINK_ROUTES)
+    const plan = computePlan(cfg, { subs: {}, sinks: {} })
+    expect(plan.sinkPuts).toEqual([{
+      key: 'sink:retiring',
+      value: '{"topic":"retained-topic","type":"ntfy"}',
+    }])
     expect(plan.sinkDeletes).toEqual([])
   })
 

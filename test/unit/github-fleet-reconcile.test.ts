@@ -74,6 +74,7 @@ function manifestEntry(repo: string, seed: string): GitHubFleetManifestRepositor
       stars: `${seed}starsslugvalue00000`.slice(0, 22),
       alerts: `${seed}alertsslugvalue0000`.slice(0, 22),
     },
+    state: 'active',
   }
 }
 
@@ -193,7 +194,7 @@ describe('GitHub fleet apply and verify', () => {
   it('requires confirmation before any production write', async () => {
     const fileSystem = modeAwareFileSystem()
     const entry = manifestEntry(REPO, 'confirm')
-    const manifest: GitHubFleetManifest = { version: 1, repositories: { [REPO]: entry } }
+    const manifest: GitHubFleetManifest = { version: 2, repositories: { [REPO]: entry }, retiredRepositories: {} }
     const directory = await writeProject(manifest, fileSystem)
     try {
       const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
@@ -230,7 +231,7 @@ describe('GitHub fleet apply and verify', () => {
   it('resumes partial hook creation, preserves unrelated hooks, and becomes idempotent', async () => {
     const fileSystem = modeAwareFileSystem()
     const entry = manifestEntry(REPO, 'canary')
-    const manifest: GitHubFleetManifest = { version: 1, repositories: { [REPO]: entry } }
+    const manifest: GitHubFleetManifest = { version: 2, repositories: { [REPO]: entry }, retiredRepositories: {} }
     const directory = await writeProject(manifest, fileSystem)
     try {
       const routes = parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8'))
@@ -319,7 +320,7 @@ describe('GitHub fleet apply and verify', () => {
   it('repairs managed metadata drift and retries an exact hook with a wrong secret', async () => {
     const fileSystem = modeAwareFileSystem()
     const entry = manifestEntry(REPO, 'repair')
-    const manifest: GitHubFleetManifest = { version: 1, repositories: { [REPO]: entry } }
+    const manifest: GitHubFleetManifest = { version: 2, repositories: { [REPO]: entry }, retiredRepositories: {} }
     const directory = await writeProject(manifest, fileSystem)
     try {
       const routes = parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8'))

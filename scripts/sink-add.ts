@@ -112,10 +112,11 @@ export function prepareDiscordSink(
   webhookUrl: string,
 ): PreparedSink {
   const routes = parseRoutes(routesText)
-  if (routes.sinks.some((sink) => sink.name === name)) throw new Error(`sink already exists: ${name}`)
+  const configuredSinks = [...routes.sinks, ...(routes.retiredSinks ?? [])]
+  if (configuredSinks.some((sink) => sink.name === name)) throw new Error(`sink already exists: ${name}`)
 
   const secretName = `SINK_${envSegment(name)}_URL`
-  if (routes.sinks.some((sink) => Object.values(sink).includes(secretName))) {
+  if (configuredSinks.some((sink) => Object.values(sink).includes(secretName))) {
     throw new Error(`sink secret name is already referenced: ${secretName}`)
   }
   const secret = { name: secretName, value: normalizeDiscordWebhookUrl(webhookUrl) }
@@ -138,7 +139,8 @@ export function prepareWebhookSink(
   generatedSigningSecret = randomBytes(32).toString('hex'),
 ): PreparedSink {
   const routes = parseRoutes(routesText)
-  if (routes.sinks.some((sink) => sink.name === name)) throw new Error(`sink already exists: ${name}`)
+  const configuredSinks = [...routes.sinks, ...(routes.retiredSinks ?? [])]
+  if (configuredSinks.some((sink) => sink.name === name)) throw new Error(`sink already exists: ${name}`)
 
   const label = envSegment(name)
   const urlSecret: SecretValue = {
@@ -150,7 +152,7 @@ export function prepareWebhookSink(
     value: generatedSigningSecret,
   }
   if (!signingSecret.value) throw new Error('generated webhook signing secret is empty')
-  const referencedValues = routes.sinks.flatMap((sink) => Object.values(sink))
+  const referencedValues = configuredSinks.flatMap((sink) => Object.values(sink))
   for (const secret of [urlSecret, signingSecret]) {
     if (referencedValues.includes(secret.name)) {
       throw new Error(`sink secret name is already referenced: ${secret.name}`)

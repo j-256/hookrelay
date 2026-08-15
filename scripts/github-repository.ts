@@ -300,6 +300,16 @@ export async function updateGitHubRepositoryHookEvents(
   )
 }
 
+export async function deleteGitHubRepositoryHook(
+  repo: string,
+  hookId: number,
+  runner: ProcessRunner = runProcess,
+): Promise<void> {
+  validateGitHubRepo(repo)
+  if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
+  await runner('gh', [...gitHubApiArgs('DELETE', `repos/${repo}/hooks/${hookId}`), '--silent'])
+}
+
 function parseGitHubRepositoryHookDelivery(value: unknown): GitHubRepositoryHookDelivery {
   if (value === null || typeof value !== 'object') throw new Error('GitHub returned invalid hook delivery data')
   const record = value as Record<string, unknown>

@@ -22,23 +22,39 @@ function entry(repo: string, value = `${repo}-secret`, slugs = {
       value,
     },
     slugs,
+    state: 'active' as const,
   }
 }
 
 describe('GitHub fleet manifest', () => {
   it('parses strict versioned JSON and rejects unknown fields', () => {
     const text = serializeGitHubFleetManifest({
-      version: 1,
+      version: 2,
       repositories: { 'example-owner/example-repo': entry('example-owner/example-repo') },
+      retiredRepositories: {},
     })
     expect(parseGitHubFleetManifest(text).repositories['example-owner/example-repo']?.hmac.name).toBe('HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO')
-    expect(() => parseGitHubFleetManifest(text.replace('"version": 1', '"version": 1, "extra": true'))).toThrow(/Unrecognized key/)
+    expect(parseGitHubFleetManifest(text).version).toBe(2)
+    expect(() => parseGitHubFleetManifest(text.replace('"version": 2', '"version": 2, "extra": true'))).toThrow(/Unrecognized key/)
     expect(() => parseGitHubFleetManifest('{')).toThrow(/parse/)
+  })
+
+  it('rejects legacy v1 manifests', () => {
+    const legacy = JSON.stringify({
+      version: 1,
+      repositories: {
+        'example-owner/example-repo': {
+          hmac: entry('example-owner/example-repo').hmac,
+          slugs: entry('example-owner/example-repo').slugs,
+        },
+      },
+    })
+    expect(() => parseGitHubFleetManifest(legacy)).toThrow(/version/)
   })
 
   it('serializes repositories in stable order with a trailing newline', () => {
     const text = serializeGitHubFleetManifest({
-      version: 1,
+      version: 2,
       repositories: {
         'z-owner/z-repo': entry('z-owner/z-repo', 'z-secret', {
           activity: FIRST_SLUG.toUpperCase(),
@@ -47,6 +63,7 @@ describe('GitHub fleet manifest', () => {
         }),
         'a-owner/a-repo': entry('a-owner/a-repo', 'a-secret'),
       },
+      retiredRepositories: {},
     })
     expect(text.indexOf('a-owner/a-repo')).toBeLessThan(text.indexOf('z-owner/z-repo'))
     expect(text.endsWith('\n')).toBe(true)

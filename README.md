@@ -349,7 +349,7 @@ The manifest is strict, versioned JSON with this repository shape:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "repositories": {
     "owner/repo": {
       "hmac": {
@@ -360,13 +360,15 @@ The manifest is strict, versioned JSON with this repository shape:
         "activity": "<private-slug>",
         "stars": "<private-slug>",
         "alerts": "<private-slug>"
-      }
+      },
+      "state": "active"
     }
-  }
+  },
+  "retiredRepositories": {}
 }
 ```
 
-Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data.
+Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. Active and retiring repositories carry explicit lifecycle state, and a retiring entry also carries resumable hook, route, KV, and secret phase markers. A completed entry moves to `retiredRepositories` with its recovery values intact.
 
 Use the four phases in order:
 
@@ -387,9 +389,42 @@ Private repositories require `--include-private` together with one or more `--re
 pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/private-repo --include-private
 ```
 
-The workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST.
+The ordinary fleet workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST.
 
 Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
+
+Fleet retirement is a separate, explicit use of the same phases and selection arguments:
+
+```sh
+pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/repo --retire
+pnpm github:fleet prepare --root <directory> --manifest <file> --repo owner/repo --retire
+pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/repo --retire
+pnpm github:fleet apply --root <directory> --manifest <file> --repo owner/repo --retire
+pnpm github:fleet verify --root <directory> --manifest <file> --repo owner/repo --retire
+pnpm sync
+```
+
+`--retire` requires at least one explicit `--repo`, and private repositories still require `--include-private` on every phase. Prepare writes the lifecycle state to the private manifest before disabling the repository's local routes and does not change its raw slugs or HMAC. Apply confirms before production mutation, syncs only those disabled routes, waits for the public routes to return the disabled response, records exact owned hook IDs in the manifest, deletes only those hooks, removes the routes from local and production KV, and deletes the repository HMAC only when no remaining route references it. Each irreversible step has a manifest marker, so rerunning the same command resumes instead of regenerating values or repeating completed work.
+
+Retirement verification checks that all selected routes, owned hooks, and safely unshared HMACs are absent. It never sends GitHub pings. Ordinary fleet discovery excludes retiring and retired entries from admission or hook reconciliation while reporting their lifecycle state.
+
+### Staged subscription and sink retirement
+
+Individual subscriptions and sinks use a separate strict, versioned retirement manifest. Pass its path explicitly on every command; the file is created as a regular, non-symlink file with mode `0600`, can contain recoverable secret values, and must be stored privately. It is not the GitHub fleet manifest.
+
+```sh
+pnpm sub:retire <subscription> --manifest <file>
+pnpm sub:retire <subscription> --manifest <file> --finalize
+
+pnpm sink:retire <sink> --manifest <file>
+pnpm sink:retire <sink> --manifest <file> --finalize
+```
+
+The first subscription phase disables the local route, previews the normal KV plan, and asks before applying it; `-y` applies without prompts. Finalization requires the production route to be disabled, archives the full hash-only subscription configuration and locally recoverable auth values before destructive work, records and removes only a matching Hookrelay-owned GitHub hook when present, removes the route, syncs its KV deletion, and deletes auth secrets only when no remaining route references them. Missing local values are recorded as unavailable and their remote secrets are retained rather than becoming unrecoverable.
+
+The first sink phase requires no enabled subscription or operations alert to reference the sink, moves its definition from `sinks` to `retiredSinks`, and keeps that definition in production KV. Disabled subscriptions may continue to reference the staged sink while their own retirements are completed. Sink finalization uses the parameterized [D1 query API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/) to prove that no `pending`, `queued`, `processing`, `retrying`, or `exhausted` delivery row names the sink. It then archives the sink and recoverable values, removes the retired definition and production KV entry, and deletes only unshared sink secrets. The read-only D1 check uses `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and the `EVENTS_DB` database ID from `wrangler.jsonc`; the token needs D1 Read permission.
+
+Both finalizers write recovery data before provider, KV, or secret deletion and persist phase markers after each successful boundary. A cancelled or interrupted finalization can leave the local desired state advanced while the disabled production resource remains safe; rerun the identical command to continue. Manifests and logs never print raw slugs or secret values.
 
 `pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
 

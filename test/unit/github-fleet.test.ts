@@ -147,6 +147,15 @@ describe('GitHub fleet arguments', () => {
       'plan', '--root', '/repo', '--manifest', 'fleet.json', '--include-private',
     ])).toThrow(/requires at least one --repo/)
   })
+
+  it('requires explicit repository selectors for retirement', () => {
+    expect(parseGitHubFleetArgs([
+      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--retire',
+    ])).toMatchObject({ repositories: [REPO], retire: true })
+    expect(() => parseGitHubFleetArgs([
+      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--retire',
+    ])).toThrow(/requires at least one --repo/)
+  })
 })
 
 describe('GitHub fleet planning and preparation', () => {
@@ -227,16 +236,64 @@ describe('GitHub fleet planning and preparation', () => {
     }
   })
 
+  it('reports lifecycle repositories without auditing their hooks as ordinary fleet members', async () => {
+    const entry: GitHubFleetManifestRepository = {
+      hmac: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_PLUGIN', value: HMAC_VALUE },
+      slugs: SLUGS,
+      state: 'retiring',
+      retirement: {
+        preparedAt: '2026-08-15T12:00:00.000Z',
+        hooks: {},
+        routesRemoved: false,
+        kvRemoved: false,
+        secretRemoved: false,
+      },
+    }
+    const subscriptions = await Promise.all(GITHUB_FLEET_PROFILE_NAMES.map(async (profile) => ({
+      ...await buildGitHubFleetSubscription(REPO, profile, githubFleetManifestValues(entry)),
+      enabled: false,
+    })))
+    const directory = await project(subscriptions)
+    try {
+      await writePrivateText(join(directory, 'fleet.json'), serializeGitHubFleetManifest({
+        version: 2,
+        repositories: { [REPO]: entry },
+        retiredRepositories: {},
+      }), TEST_FILE_SYSTEM)
+      const deps = dependencies()
+      let hookReads = 0
+      deps.listHooks = async () => {
+        hookReads += 1
+        return []
+      }
+      const plan = await planGitHubFleet({ ...options(), phase: 'plan' }, deps, directory)
+      expect(plan).toMatchObject({
+        selected: [],
+        managed: [],
+        retiring: [REPO],
+        retired: [],
+        blockers: [],
+      })
+      expect(hookReads).toBe(0)
+      const prepared = await prepareGitHubFleet(options(), deps, directory)
+      expect(prepared).toMatchObject({ repositories: [], devVarAdditions: 0, subscriptionAdditions: 0 })
+      expect(await readFile(join(directory, '.dev.vars'), 'utf8')).not.toContain(entry.hmac.name)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('repairs an interrupted prepare from saved manifest values', async () => {
     const directory = await project()
     try {
       const entry: GitHubFleetManifestRepository = {
         hmac: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_PLUGIN', value: HMAC_VALUE },
         slugs: SLUGS,
+        state: 'active',
       }
       await writePrivateText(
         join(directory, 'fleet.json'),
-        serializeGitHubFleetManifest({ version: 1, repositories: { [REPO]: entry } }),
+        serializeGitHubFleetManifest({ version: 2, repositories: { [REPO]: entry }, retiredRepositories: {} }),
         TEST_FILE_SYSTEM,
       )
       const result = await prepareGitHubFleet(options(), dependencies(), directory)
@@ -290,6 +347,7 @@ describe('existing GitHub fleet import', () => {
     const canonical: GitHubFleetManifestRepository = {
       hmac: { name: 'HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_REPO', value: 'canonical-site-secret' },
       slugs: SLUGS,
+      state: 'active',
     }
     const subscriptions = await Promise.all(GITHUB_FLEET_PROFILE_NAMES.map((profile) => (
       buildGitHubFleetSubscription(OTHER_REPO, profile, githubFleetManifestValues(canonical))
@@ -315,7 +373,8 @@ describe('existing GitHub fleet import', () => {
       const result = await prepareGitHubFleet(options(), deps, directory)
       expect(result.subscriptionAdditions).toBe(0)
       const manifest = parseGitHubFleetManifest(await readFile(join(directory, 'fleet.json'), 'utf8'))
-      expect(manifest.repositories[OTHER_REPO]).toEqual(canonical)
+      expect(manifest.repositories[OTHER_REPO]).toMatchObject(canonical)
+      expect(manifest.repositories[OTHER_REPO]?.state).toBe('active')
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

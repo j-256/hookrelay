@@ -331,8 +331,8 @@ async function validatePreparedPlan(plan: GitHubFleetPlan): Promise<void> {
   }
 }
 
-function selectedRepositories(options: GitHubFleetOptions, plan: GitHubFleetPlan): string[] {
-  return (options.repositories.length > 0 ? [...options.repositories] : [...plan.discovered]).sort()
+function selectedRepositories(_options: GitHubFleetOptions, plan: GitHubFleetPlan): string[] {
+  return [...plan.selected].sort()
 }
 
 function verificationRepositories(options: GitHubFleetOptions, plan: GitHubFleetPlan): string[] {

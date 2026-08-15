@@ -58,6 +58,7 @@ export interface GitHubFleetOptions {
   includePrivate: boolean
   secretLimit: number
   yes: boolean
+  retire?: boolean
 }
 
 export interface GitHubFleetCapacity {
@@ -72,6 +73,8 @@ export interface GitHubFleetPlan {
   discovered: string[]
   selected: string[]
   managed: string[]
+  retiring: string[]
+  retired: string[]
   exclusions: GitHubFleetDiscovery['exclusions']
   blockers: string[]
   manifestAdditions: string[]
@@ -136,6 +139,7 @@ function usage(): string {
     'options:',
     '  --repo <owner/repo>    select a new repository, repeatable',
     '  --include-private       admit private repositories selected with --repo',
+    '  --retire               operate on selected managed repositories as retirements',
     `  --secret-limit <count> Worker variable and secret limit (default: ${DEFAULT_SECRET_LIMIT})`,
     '  -y, --yes              apply production changes without prompts',
     '  -h, --help             show this help',
@@ -158,6 +162,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   let includePrivate = false
   let secretLimit = DEFAULT_SECRET_LIMIT
   let yes = false
+  let retire = false
 
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index]!
@@ -176,6 +181,8 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       index += 1
     } else if (arg === '--include-private') {
       includePrivate = true
+    } else if (arg === '--retire') {
+      retire = true
     } else if (arg === '--secret-limit') {
       const raw = optionValue(argv, index, arg)
       secretLimit = Number(raw)
@@ -192,8 +199,9 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   if (!root) throw new Error('--root is required')
   if (!manifest) throw new Error('--manifest is required')
   if (includePrivate && repositories.length === 0) throw new Error('--include-private requires at least one --repo')
+  if (retire && repositories.length === 0) throw new Error('--retire requires at least one --repo')
   if (yes && phase !== 'apply') throw new Error('-y is only valid with apply')
-  return { phase: phase as GitHubFleetPhase, root, manifest, repositories, includePrivate, secretLimit, yes }
+  return { phase: phase as GitHubFleetPhase, root, manifest, repositories, includePrivate, secretLimit, yes, retire }
 }
 
 function fleetDiscoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscoveryOptions {
@@ -258,6 +266,7 @@ async function recoverManifestRepository(
   return {
     hmac: { name: canonicalName, value: canonicalValue },
     slugs,
+    state: 'active',
   }
 }
 
@@ -332,23 +341,46 @@ async function loadLocalState(
   const routes = parseRoutes(routesText)
   let manifest = parseGitHubFleetManifest(manifestText)
   const discoveredNames = new Set(discovery.repositories.map((repo) => repo.nameWithOwner))
-  const selected = new Set(options.repositories.length > 0 ? options.repositories : discoveredNames)
-  for (const repo of selected) {
+  const requested = new Set(options.repositories.length > 0 ? options.repositories : discoveredNames)
+  for (const repo of requested) {
     if (!discoveredNames.has(repo)) {
       const eligibleVisibility = options.includePrivate
         ? 'an eligible public or explicitly selected private repository'
         : 'an eligible public repository; private repositories require --include-private'
       blockers.push(`${repo}: selected repository was not discovered as ${eligibleVisibility}`)
     }
+    if (options.repositories.length > 0 && manifest.repositories[repo]?.state === 'retiring') {
+      blockers.push(`${repo}: repository is retiring; use --retire with an explicit --repo`)
+    }
+    if (options.repositories.length > 0 && manifest.retiredRepositories[repo]) {
+      blockers.push(`${repo}: repository is retired`)
+    }
   }
+  const selected = new Set([...requested].filter((repo) => (
+    manifest.repositories[repo]?.state !== 'retiring' && !manifest.retiredRepositories[repo]
+  )))
 
-  const hooks = await readHooks(discovery, dependencies, blockers)
+  const lifecycleRepositories = new Set([
+    ...Object.entries(manifest.repositories)
+      .filter(([, entry]) => entry.state === 'retiring')
+      .map(([repo]) => repo),
+    ...Object.keys(manifest.retiredRepositories),
+  ])
+  const activeDiscovery: GitHubFleetDiscovery = {
+    ...discovery,
+    repositories: discovery.repositories.filter((repository) => !lifecycleRepositories.has(repository.nameWithOwner)),
+  }
+  const hooks = await readHooks(activeDiscovery, dependencies, blockers)
   const manifestAdditions: string[] = []
-  const managed = new Set(Object.keys(manifest.repositories).filter((repo) => discoveredNames.has(repo)))
+  const managed = new Set(Object.keys(manifest.repositories).filter((repo) => (
+    discoveredNames.has(repo) && manifest.repositories[repo]?.state !== 'retiring'
+  )))
   for (const repo of discoveredNames) {
     const existingRoutes = profileRoutes(routes, repo)
     const routeCount = Object.keys(existingRoutes).length
-    if (routeCount > 0) managed.add(repo)
+    const lifecycleManaged = manifest.repositories[repo]?.state === 'retiring' || manifest.retiredRepositories[repo] !== undefined
+    if (routeCount > 0 && !lifecycleManaged) managed.add(repo)
+    if (lifecycleManaged) continue
     if (routeCount !== 0 && routeCount !== GITHUB_FLEET_PROFILE_NAMES.length) {
       blockers.push(`${repo}: only ${routeCount} of the three fleet subscriptions exist`)
       continue
@@ -410,6 +442,8 @@ export function countWranglerTextVars(text: string): number {
 function plannedRepositoryNames(state: FleetLocalState): string[] {
   return [...state.target]
     .filter((repo) => state.discovery.repositories.some((candidate) => candidate.nameWithOwner === repo))
+    .filter((repo) => state.manifest.repositories[repo]?.state !== 'retiring')
+    .filter((repo) => !state.manifest.retiredRepositories[repo])
     .sort()
 }
 
@@ -432,6 +466,8 @@ export async function planGitHubFleet(
       discovered: discovery.repositories.map((repo) => repo.nameWithOwner),
       selected,
       managed: [],
+      retiring: [],
+      retired: [],
       exclusions: discovery.exclusions,
       blockers: [...discovery.blockers, ...fileIssues],
       manifestAdditions: [],
@@ -525,6 +561,11 @@ export async function planGitHubFleet(
     discovered: state.discovery.repositories.map((repo) => repo.nameWithOwner),
     selected: selectedNames,
     managed: [...state.managed].sort(),
+    retiring: Object.entries(state.manifest.repositories)
+      .filter(([, entry]) => entry.state === 'retiring')
+      .map(([repo]) => repo)
+      .sort(),
+    retired: Object.keys(state.manifest.retiredRepositories).sort(),
     exclusions: state.discovery.exclusions,
     blockers,
     manifestAdditions: manifestAdditions.sort(),
@@ -590,7 +631,7 @@ export async function prepareGitHubFleet(
 
   await writePrivateText(paths.manifest, serializeGitHubFleetManifest(state.manifest), dependencies.fileSystem)
 
-  for (const entry of Object.values(state.manifest.repositories)) {
+  for (const entry of Object.values(state.manifest.repositories).filter((candidate) => candidate.state !== 'retiring')) {
     const beforeCanonical = getDevVar(devVarsText, entry.hmac.name)
     devVarsText = setDevVar(devVarsText, entry.hmac.name, entry.hmac.value)
     if (beforeCanonical === null) devVarAdditions += 1
@@ -627,6 +668,8 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
     `Discovered repositories: ${plan.discovered.length}`,
     `Selected repositories: ${plan.selected.length}`,
     `Managed repositories: ${plan.managed.length}`,
+    `Retiring repositories: ${plan.retiring.length}`,
+    `Retired repositories: ${plan.retired.length}`,
     `Manifest additions: ${plan.manifestAdditions.length}`,
     `Subscription additions: ${plan.subscriptionAdditions.length}`,
     `GitHub hook additions: ${plan.hookAdditions.length}`,
@@ -635,6 +678,8 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
     `Worker capacity: ${plan.capacity.projected}/${plan.capacity.limit}`,
   ]
   for (const exclusion of plan.exclusions) lines.push(`EXCLUDE ${exclusion.child}: ${exclusion.reason}`)
+  for (const repo of plan.retiring) lines.push(`RETIRING ${repo}`)
+  for (const repo of plan.retired) lines.push(`RETIRED ${repo}`)
   for (const repo of plan.manifestAdditions) lines.push(`ADD manifest ${repo}`)
   for (const name of plan.subscriptionAdditions) lines.push(`ADD subscription ${name}`)
   for (const name of plan.hookAdditions) lines.push(`ADD hook ${name}`)
@@ -649,6 +694,41 @@ async function main(): Promise<void> {
     return
   }
   const options = parseGitHubFleetArgs(argv)
+  if (options.retire) {
+    const {
+      applyGitHubFleetRetirement,
+      formatGitHubFleetRetirementPlan,
+      planGitHubFleetRetirement,
+      prepareGitHubFleetRetirement,
+      verifyGitHubFleetRetirement,
+    } = await import('./github-fleet-retirement')
+    if (options.phase === 'plan') {
+      const plan = await planGitHubFleetRetirement(options)
+      console.log(formatGitHubFleetRetirementPlan(plan))
+      if (plan.blockers.length > 0) process.exitCode = 1
+      return
+    }
+    if (options.phase === 'prepare') {
+      const result = await prepareGitHubFleetRetirement(options)
+      console.log(`Prepared repository retirements: ${result.repositories.length}`)
+      console.log(`Disabled local subscriptions: ${result.disabledSubscriptions}`)
+      return
+    }
+    if (options.phase === 'apply') {
+      const plan = await planGitHubFleetRetirement(options)
+      console.log(formatGitHubFleetRetirementPlan(plan))
+      const result = await applyGitHubFleetRetirement(options)
+      console.log(`Deleted GitHub hooks: ${result.deletedHooks}`)
+      console.log(`Deleted subscription routes: ${result.deletedRoutes}`)
+      console.log(`Deleted repository HMACs: ${result.deletedSecrets}`)
+      return
+    }
+    const result = await verifyGitHubFleetRetirement(options)
+    console.log(`Verified retired repositories: ${result.repositories.length}`)
+    for (const issue of result.issues) console.log(`ISSUE ${issue}`)
+    if (result.issues.length > 0) process.exitCode = 1
+    return
+  }
   if (options.phase === 'plan') {
     const plan = await planGitHubFleet(options)
     console.log(formatGitHubFleetPlan(plan))

@@ -167,7 +167,7 @@ export function prepareSinkRename(
 ): PreparedSinkRename {
   const routes = parseRoutes(routesText)
   const { sink: oldSink, index: oldSinkIndex } = namedSink(routes, oldName)
-  if (routes.sinks.some((sink) => sink.name === newName)) {
+  if ([...routes.sinks, ...(routes.retiredSinks ?? [])].some((sink) => sink.name === newName)) {
     throw new Error(`sink already exists: ${newName}; use --switch if the rename was already prepared`)
   }
 
