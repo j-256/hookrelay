@@ -12,6 +12,8 @@ import {
   normalizeEmailBaseAddress,
   normalizeSenderRule,
 } from '../src/lib/email-address'
+import { normalizeEmailLinkLabel } from '../src/lib/email-links'
+import { normalizeFallbackUrl } from '../src/lib/public-url'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { parseGitHubEventSelection } from './github-events'
 import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
@@ -26,6 +28,7 @@ const subSchema = z
     slugHash: z.string().regex(SUBSCRIPTION_HASH_RE),
     enabled: z.boolean(),
     sinks: z.array(z.string().min(1)),
+    fallbackUrl: z.string().min(1).optional(),
     auth: z
       .object({
         scheme: z.string().min(1),
@@ -38,6 +41,7 @@ const subSchema = z
     email: z
       .object({
         allowedSenders: z.array(z.string().min(1)).default([]),
+        primaryLinkLabels: z.array(z.string().min(1)).default([]),
       })
       .strict()
       .optional(),
@@ -143,6 +147,14 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
     if (!ctx.knownSources.has(sub.source)) {
       issues.push(`sub '${sub.name}': unknown source: ${sub.source}`)
     }
+    if (sub.fallbackUrl) {
+      try {
+        normalizeFallbackUrl(sub.fallbackUrl)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        issues.push(`sub '${sub.name}': ${message}`)
+      }
+    }
     if (sub.source === EMAIL_SOURCE) {
       if (!sub.email) {
         issues.push(`sub '${sub.name}': email subscriptions require email configuration`)
@@ -161,6 +173,19 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
             issues.push(`sub '${sub.name}': duplicate email sender rule: ${rule}`)
           }
           normalizedRules.add(normalized)
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err)
+          issues.push(`sub '${sub.name}': ${message}`)
+        }
+      }
+      const normalizedLinkLabels = new Set<string>()
+      for (const label of sub.email?.primaryLinkLabels ?? []) {
+        try {
+          const normalized = normalizeEmailLinkLabel(label)
+          if (normalizedLinkLabels.has(normalized)) {
+            issues.push(`sub '${sub.name}': duplicate email primary link label: ${label}`)
+          }
+          normalizedLinkLabels.add(normalized)
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err)
           issues.push(`sub '${sub.name}': ${message}`)
@@ -280,7 +305,15 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
       enabled: sub.enabled,
       sinks: sub.sinks,
       auth: sub.auth ?? null,
-      ...(sub.email ? { email: sub.email } : {}),
+      ...(sub.fallbackUrl ? { fallbackUrl: normalizeFallbackUrl(sub.fallbackUrl) } : {}),
+      ...(sub.email
+        ? {
+            email: {
+              allowedSenders: sub.email.allowedSenders,
+              primaryLinkLabels: sub.email.primaryLinkLabels.map(normalizeEmailLinkLabel),
+            },
+          }
+        : {}),
     })
     const existing = current.subs[key]
     const existingCanon = existing != null ? canonicalizeJson(existing) : null

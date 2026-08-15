@@ -22,6 +22,7 @@ export interface SubAuth {
 
 export interface EmailSubscriptionConfig {
   allowedSenders: string[]
+  primaryLinkLabels?: string[]
 }
 
 export interface Subscription {
@@ -30,6 +31,7 @@ export interface Subscription {
   enabled: boolean
   sinks: string[]
   auth: SubAuth | null
+  fallbackUrl?: string
   email?: EmailSubscriptionConfig
 }
 

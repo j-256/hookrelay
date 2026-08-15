@@ -80,9 +80,9 @@ Steps:
    ```
 8. Add subscriptions. Each command writes the hash-only route locally, prints the raw slug under a password-manager key, and offers to install any sender secret and sync KV. GitHub's non-manual event selections create the repository webhook only after the route is live:
    ```sh
-   pnpm sub:add claude-status statuspage
+   pnpm sub:add claude-status statuspage --fallback-url https://status.claude.com/
    pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events activity,alerts
-   pnpm sub:add openai-status email --email-base relay@mail.example.com
+   pnpm sub:add openai-status email --email-base relay@mail.example.com --primary-link-label "View incident" --fallback-url https://status.openai.com/
    ```
    Email subscriptions require the one-time Email Routing setup described in [Forwarding email notifications](#forwarding-email-notifications).
 9. (Optional) Deploy the edge WAF rule that keeps scanner traffic off the Worker:
@@ -146,7 +146,9 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | `subs[].source` | Source name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`, `email`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
 | `subs[].auth` | Optional `{ scheme, secretEnv }` for signature/secret verification on top of the slug. |
+| `subs[].fallbackUrl` | Optional public HTTPS URL used only when a source event has no more specific target. Credentials, query strings, and fragments are rejected so the value remains safe to publish. |
 | `subs[].email.allowedSenders` | Optional email noise filter containing exact mailboxes or exact domains written as `@example.com`. Both the SMTP envelope sender and parsed `From`/`Sender` identities must match when the list is nonempty. |
+| `subs[].email.primaryLinkLabels` | Exact, case-insensitive visible labels allowed to select one email deep link, such as `View incident`. Every email URL is removed from sink-visible text, and zero or multiple distinct matching targets fail closed to `fallbackUrl`. |
 | `subs[].setup` | Local-only provider setup metadata, including a GitHub repository and event profile names. `pnpm sync` validates it but does not write it to KV. |
 | `sinks[].type: ntfy` -> `topic` | **Bearer secret for unreserved topics.** Anyone who knows an unreserved topic can read its notifications. Use a long random topic and treat it like a password. |
 | `sinks[].type: ntfy` -> `server` | Optional. Base URL of a self-hosted ntfy server; defaults to `https://ntfy.sh`. |
@@ -221,7 +223,9 @@ pnpm sub:add <subscription-name> <source> [-s <sink-name>]
 
 If exactly one sink exists, it is selected automatically. Repeat `-s` or `--sink` to route to several sinks. The command generates a private incoming slug, stores only its SHA-256 hash in `routes.jsonc`, and prints the raw slug as `SUB_<NAME>_SLUG` for your password manager. Signed providers also get a per-subscription sender secret, mirrored into `.dev.vars` and offered to Wrangler. Production changes are previewed and confirmed unless `-y` or `--yes` is supplied.
 
-`sub:add` also accepts `-b` for `--base-url`, `--email-base` for an Email Routing address, repeated `--allow-sender` filters, `-r` for `--repo`, and `-e` for `--events`. Run any setup command with `-h` or `--help` for its complete usage.
+`sub:add` also accepts `-b` for `--base-url`, `--fallback-url` for a public target used when an event has no specific URL, `--email-base` for an Email Routing address, repeated `--allow-sender` filters, repeated `--primary-link-label` selectors, `-r` for `--repo`, and `-e` for `--events`. Run any setup command with `-h` or `--help` for its complete usage.
+
+`fallbackUrl` never replaces an event URL supplied by an adapter. For example, a Statuspage incident keeps its incident shortlink while a component status change can link to the provider's canonical status page.
 
 For a GitHub repository, pass the repository separately instead of deriving it from the subscription name. Subscription names may still use a readable namespace such as `github:example-owner/example-repo`:
 
@@ -237,7 +241,7 @@ With `manual`, use the printed payload URL and sender secret, choose JSON conten
 
 ### Forwarding email notifications
 
-Email ingress is provider-independent. Hookrelay parses MIME with `postal-mime`, prefers a `text/plain` body, converts HTML-only bodies to safe plain text without loading remote content, stores the untouched MIME message in R2, and sends the normalized subject, body, timestamp, and first HTTP link through the same sink pipeline as webhooks. Attachment metadata is retained, but attachment content is not sent to sinks. The Worker rejects a raw message larger than 1 MiB, including attachments. Generated email routes use 128-bit lowercase hexadecimal tokens, and the Worker normalizes incoming token case because mailbox providers may lowercase recipient addresses.
+Email ingress is provider-independent. Hookrelay parses MIME with `postal-mime`, prefers a `text/plain` body, converts HTML-only bodies to safe plain text without loading remote content, and stores the untouched MIME message in R2. Before normalized content enters persistence or a sink, Hookrelay removes every HTTP and HTTPS target from the subject and body. It promotes a deep link only when the visible label matches `primaryLinkLabels` and all matches identify one distinct target; otherwise the event uses `fallbackUrl` when configured. Attachment metadata is retained, but attachment content is not sent to sinks. The Worker rejects a raw message larger than 1 MiB, including attachments. Generated email routes use 128-bit lowercase hexadecimal tokens, and the Worker normalizes incoming token case because mailbox providers may lowercase recipient addresses.
 
 Cloudflare setup is one-time:
 
@@ -247,22 +251,26 @@ Cloudflare setup is one-time:
 4. Add and sync a subscription, then paste the printed email address into the provider's email subscription form:
 
    ```sh
-   pnpm sub:add openai-status email --email-base relay@mail.example.com
+   pnpm sub:add openai-status email --email-base relay@mail.example.com \
+     --primary-link-label "View incident" \
+     --fallback-url https://status.openai.com/
    ```
 
-This works for OpenAI status notifications without knowing their template in advance. The parser handles multipart encodings generically, and the provider's confirmation message follows the same path to Discord or another selected sink.
+The label is an explicit trust decision about the provider's visible template, not its tracking hostname. OpenAI's incident and unsubscribe links can share the same tracking URL shape, so Hookrelay selects the exact `View incident` label and removes every other target. If the template changes, missing or ambiguous matches use the public status page instead of exposing an unclassified URL. The parser handles multipart encodings generically, and the provider's confirmation message follows the same guarded path to Discord or another selected sink.
 
 If the provider's sender identity is already known, add one or more exact mailboxes or exact domains:
 
 ```sh
 pnpm sub:add service-status email --email-base relay@mail.example.com \
   --allow-sender notifications@example.com \
-  --allow-sender @mailer.example.com
+  --allow-sender @mailer.example.com \
+  --primary-link-label "View incident" \
+  --fallback-url https://status.example.com/
 ```
 
 If the identity is not documented, omit the allowlist. `View raw` in `/admin/events` exposes the original headers when troubleshooting, while the normalized R2 object records the envelope sender. Add filters only after confirming every legitimate identity, then run `pnpm sync` and `pnpm sync -y`. The allowlist is a noise filter, not cryptographic authentication: the documented [Email Worker message interface](https://developers.cloudflare.com/email-service/api/route-emails/email-handler/) exposes envelope fields, headers, and raw MIME, but no verified SPF or DKIM result.
 
-Treat each generated address as a bearer route. Cloudflare preserves the full plus address in Email Routing activity logs, and Hookrelay's protected raw MIME contains the recipient plus any confirmation or unsubscribe links. Hookrelay does not copy the route token into D1, normalized R2 objects, queue messages, or its own logs. Restrict access to the Cloudflare account, R2 bucket, admin page, and destination sink accordingly.
+Treat each generated address as a bearer route. Cloudflare preserves the full plus address in Email Routing activity logs, and Hookrelay's protected raw MIME contains the recipient plus any confirmation or unsubscribe links. Hookrelay does not copy the route token into D1, normalized R2 objects, queue messages, or its own logs. Unselected email targets remain only in protected raw MIME; one explicitly labeled primary target or the public fallback may enter normalized storage and sinks. Restrict access to the Cloudflare account, R2 bucket, admin page, and destination sink accordingly.
 
 ### Updating GitHub event profiles
 

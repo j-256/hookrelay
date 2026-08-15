@@ -12,7 +12,8 @@ Content-Type: text/html; charset=utf-8
   <body>
     <h1>Resolved</h1>
     <p>All systems are operational &amp; traffic is healthy.</p>
-    <p><a href="https://status.example.net/incidents/456">View incident</a></p>
+    <p><a href="https://tracking.example.test/ls/click?upn=incident-token">View incident</a></p>
+    <p><a href="https://tracking.example.test/ls/click?upn=unsubscribe-token">Unsubscribe</a></p>
     <img src="pixel.gif" alt="Status logo">
   </body>
 </html>

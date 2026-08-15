@@ -89,11 +89,17 @@ describe('parseSubAddArgs', () => {
       '@Status.OpenAI.com',
       '--allow-sender',
       'notifications@example.net',
+      '--primary-link-label',
+      'View Incident',
+      '--fallback-url',
+      'https://status.openai.com',
     ])
     expect(options).toMatchObject({
       source: 'email',
       emailBaseAddress: 'Relay@Mail.Example.com',
       allowedSenders: ['@status.openai.com', 'notifications@example.net'],
+      primaryLinkLabels: ['view incident'],
+      fallbackUrl: 'https://status.openai.com/',
     })
   })
 
@@ -108,8 +114,14 @@ describe('parseSubAddArgs', () => {
       'claude', 'statuspage', '--allow-sender', '@example.com',
     ])).toThrow(/only valid for email/)
     expect(() => parseSubAddArgs([
+      'claude', 'statuspage', '--primary-link-label', 'View incident',
+    ])).toThrow(/only valid for email/)
+    expect(() => parseSubAddArgs([
       'service', 'email', '--allow-sender', '@example.com', '--allow-sender', '@EXAMPLE.COM',
     ])).toThrow(/rule supplied more than once/)
+    expect(() => parseSubAddArgs([
+      'service', 'email', '--primary-link-label', 'View Incident', '--primary-link-label', 'view incident',
+    ])).toThrow(/link label supplied more than once/)
   })
 })
 
@@ -166,6 +178,10 @@ describe('subscription preparation', () => {
       'relay@mail.example.com',
       '--allow-sender',
       '@status.openai.com',
+      '--primary-link-label',
+      'View incident',
+      '--fallback-url',
+      'https://status.openai.com',
     ])
     const prepared = await prepareSubscription(ROUTES, 'CF_ACCESS_AUD=test\n', options, {
       slug: RAW_SLUG.toUpperCase(),
@@ -181,7 +197,11 @@ describe('subscription preparation', () => {
       enabled: true,
       sinks: ['discord'],
       auth: null,
-      email: { allowedSenders: ['@status.openai.com'] },
+      fallbackUrl: 'https://status.openai.com/',
+      email: {
+        allowedSenders: ['@status.openai.com'],
+        primaryLinkLabels: ['view incident'],
+      },
     })
     expect(prepared.emailAddress).toBe(`relay+${RAW_SLUG}@mail.example.com`)
     expect(prepared.webhookUrl).toBeUndefined()
@@ -202,6 +222,21 @@ describe('subscription preparation', () => {
     expect(prepared.emailAddress).toBe(`relay+${prepared.rawSlug}@mail.example.com`)
     expect(parseRoutes(prepared.routesText).subs[0]?.slugHash)
       .toBe(await hashSubscriptionSlug(prepared.rawSlug))
+  })
+
+  it('writes a source-independent fallback URL', async () => {
+    const options = parseSubAddArgs([
+      'claude-status',
+      'statuspage',
+      '--base-url',
+      'https://hooks.example.com',
+      '--fallback-url',
+      'https://status.claude.com',
+    ])
+    const prepared = await prepareSubscription(ROUTES, '', options, { slug: RAW_SLUG })
+
+    expect(parseRoutes(prepared.routesText).subs[0]?.fallbackUrl)
+      .toBe('https://status.claude.com/')
   })
 })
 

@@ -14,7 +14,9 @@ Content-Type: text/plain; charset=utf-8
 
 Investigating - We are investigating elevated errors for ChatGPT.
 
-Follow updates at https://status.openai.com/incidents/example.
+View incident ( https://tracking.example.test/ls/click?upn=incident-token )
+
+Unsubscribe ( https://tracking.example.test/ls/click?upn=unsubscribe-token )
 --alternative-boundary
 Content-Type: text/html; charset=utf-8
 

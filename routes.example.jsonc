@@ -5,6 +5,20 @@
   // "baseUrl": "https://hooks.example.com",
   // Required for email subscriptions after Email Routing is configured
   // "emailBaseAddress": "relay@mail.example.com",
-  "subs": [],
+  "subs": [
+    // `sub:add` writes subscriptions here; guarded email links can use this shape
+    // {
+    //   "name": "service-status",
+    //   "source": "email",
+    //   "slugHash": "<sha256-of-private-slug>",
+    //   "enabled": true,
+    //   "sinks": ["discord:service-status"],
+    //   "fallbackUrl": "https://status.example.com/",
+    //   "email": {
+    //     "allowedSenders": ["@mailer.example.com"],
+    //     "primaryLinkLabels": ["view incident"]
+    //   }
+    // }
+  ],
   "sinks": []
 }

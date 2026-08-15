@@ -33,7 +33,7 @@ export function commandReference(): string {
     '      Apply the routes.jsonc plan to production KV',
     '',
     `Sources: ${sources}`,
-    'sub:add options: -s/--sink, -b/--base-url, --email-base, --allow-sender, -r/--repo, -e/--events, -y/--yes',
+    'sub:add options: -s/--sink, -b/--base-url, --fallback-url, --email-base, --allow-sender, --primary-link-label, -r/--repo, -e/--events, -y/--yes',
     'sub:events options: -e/--events, -y/--yes',
     'github:fleet options: --repo (repeatable), --include-private (requires --repo), --secret-limit, -y/--yes (apply only)',
     'GitHub --events defaults to push; recommended and named profiles compose with commas',

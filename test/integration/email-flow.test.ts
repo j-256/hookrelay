@@ -56,7 +56,11 @@ beforeEach(async () => {
       enabled: true,
       sinks: [SINK_NAME],
       auth: null,
-      email: { allowedSenders: ['@status.openai.com'] },
+      fallbackUrl: 'https://status.openai.com/',
+      email: {
+        allowedSenders: ['@status.openai.com'],
+        primaryLinkLabels: ['view incident'],
+      },
     }),
   )
   await env.SINKS.put(
@@ -88,10 +92,14 @@ describe('end-to-end email flow', () => {
     expect(eventRow).toMatchObject({ source: 'email', sub_name: 'openai-status' })
     expect(eventRow?.id).toMatch(/^email:[a-f0-9]{64}:[a-f0-9]{64}$/)
     const rawObject = await env.EVENTS_RAW.get(eventRow!.r2_key)
-    expect(await rawObject?.text()).toContain('Subject: Elevated errors for ChatGPT')
+    const rawText = await rawObject?.text()
+    expect(rawText).toContain('Subject: Elevated errors for ChatGPT')
+    expect(rawText).toContain('upn=unsubscribe-token')
     expect(rawObject?.httpMetadata?.contentType).toBe('message/rfc822')
     const normalizedObject = await env.EVENTS_RAW.get(normalizedR2Key(eventRow!.r2_key))
-    expect(await normalizedObject?.text()).not.toContain(SUB_SLUG)
+    const normalizedText = await normalizedObject?.text()
+    expect(normalizedText).not.toContain(SUB_SLUG)
+    expect(normalizedText).not.toContain('upn=unsubscribe-token')
 
     const batch = createMessageBatch(DELIVERY_QUEUE_NAME, [
       { id: 'email-flow-1', timestamp: new Date(), attempts: 1, body: queue.messages[0]! },
@@ -107,10 +115,12 @@ describe('end-to-end email flow', () => {
     const payload = JSON.parse(String(init?.body))
     expect(payload.embeds[0]).toMatchObject({
       title: 'Elevated errors for ChatGPT',
-      url: 'https://status.openai.com/incidents/example',
+      url: 'https://tracking.example.test/ls/click?upn=incident-token',
       footer: { text: 'email / openai-status / email.received' },
     })
     expect(payload.embeds[0].description).toContain('We are investigating elevated errors')
+    expect(payload.embeds[0].description).not.toContain('https://')
+    expect(payload.embeds[0].description).not.toContain('upn=unsubscribe-token')
     expect(payload.embeds[0].description).not.toContain('internal attachment')
   })
 

@@ -38,7 +38,8 @@ function subscription(allowedSenders: string[] = []): Subscription {
     enabled: true,
     sinks: ['discord'],
     auth: null,
-    email: { allowedSenders },
+    fallbackUrl: 'https://status.openai.com/',
+    email: { allowedSenders, primaryLinkLabels: ['view incident'] },
   }
 }
 
@@ -115,10 +116,11 @@ describe('normalizeEmail', () => {
       timestamp: '2026-08-13T18:42:00.000Z',
       title: 'Elevated errors for ChatGPT',
       severity: 'info',
-      url: 'https://status.openai.com/incidents/example',
+      url: 'https://tracking.example.test/ls/click?upn=incident-token',
     })
     expect(event.id).toMatch(new RegExp(`^${subHash}:[a-f0-9]{64}$`))
     expect(event.body).toContain('We are investigating elevated errors')
+    expect(event.body).not.toContain('https://')
     expect(event.body).not.toContain('HTML fallback should not replace')
     expect(event.raw).toMatchObject({
       envelope: {
@@ -149,8 +151,36 @@ describe('normalizeEmail', () => {
 
     expect(event.body).toContain('Resolved')
     expect(event.body).toContain('All systems are operational & traffic is healthy.')
-    expect(event.body).toContain('View incident (https://status.example.net/incidents/456)')
+    expect(event.url).toBe('https://tracking.example.test/ls/click?upn=incident-token')
+    expect(event.body).toContain('View incident')
+    expect(event.body).not.toContain('https://')
     expect(event.body).not.toContain('<html>')
+  })
+
+  it('uses the fallback URL when matching primary labels are ambiguous', async () => {
+    const ambiguous = `
+From: OpenAI Status <notifications@status.openai.com>
+To: Hookrelay <relay+${RAW_SLUG}@mail.example.com>
+Subject: Ambiguous incident links https://unsubscribe.example.test/subject-token
+Message-ID: <ambiguous@status.openai.com>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+View incident ( https://status.openai.com/incidents/first )
+View incident ( https://status.openai.com/incidents/second )
+Unsubscribe ( https://unsubscribe.example.test/opaque-token )
+`.trimStart()
+    const event = await normalizeEmail(
+      new TextEncoder().encode(ambiguous),
+      incoming(ambiguous),
+      subscription(),
+      await hashSubscriptionSlug(RAW_SLUG),
+    )
+
+    expect(event.url).toBe('https://status.openai.com/')
+    expect(event.title).toBe('Ambiguous incident links')
+    expect(event.body).not.toContain('https://')
+    expect(JSON.stringify(event.raw)).not.toContain('https://unsubscribe.example.test')
   })
 
   it('requires both envelope and header senders to match an allowlist', async () => {

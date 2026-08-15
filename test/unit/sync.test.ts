@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { computePlan, parseRoutes, parseSyncArgs, printableKvKey, validateRoutes } from '../../scripts/sync'
+import ROUTES_EXAMPLE from '../../routes.example.jsonc?raw'
 
 const CLAUDE_HASH = 'a'.repeat(64)
 const GITHUB_HASH = 'b'.repeat(64)
@@ -52,7 +53,11 @@ const EMAIL_ROUTES = `
       "slugHash": "${EMAIL_HASH}",
       "enabled": true,
       "sinks": ["discord"],
-      "email": { "allowedSenders": ["@status.openai.com"] }
+      "fallbackUrl": "https://status.openai.com/",
+      "email": {
+        "allowedSenders": ["@status.openai.com"],
+        "primaryLinkLabels": ["View incident"]
+      }
     }
   ],
   "sinks": [
@@ -82,6 +87,12 @@ describe('parseRoutes', () => {
     expect(cfg.baseUrl).toBe('https://hooks.example.com')
   })
 
+  it('keeps the portable example parseable and documents guarded notification links', () => {
+    expect(parseRoutes(ROUTES_EXAMPLE)).toMatchObject({ subs: [], sinks: [] })
+    expect(ROUTES_EXAMPLE).toContain('"fallbackUrl"')
+    expect(ROUTES_EXAMPLE).toContain('"primaryLinkLabels"')
+  })
+
   it('throws on malformed JSON', () => {
     expect(() => parseRoutes('{ "subs": [')).toThrow(/parse/i)
   })
@@ -102,7 +113,11 @@ describe('parseRoutes', () => {
   it('parses email ingress configuration', () => {
     const cfg = parseRoutes(EMAIL_ROUTES)
     expect(cfg.emailBaseAddress).toBe('relay@mail.example.com')
-    expect(cfg.subs[0]?.email).toEqual({ allowedSenders: ['@status.openai.com'] })
+    expect(cfg.subs[0]?.fallbackUrl).toBe('https://status.openai.com/')
+    expect(cfg.subs[0]?.email).toEqual({
+      allowedSenders: ['@status.openai.com'],
+      primaryLinkLabels: ['View incident'],
+    })
     expect(cfg.subs[0]?.auth).toBeNull()
   })
 })
@@ -270,9 +285,33 @@ describe('validateRoutes', () => {
     expect(issues.join('\n')).toMatch(/invalid sender address rule/)
   })
 
+  it('validates fallback URLs and email primary link labels', () => {
+    const invalidFallback = parseRoutes(EMAIL_ROUTES.replace(
+      'https://status.openai.com/',
+      'https://status.openai.com/?token=opaque',
+    ))
+    const duplicateLabels = parseRoutes(EMAIL_ROUTES.replace(
+      '["View incident"]',
+      '["View incident", " view  incident "]',
+    ))
+    const context = {
+      knownSources: new Set(['email']),
+      knownSinkTypes: new Set(['discord']),
+      sinkSchemas: { discord: { urlEnv: 'string' } } as any,
+      secretsAvailable: new Set(['SINK_DISCORD_URL']),
+    }
+
+    expect(validateRoutes(invalidFallback, context).join('\n')).toMatch(/must not contain.*query/)
+    expect(validateRoutes(duplicateLabels, context).join('\n')).toMatch(/duplicate email primary link label/)
+  })
+
   it('requires email metadata only on email subscriptions', () => {
     const missingEmail = parseRoutes(EMAIL_ROUTES.replace(
-      ',\n      "email": { "allowedSenders": ["@status.openai.com"] }',
+      `,
+      "email": {
+        "allowedSenders": ["@status.openai.com"],
+        "primaryLinkLabels": ["View incident"]
+      }`,
       '',
     ))
     const wrongSource = parseRoutes(EMAIL_ROUTES.replace('"source": "email"', '"source": "statuspage"'))
@@ -350,7 +389,11 @@ describe('computePlan', () => {
       enabled: true,
       sinks: ['discord'],
       auth: null,
-      email: { allowedSenders: ['@status.openai.com'] },
+      fallbackUrl: 'https://status.openai.com/',
+      email: {
+        allowedSenders: ['@status.openai.com'],
+        primaryLinkLabels: ['view incident'],
+      },
     })
   })
 })

@@ -80,6 +80,7 @@ describe('statuspage adapter', () => {
     expect(event.severity).toBe('error')
     expect(event.title).toContain('API')
     expect(event.title).toContain('degraded_performance')
+    expect(event.url).toBeUndefined()
   })
 
   it('maps component major_outage to critical', async () => {

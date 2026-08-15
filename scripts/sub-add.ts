@@ -9,7 +9,9 @@ import {
   normalizeSenderRule,
   routedEmailAddress,
 } from '../src/lib/email-address'
+import { normalizeEmailLinkLabel } from '../src/lib/email-links'
 import { hashSubscriptionSlug } from '../src/lib/subscription'
+import { normalizeFallbackUrl } from '../src/lib/public-url'
 import { discoverWorkerBaseUrl } from './cloudflare-domains'
 import {
   parseGitHubEventSelection,
@@ -55,8 +57,10 @@ export interface SubAddOptions {
   source: string
   sinks: string[]
   baseUrl?: string
+  fallbackUrl?: string
   emailBaseAddress?: string
   allowedSenders: string[]
+  primaryLinkLabels: string[]
   repo?: string
   githubEvents: GitHubEventSelection
   yes: boolean
@@ -73,12 +77,14 @@ interface NewSubscriptionConfig {
   slugHash: string
   enabled: boolean
   sinks: string[]
+  fallbackUrl?: string
   auth?: {
     scheme: string
     secretEnv: string
   }
   email?: {
     allowedSenders: string[]
+    primaryLinkLabels: string[]
   }
   setup?: {
     github: {
@@ -106,8 +112,10 @@ export function subAddUsage(): string {
     'options:',
     '  -s, --sink <name>       select a sink, repeatable',
     '  -b, --base-url <url>    set the Hookrelay base URL',
+    '      --fallback-url <url> use when an event has no specific URL',
     '      --email-base <addr> set the Email Routing base address',
     '      --allow-sender <id> allow an email mailbox or @domain, repeatable',
+    '      --primary-link-label <text> select an email event URL, repeatable',
     '  -r, --repo <owner/repo> GitHub repository target',
     '  -e, --events <profiles> comma-separated GitHub profiles (default: push)',
     '  -y, --yes               apply remote changes without prompts',
@@ -127,8 +135,10 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   const positional: string[] = []
   const sinks: string[] = []
   let baseUrl: string | undefined
+  let fallbackUrl: string | undefined
   let emailBaseAddress: string | undefined
   const allowedSenders: string[] = []
+  const primaryLinkLabels: string[] = []
   let repo: string | undefined
   let githubEvents = parseGitHubEventSelection(DEFAULT_GITHUB_EVENT_SELECTION)
   let githubEventsSpecified = false
@@ -144,12 +154,19 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
       if (baseUrl !== undefined) throw new Error('--base-url may only be supplied once')
       baseUrl = optionValue(argv, i, arg)
       i += 1
+    } else if (option === '--fallback-url') {
+      if (fallbackUrl !== undefined) throw new Error('--fallback-url may only be supplied once')
+      fallbackUrl = optionValue(argv, i, arg)
+      i += 1
     } else if (option === '--email-base') {
       if (emailBaseAddress !== undefined) throw new Error('--email-base may only be supplied once')
       emailBaseAddress = optionValue(argv, i, arg)
       i += 1
     } else if (option === '--allow-sender') {
       allowedSenders.push(optionValue(argv, i, arg))
+      i += 1
+    } else if (option === '--primary-link-label') {
+      primaryLinkLabels.push(optionValue(argv, i, arg))
       i += 1
     } else if (option === '--repo') {
       if (repo !== undefined) throw new Error('--repo may only be supplied once')
@@ -183,12 +200,16 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
 
   if (source === EMAIL_SOURCE) {
     if (baseUrl) throw new Error('--base-url is not valid for email subscriptions')
-  } else if (emailBaseAddress || allowedSenders.length > 0) {
-    throw new Error('--email-base and --allow-sender are only valid for email subscriptions')
+  } else if (emailBaseAddress || allowedSenders.length > 0 || primaryLinkLabels.length > 0) {
+    throw new Error('--email-base, --allow-sender, and --primary-link-label are only valid for email subscriptions')
   }
   const normalizedAllowedSenders = allowedSenders.map(normalizeSenderRule)
   if (new Set(normalizedAllowedSenders).size !== normalizedAllowedSenders.length) {
     throw new Error('email sender rule supplied more than once')
+  }
+  const normalizedPrimaryLinkLabels = primaryLinkLabels.map(normalizeEmailLinkLabel)
+  if (new Set(normalizedPrimaryLinkLabels).size !== normalizedPrimaryLinkLabels.length) {
+    throw new Error('email primary link label supplied more than once')
   }
 
   return {
@@ -196,8 +217,10 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
     source,
     sinks,
     baseUrl,
+    fallbackUrl: fallbackUrl ? normalizeFallbackUrl(fallbackUrl) : undefined,
     emailBaseAddress,
     allowedSenders: normalizedAllowedSenders,
+    primaryLinkLabels: normalizedPrimaryLinkLabels,
     repo,
     githubEvents,
     yes,
@@ -325,9 +348,15 @@ export async function prepareSubscription(
     slugHash,
     enabled: true,
     sinks,
+    ...(options.fallbackUrl ? { fallbackUrl: options.fallbackUrl } : {}),
     ...(auth ? { auth } : {}),
     ...(profile.transport === 'email'
-      ? { email: { allowedSenders: options.allowedSenders.map(normalizeSenderRule) } }
+      ? {
+          email: {
+            allowedSenders: options.allowedSenders.map(normalizeSenderRule),
+            primaryLinkLabels: options.primaryLinkLabels.map(normalizeEmailLinkLabel),
+          },
+        }
       : {}),
     ...(options.source === 'github' && options.repo
       ? {

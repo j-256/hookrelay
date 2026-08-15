@@ -12,6 +12,7 @@ import type { Env } from '../../src/index'
 import { subscriptionKvKeyForSlug } from '../../src/lib/subscription'
 import { recordingQueue, withDeliveryQueue } from '../helpers/queue'
 import statuspageFixture from '../fixtures/statuspage/incident-investigating.json'
+import componentFixture from '../fixtures/statuspage/component-degraded.json'
 
 const SUB_SLUG = 'a7f3b2c8d9e1f4g6h8j0k2statuspage'
 const SUB_KEY = await subscriptionKvKeyForSlug(SUB_SLUG)
@@ -31,6 +32,7 @@ beforeEach(async () => {
       enabled: true,
       sinks: [SINK_NAME],
       auth: null,
+      fallbackUrl: 'https://status.claude.com/',
     }),
   )
   await env.SINKS.put(`sink:${SINK_NAME}`, JSON.stringify({ type: 'ntfy', topic: 'flow-test' }))
@@ -80,6 +82,8 @@ describe('end-to-end webhook flow', () => {
       (typeof input === 'string' ? input : (input as Request).url).startsWith('https://ntfy.sh/'),
     )
     expect(ntfyCall).toBeDefined()
+    const ntfyHeaders = new Headers(ntfyCall?.[1]?.headers)
+    expect(ntfyHeaders.get('Click')).toBe('http://stspg.io/abc')
 
     const row = await env.EVENTS_DB.prepare('SELECT fanout_results FROM events WHERE id = ?')
       .bind('statuspage:inc-001:upd-001')
@@ -87,5 +91,25 @@ describe('end-to-end webhook flow', () => {
     const results = JSON.parse(row?.fanout_results ?? '{}')
     expect(results[SINK_NAME]).toMatchObject({ ok: true, status: 'delivered', attempts: 1 })
     fetchSpy.mockRestore()
+  })
+
+  it('uses the configured status page for a component update without a shortlink', async () => {
+    const queue = recordingQueue()
+    const testEnv = withDeliveryQueue(env as unknown as Env, queue.binding)
+    const res = await worker.fetch(
+      new Request(`https://hooks.example.com/hook/statuspage/${SUB_SLUG}`, {
+        method: 'POST',
+        body: JSON.stringify(componentFixture),
+        headers: { 'content-type': 'application/json' },
+      }),
+      testEnv,
+      createExecutionContext(),
+    )
+
+    expect(res.status).toBe(200)
+    const row = await env.EVENTS_DB.prepare('SELECT url FROM events WHERE id = ?')
+      .bind('statuspage:cu-100')
+      .first<{ url: string | null }>()
+    expect(row?.url).toBe('https://status.claude.com/')
   })
 })

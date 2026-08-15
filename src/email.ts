@@ -10,6 +10,11 @@ import {
   senderMatchesRule,
 } from './lib/email-address'
 import {
+  selectPrimaryEmailLink,
+  stripEmailUrls,
+} from './lib/email-links'
+import { withSubscriptionFallbackUrl } from './lib/event-url'
+import {
   hashSubscriptionSlug,
   subscriptionKvKey,
 } from './lib/subscription'
@@ -137,11 +142,6 @@ function parseTimestamp(value: string | undefined, fallback: Date): string {
   return Number.isNaN(timestamp.valueOf()) ? fallback.toISOString() : timestamp.toISOString()
 }
 
-function firstHttpUrl(value: string): string | undefined {
-  const match = /https?:\/\/[^\s<>"']+/i.exec(value)
-  return match?.[0].replace(/[),.;:!?\]}]+$/, '')
-}
-
 async function sha256(value: Uint8Array): Promise<string> {
   const digest = await crypto.subtle.digest('SHA-256', value)
   return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join('')
@@ -154,7 +154,7 @@ function emailMetadata(email: Email, message: IncomingEmailMessage): unknown {
       from: addressMailboxes(email.from),
       sender: addressMailboxes(email.sender),
       to: (email.to ?? []).flatMap(addressMailboxes).map(redactEmailRoute),
-      subject: email.subject ?? null,
+      subject: email.subject ? stripEmailUrls(email.subject) || null : null,
       messageId: email.messageId ?? null,
       date: email.date ?? null,
     },
@@ -190,24 +190,29 @@ export async function normalizeEmail(
 
   const plainText = collapseText(parsed.text ?? '')
   const htmlText = parsed.html ? htmlToPlainText(parsed.html) : ''
-  const body = plainText || htmlText || EMPTY_BODY
+  const unsafeBody = plainText || htmlText || EMPTY_BODY
+  const selectedUrl = selectPrimaryEmailLink(
+    unsafeBody,
+    subscription.email?.primaryLinkLabels ?? [],
+  )
+  const body = collapseText(stripEmailUrls(unsafeBody)) || EMPTY_BODY
   const identity = parsed.messageId
     ? new TextEncoder().encode(parsed.messageId.trim())
     : rawMessage
   const identityHash = await sha256(identity)
 
-  return {
+  return withSubscriptionFallbackUrl({
     source: EMAIL_SOURCE,
     subName: subscription.name,
     type: EMAIL_EVENT_TYPE,
     id: `${subscriptionHash}:${identityHash}`,
     timestamp: parseTimestamp(parsed.date, receivedAt),
-    title: collapseText(parsed.subject ?? '') || EMPTY_SUBJECT,
+    title: collapseText(stripEmailUrls(parsed.subject ?? '')) || EMPTY_SUBJECT,
     body,
-    url: firstHttpUrl(body),
+    url: selectedUrl,
     severity: 'info',
     raw: emailMetadata(parsed, message),
-  }
+  }, subscription)
 }
 
 async function loadSubscription(

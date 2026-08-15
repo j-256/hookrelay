@@ -33,6 +33,7 @@ const fixture: Adapter = {
       timestamp: '2026-06-06T00:00:00.000Z',
       title: 'fixture',
       body: text,
+      ...(text === 'source-url' ? { url: 'https://status.example.test/incidents/source' } : {}),
       shouldDeliver: text !== 'record-only',
       raw: text,
     }
@@ -145,6 +146,48 @@ describe('handleHook', () => {
       .bind('fixture:event-1')
       .first<{ id: string; sub_slug: string }>()
     expect(row?.sub_slug).toBe(SUB_HASH)
+  })
+
+  it('persists a fallback URL when the adapter has no specific target', async () => {
+    await env.SUBS.put(SUB_KEY, JSON.stringify({
+      ...sub,
+      fallbackUrl: 'https://status.example.test/',
+    }))
+    const res = await handleHook(
+      new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
+        method: 'POST',
+        body: 'fallback-event',
+      }),
+      env,
+      ctx,
+    )
+
+    expect(res.status).toBe(200)
+    const row = await env.EVENTS_DB.prepare('SELECT url FROM events WHERE id = ?')
+      .bind('fixture:fallback-event')
+      .first<{ url: string | null }>()
+    expect(row?.url).toBe('https://status.example.test/')
+  })
+
+  it('prefers an adapter URL over the subscription fallback', async () => {
+    await env.SUBS.put(SUB_KEY, JSON.stringify({
+      ...sub,
+      fallbackUrl: 'https://status.example.test/',
+    }))
+    const res = await handleHook(
+      new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
+        method: 'POST',
+        body: 'source-url',
+      }),
+      env,
+      ctx,
+    )
+
+    expect(res.status).toBe(200)
+    const row = await env.EVENTS_DB.prepare('SELECT url FROM events WHERE id = ?')
+      .bind('fixture:source-url')
+      .first<{ url: string | null }>()
+    expect(row?.url).toBe('https://status.example.test/incidents/source')
   })
 
   it('returns duplicate:true on second POST of same id', async () => {
