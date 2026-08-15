@@ -679,8 +679,7 @@ async function main(): Promise<void> {
   if (result.issues.length > 0) process.exitCode = 1
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`
-if (isMain) {
+if (import.meta.main) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err)
     process.exit(1)

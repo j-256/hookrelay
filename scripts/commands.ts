@@ -58,5 +58,4 @@ export function commandReference(): string {
   ].join('\n')
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`
-if (isMain) console.log(commandReference())
+if (import.meta.main) console.log(commandReference())

@@ -203,8 +203,7 @@ async function main(): Promise<void> {
   console.log(`Updated GitHub webhook events in ${prepared.repo}`)
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`
-if (isMain) {
+if (import.meta.main) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err)
     process.exit(1)

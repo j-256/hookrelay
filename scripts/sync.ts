@@ -398,8 +398,7 @@ async function main() {
   console.log('Applied.')
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`
-if (isMain) {
+if (import.meta.main) {
   main().catch((err) => {
     console.error(err)
     process.exit(1)

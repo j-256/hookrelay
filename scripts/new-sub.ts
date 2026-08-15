@@ -37,8 +37,7 @@ async function main() {
   console.error('Save this URL in a password manager. The slugHash in the config cannot recover it.')
 }
 
-const isMain = import.meta.url === `file://${process.argv[1]}`
-if (isMain) {
+if (import.meta.main) {
   main().catch((err) => {
     console.error(err)
     process.exit(1)
