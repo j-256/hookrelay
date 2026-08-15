@@ -19,14 +19,14 @@
   // Replace these binding ids with your own after running the `wrangler ... create`
   // commands in the README. They are opaque resource handles, not secrets
   "kv_namespaces": [
-    { "binding": "SUBS", "id": "00000000000000000000000000000000" },
-    { "binding": "SINKS", "id": "00000000000000000000000000000000" }
+    { "binding": "SUBS", "id": "2f3f7f1dca4f4b49b1818d06367ed513" },
+    { "binding": "SINKS", "id": "724b83e413a34769aaafa17df58054f7" }
   ],
   "d1_databases": [
     {
       "binding": "EVENTS_DB",
       "database_name": "hookrelay-events",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "4ea9b8d9-5405-4fce-8615-7611016c1483",
       "migrations_dir": "migrations"
     }
   ],

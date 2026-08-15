@@ -4,7 +4,7 @@
 
 Hookrelay is a Cloudflare Worker that receives authenticated webhooks, normalizes and persists events, and fans them out to configured sinks. Read the relevant README section and the implementation before changing an operational workflow; scripts under `scripts/` are part of the supported operator surface, not disposable development helpers.
 
-The tracked `*.example.jsonc` files document portable configuration. `routes.jsonc`, `wrangler.jsonc`, and `.dev.vars` are ignored, deployment-specific files. Treat all local deployment files as potentially managed through higher-level hardlink or reconciliation instructions, preserve their inode relationships, and edit the authoritative copy when one is specified.
+`wrangler.jsonc` is committed; its binding ids are opaque, account-scoped resource handles rather than secrets. `routes.jsonc` and `.dev.vars` are ignored, deployment-specific files that carry secrets, and the tracked `routes.example.jsonc` documents the portable shape. Treat all local deployment files as potentially managed through higher-level hardlink or reconciliation instructions, preserve their inode relationships, and edit the authoritative copy when one is specified.
 
 ## GitHub fleet workflow
 

@@ -37,7 +37,6 @@ Steps:
    git clone https://github.com/j-256/hookrelay.git
    cd hookrelay
    pnpm install
-   cp wrangler.example.jsonc wrangler.jsonc
    ```
 2. Create the Cloudflare resources (one-time):
    ```sh
@@ -48,7 +47,7 @@ Steps:
    npx wrangler queues create hookrelay-delivery
    npx wrangler queues create hookrelay-delivery-dlq
    ```
-   Copy the printed ids into the `kv_namespaces` and `d1_databases` entries in the ignored `wrangler.jsonc`. These are opaque resource handles rather than credentials, but keeping the deployment config local avoids publishing account-specific identifiers. Queue bindings use the two queue names directly, so keep those names aligned with `wrangler.jsonc`.
+   Copy the printed ids into the `kv_namespaces` and `d1_databases` entries in `wrangler.jsonc`. These are opaque, account-scoped resource handles, not secrets – they grant no access without your API token, so they are safe to commit. Queue bindings use the two queue names directly, so keep those names aligned with `wrangler.jsonc`.
 
    > Note: Wrangler names the KV namespaces `hookrelay-SUBS` / `hookrelay-SINKS` (worker name + binding), so that is what shows in the dashboard. `SUBS`/`SINKS` are the *binding* names your code uses (`env.SUBS`); the `id` in `wrangler.jsonc` is what actually links them. Dashboard title and binding name differ by design.
 3. Apply the D1 migration:
@@ -73,7 +72,7 @@ Steps:
    ```
    Then in the Cloudflare dashboard, attach the Worker to a custom domain (`hooks.example.com`). The route is managed in the dashboard rather than in `wrangler.jsonc`, so no hostname is committed to source (`workers_dev` is `false` to keep the Worker off `*.workers.dev`).
 
-   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build). Store the completed `wrangler.jsonc` as a masked `HOOKRELAY_WRANGLER_CONFIG` build secret, set the build command to `printf '%s' "$HOOKRELAY_WRANGLER_CONFIG" > wrangler.jsonc && pnpm typecheck && pnpm test`, and set the deploy command to `npx wrangler deploy`. Workers Builds exposes configured build secrets only to the build, and runs the build command before the deploy command, so the private config is available for deployment without entering Git history. Apply new D1 migrations before a build deploys code that depends on them.
+   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build): set the branch to `main`, set the build command to `pnpm typecheck && pnpm test`, and set the deploy command to `npx wrangler deploy`. Workers Builds runs the build command before deploying, so a typecheck or test failure blocks the deployment. No build variables are needed – Builds runs in your account's context and infers the account automatically, so there is no `account_id` to set. Apply new D1 migrations before a build deploys code that depends on them.
 7. Add a sink. The command reads the Discord webhook URL without echoing it, stores it in `.dev.vars`, adds the secret reference to `routes.jsonc`, and offers to install the Wrangler secret and sync KV:
    ```sh
    pnpm sink:add discord discord
@@ -96,11 +95,11 @@ Steps:
 
 ## Configuration reference
 
-hookrelay separates configuration by sensitivity. The guiding rule: **nothing secret or deployment-specific is committed.** If you are forking this to run your own instance, this section is the "what goes where, and why."
+hookrelay separates configuration by sensitivity. The guiding rule: **nothing secret is committed.** If you are forking this to run your own instance, this section is the "what goes where, and why."
 
-### 1. `wrangler.example.jsonc` and `wrangler.jsonc`
+### 1. `wrangler.jsonc` – committed, safe to make public
 
-`wrangler.example.jsonc` is the committed template with placeholder binding ids. Copy it to the ignored `wrangler.jsonc` and insert the resource handles for your deployment. The handles grant no access on their own, but the private copy keeps account-specific identifiers out of source history.
+`wrangler.jsonc` is the Worker's deployment config: its entry point, compatibility date, and the bindings that connect the Worker to its KV namespaces, D1 database, R2 bucket, and queues. The only account-specific values are the resource ids below.[^wrangler-ids]
 
 | Key | What it is |
 | --- | --- |
@@ -495,3 +494,5 @@ MIT. See LICENSE.
 ## Support
 
 Best-effort. Issues and PRs welcome but not promised.
+
+[^wrangler-ids]: The binding ids are opaque, account-scoped resource handles, not secrets: they name a resource but grant no access on their own. Every Cloudflare API call still requires your API token, and a binding id from one account cannot be used from another.
