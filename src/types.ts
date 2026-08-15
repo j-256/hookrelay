@@ -93,3 +93,10 @@ export interface DeliveryMessage {
   sinkName: string
   generation: number
 }
+
+export interface SinkDeliveryContext {
+  eventId: string
+  sinkName: string
+  generation: number
+  attempt: number
+}

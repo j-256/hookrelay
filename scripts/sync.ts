@@ -16,7 +16,7 @@ import { normalizeEmailLinkLabel } from '../src/lib/email-links'
 import { EVENT_TYPE_FILTER_PATTERN_RE } from '../src/lib/event-filter'
 import { normalizeFallbackUrl } from '../src/lib/public-url'
 import { SEVERITIES } from '../src/types'
-import { KNOWN_SOURCE_TYPES } from './subscription-sources'
+import { getSourceProfile, KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { githubEventTypeFilter, parseGitHubEventSelection } from './github-events'
 import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
 import { listWranglerSecrets } from './setup'
@@ -272,13 +272,21 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
       if (new Set(secretEnvs).size !== secretEnvs.length) {
         issues.push(`sub '${sub.name}': auth secret references must be unique`)
       }
-      if (sub.auth.alternateSecretEnvs) {
-        if (sub.source !== 'github') {
-          issues.push(`sub '${sub.name}': alternateSecretEnvs is only valid for GitHub subscriptions`)
-        }
-        if (sub.auth.scheme !== 'github-sha256') {
-          issues.push(`sub '${sub.name}': alternateSecretEnvs requires the github-sha256 scheme`)
-        }
+    }
+    const sourceProfile = getSourceProfile(sub.source)
+    if (sourceProfile?.senderAuth) {
+      if (!sub.auth) {
+        issues.push(`sub '${sub.name}': ${sub.source} subscriptions require auth configuration`)
+      } else if (sub.auth.scheme !== sourceProfile.senderAuth.scheme) {
+        issues.push(`sub '${sub.name}': ${sub.source} subscriptions require the ${sourceProfile.senderAuth.scheme} scheme`)
+      }
+    }
+    if (sub.auth?.alternateSecretEnvs) {
+      if (sub.source !== 'github' && sub.source !== 'cloudevents') {
+        issues.push(`sub '${sub.name}': alternateSecretEnvs is only valid for rotating HMAC subscriptions`)
+      }
+      if (sub.auth.scheme !== 'github-sha256' && sub.auth.scheme !== 'hookrelay-sha256') {
+        issues.push(`sub '${sub.name}': alternateSecretEnvs requires an HMAC-SHA256 scheme`)
       }
     }
     if (sub.setup?.github) {
@@ -421,7 +429,7 @@ async function main() {
   const routes = parseRoutes(text)
 
   const knownSources = new Set<string>(KNOWN_SOURCE_TYPES)
-  const knownSinkTypes = new Set(['ntfy', 'discord'])
+  const knownSinkTypes = new Set(['ntfy', 'discord', 'webhook'])
   const sinkSchemas = {
     ntfy: z
       .object({
@@ -433,6 +441,14 @@ async function main() {
       })
       .strict(),
     discord: z.object({ name: z.string(), type: z.literal('discord'), urlEnv: z.string() }).strict(),
+    webhook: z
+      .object({
+        name: z.string(),
+        type: z.literal('webhook'),
+        urlEnv: z.string().min(1),
+        signingSecretEnv: z.string().min(1),
+      })
+      .strict(),
   }
   const secretsAvailable = await listWranglerSecrets()
 

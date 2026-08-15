@@ -463,7 +463,12 @@ async function consumeDeliveryMessage(message: Message<unknown>, env: Env): Prom
   const { row } = claim
   try {
     const event = await loadNormalizedEvent(env, body.eventId)
-    const result = await dispatchSink(env, event, body.sinkName)
+    const result = await dispatchSink(env, event, body.sinkName, {
+      eventId: row.event_id,
+      sinkName: row.sink_name,
+      generation: row.generation,
+      attempt: row.attempts,
+    })
     if (result.ok) {
       await markDelivered(env, row)
       message.ack()

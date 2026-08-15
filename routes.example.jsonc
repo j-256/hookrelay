@@ -33,7 +33,26 @@
     //     "allowedSenders": ["@mailer.example.com"],
     //     "primaryLinkLabels": ["view incident"]
     //   }
+    // },
+    // {
+    //   "name": "automation-events",
+    //   "source": "cloudevents",
+    //   "slugHash": "<sha256-of-private-slug>",
+    //   "enabled": true,
+    //   "sinks": ["automation"],
+    //   "auth": {
+    //     "scheme": "hookrelay-sha256",
+    //     "secretEnv": "HMAC_AUTOMATION_EVENTS"
+    //   }
     // }
   ],
-  "sinks": []
+  "sinks": [
+    // `sink:add` writes only secret references for a signed webhook
+    // {
+    //   "name": "automation",
+    //   "type": "webhook",
+    //   "urlEnv": "SINK_AUTOMATION_URL",
+    //   "signingSecretEnv": "SINK_AUTOMATION_SIGNING_SECRET"
+    // }
+  ]
 }

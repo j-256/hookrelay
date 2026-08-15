@@ -417,6 +417,10 @@ function printPrepared(options: SubAddOptions, prepared: PreparedSubscription): 
     console.log(`Event profiles: ${options.githubEvents.names.join(', ')}`)
     if (options.githubEvents.events) console.log(`Events: ${options.githubEvents.events.join(', ')}`)
   }
+  if (options.source === 'cloudevents') {
+    console.log('Content type: application/cloudevents+json')
+    console.log('Signature header: X-Hookrelay-Signature-256: sha256=<lowercase HMAC-SHA256 over exact request bytes>')
+  }
 }
 
 async function main(): Promise<void> {

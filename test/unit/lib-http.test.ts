@@ -72,4 +72,15 @@ describe('postRaw', () => {
     const fetchMock = vi.fn(async () => new Response('boom', { status: 502 })) as unknown as typeof fetch
     await expect(postRaw('https://example.com/raw', 'body', { fetch: fetchMock })).rejects.toThrow(/502/)
   })
+
+  it('rejects manual redirects without following them', async () => {
+    const fetchMock = vi.fn(async (_input: Request | string | URL, init?: RequestInit) => {
+      expect(init?.redirect).toBe('manual')
+      return new Response(null, { status: 302, headers: { location: 'https://elsewhere.example.com' } })
+    }) as unknown as typeof fetch
+    await expect(postRaw('https://example.com/raw', 'body', {
+      fetch: fetchMock,
+      redirect: 'manual',
+    })).rejects.toMatchObject({ status: 302 })
+  })
 })

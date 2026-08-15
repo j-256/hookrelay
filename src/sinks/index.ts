@@ -1,11 +1,17 @@
 import type { z } from 'zod'
 import type { Env } from '../index'
-import type { NormalizedEvent } from '../types'
+import type { NormalizedEvent, SinkDeliveryContext } from '../types'
 
 export interface Sink<TConfig = unknown> {
   readonly type: string
   readonly configSchema: z.ZodType<TConfig>
-  send(event: NormalizedEvent, config: TConfig, env: Env, fetchFn?: typeof fetch): Promise<void>
+  send(
+    event: NormalizedEvent,
+    config: TConfig,
+    env: Env,
+    context: SinkDeliveryContext,
+    fetchFn?: typeof fetch,
+  ): Promise<void>
 }
 
 const registry = new Map<string, Sink<unknown>>()

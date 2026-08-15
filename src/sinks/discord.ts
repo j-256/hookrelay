@@ -32,7 +32,7 @@ const sink: Sink<Config> = {
   type: 'discord',
   configSchema,
 
-  async send(event: NormalizedEvent, config: Config, env: Env, fetchFn?: typeof fetch) {
+  async send(event: NormalizedEvent, config: Config, env: Env, _context, fetchFn?: typeof fetch) {
     const url = readSecret(env, config.urlEnv)
     const color = COLOR[event.severity ?? 'info']
     const payload = {

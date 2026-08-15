@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
@@ -12,10 +13,13 @@ import {
   writeText,
 } from './setup'
 import { parseRoutes } from './sync'
+import { normalizeWebhookEndpointUrl } from '../src/lib/public-url'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
 const DISCORD_SINK_TYPE = 'discord'
+const WEBHOOK_SINK_TYPE = 'webhook'
+const SUPPORTED_SINK_TYPES = [DISCORD_SINK_TYPE, WEBHOOK_SINK_TYPE] as const
 const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true, tabSize: 2, eol: '\n' })
 
 export interface SinkAddOptions {
@@ -30,22 +34,33 @@ interface DiscordSinkConfig {
   urlEnv: string
 }
 
+interface WebhookSinkConfig {
+  name: string
+  type: typeof WEBHOOK_SINK_TYPE
+  urlEnv: string
+  signingSecretEnv: string
+}
+
+type PreparedSinkConfig = DiscordSinkConfig | WebhookSinkConfig
+
 export interface PreparedSink {
   routesText: string
   devVarsText: string
-  sink: DiscordSinkConfig
+  sink: PreparedSinkConfig
   secret: SecretValue
+  secrets: SecretValue[]
 }
 
 export function sinkAddUsage(): string {
   return [
-    'usage: pnpm sink:add <name> discord [-y]',
+    'usage: pnpm sink:add <name> <discord|webhook> [-y]',
     '',
     'options:',
     '  -y, --yes  apply remote changes without prompts',
     '  -h, --help show this help',
     '',
-    'The Discord webhook URL is read from concealed input or stdin',
+    'The destination URL is read from concealed input or stdin',
+    'Webhook sinks generate a separate outbound signing secret',
   ].join('\n')
 }
 
@@ -60,7 +75,9 @@ export function parseSinkAddArgs(argv: string[]): SinkAddOptions {
   }
   if (positional.length !== 2) throw new Error(sinkAddUsage())
   const [name, type] = positional as [string, string]
-  if (type !== DISCORD_SINK_TYPE) throw new Error(`unsupported sink type: ${type}; supported types: ${DISCORD_SINK_TYPE}`)
+  if (!SUPPORTED_SINK_TYPES.includes(type as typeof SUPPORTED_SINK_TYPES[number])) {
+    throw new Error(`unsupported sink type: ${type}; supported types: ${SUPPORTED_SINK_TYPES.join(', ')}`)
+  }
   return { name, type, yes }
 }
 
@@ -75,7 +92,7 @@ export function normalizeDiscordWebhookUrl(value: string): string {
   return url.toString()
 }
 
-function updateRoutesText(text: string, sink: DiscordSinkConfig): string {
+function updateRoutesText(text: string, sink: PreparedSinkConfig): string {
   let updated = applyEdits(
     text,
     modify(text, ['sinks', -1], sink, {
@@ -109,6 +126,49 @@ export function prepareDiscordSink(
     devVarsText: addDevVar(devVarsText, secret.name, secret.value),
     sink,
     secret,
+    secrets: [secret],
+  }
+}
+
+export function prepareWebhookSink(
+  routesText: string,
+  devVarsText: string,
+  name: string,
+  endpointUrl: string,
+  generatedSigningSecret = randomBytes(32).toString('hex'),
+): PreparedSink {
+  const routes = parseRoutes(routesText)
+  if (routes.sinks.some((sink) => sink.name === name)) throw new Error(`sink already exists: ${name}`)
+
+  const label = envSegment(name)
+  const urlSecret: SecretValue = {
+    name: `SINK_${label}_URL`,
+    value: normalizeWebhookEndpointUrl(endpointUrl),
+  }
+  const signingSecret: SecretValue = {
+    name: `SINK_${label}_SIGNING_SECRET`,
+    value: generatedSigningSecret,
+  }
+  if (!signingSecret.value) throw new Error('generated webhook signing secret is empty')
+  const referencedValues = routes.sinks.flatMap((sink) => Object.values(sink))
+  for (const secret of [urlSecret, signingSecret]) {
+    if (referencedValues.includes(secret.name)) {
+      throw new Error(`sink secret name is already referenced: ${secret.name}`)
+    }
+  }
+  const sink: WebhookSinkConfig = {
+    name,
+    type: WEBHOOK_SINK_TYPE,
+    urlEnv: urlSecret.name,
+    signingSecretEnv: signingSecret.name,
+  }
+  const withUrl = addDevVar(devVarsText, urlSecret.name, urlSecret.value)
+  return {
+    routesText: updateRoutesText(routesText, sink),
+    devVarsText: addDevVar(withUrl, signingSecret.name, signingSecret.value),
+    sink,
+    secret: urlSecret,
+    secrets: [urlSecret, signingSecret],
   }
 }
 
@@ -123,17 +183,27 @@ async function main(): Promise<void> {
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')
   const devVarsText = await readOptionalText(devVarsPath)
-  const webhookUrl = await readSecret('Discord webhook URL: ')
-  const prepared = prepareDiscordSink(routesText, devVarsText, options.name, webhookUrl)
+  const endpointUrl = await readSecret(
+    options.type === DISCORD_SINK_TYPE ? 'Discord webhook URL: ' : 'Webhook endpoint URL: ',
+  )
+  const prepared = options.type === DISCORD_SINK_TYPE
+    ? prepareDiscordSink(routesText, devVarsText, options.name, endpointUrl)
+    : prepareWebhookSink(routesText, devVarsText, options.name, endpointUrl)
 
   await writeText(routesPath, prepared.routesText)
   await writePrivateText(devVarsPath, prepared.devVarsText)
   console.log(`Prepared ${prepared.sink.type} sink ${prepared.sink.name}`)
-  console.log(`Save the webhook URL in your secret store as ${prepared.secret.name}`)
+  if (prepared.sink.type === DISCORD_SINK_TYPE) {
+    console.log(`Save the webhook URL in your secret store as ${prepared.secret.name}`)
+  } else {
+    const [urlSecret, signingSecret] = prepared.secrets
+    console.log(`Save the endpoint URL in your secret store as ${urlSecret!.name}`)
+    console.log(`Save the generated signing secret as ${signingSecret!.name}=${signingSecret!.value}`)
+  }
 
-  const production = await prepareProduction(prepared.secret, options.yes)
+  const production = await prepareProduction(prepared.secrets, options.yes)
   if (production === 'local-only') {
-    console.log(`Production was not changed; install ${prepared.secret.name} in Wrangler, then run pnpm sync and pnpm sync -y`)
+    console.log(`Production was not changed; install ${prepared.secrets.map((secret) => secret.name).join(', ')} in Wrangler, then run pnpm sync and pnpm sync -y`)
   } else if (production === 'previewed') {
     console.log('The KV sink was not changed; run pnpm sync -y to apply it')
   }

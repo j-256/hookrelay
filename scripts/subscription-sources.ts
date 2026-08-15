@@ -25,6 +25,13 @@ export const SOURCE_PROFILES = Object.freeze({
     }),
   }),
   uptime: Object.freeze({ transport: 'http', senderAuth: null }),
+  cloudevents: Object.freeze({
+    transport: 'http',
+    senderAuth: Object.freeze({
+      scheme: 'hookrelay-sha256',
+      secretEnvPrefix: 'HMAC',
+    }),
+  }),
   email: Object.freeze({ transport: 'email', senderAuth: null }),
 } satisfies Record<string, SubscriptionSourceProfile>)
 

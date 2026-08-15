@@ -7,7 +7,7 @@ describe('commandReference', () => {
   it('lists routine commands and distinguishes production writes', () => {
     const reference = commandReference()
 
-    expect(reference).toContain('pnpm sink:add <name> discord')
+    expect(reference).toContain('pnpm sink:add <name> <discord|webhook>')
     expect(reference).toContain('pnpm sink:rename <old-name> <new-name>')
     expect(reference).toContain('pnpm sink:secret:rename <sink> <old-secret> <new-secret>')
     expect(reference).toContain('pnpm sub:add <name> <source> [-s <sink>]')

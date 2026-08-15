@@ -17,6 +17,13 @@ const baseEvent: NormalizedEvent = {
   raw: {},
 }
 
+const deliveryContext = {
+  eventId: 'github:d-1',
+  sinkName: 'phone',
+  generation: 1,
+  attempt: 1,
+}
+
 describe('ntfy sink', () => {
   it('config schema accepts optional tokenEnv and rejects extras', () => {
     expect(() => ntfy.configSchema.parse({ topic: 't' })).not.toThrow()
@@ -36,7 +43,7 @@ describe('ntfy sink', () => {
       expect(typeof init?.body === 'string' && init.body).toContain('world')
       return new Response('ok', { status: 200 })
     })
-    await ntfy.send(baseEvent, { topic: 'my-topic' }, env, fetchMock as unknown as typeof fetch)
+    await ntfy.send(baseEvent, { topic: 'my-topic' }, env, deliveryContext, fetchMock as unknown as typeof fetch)
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
@@ -47,13 +54,19 @@ describe('ntfy sink', () => {
     })
     const tokenEnv = 'SINK_NTFY_PHONE_TOKEN'
     const secretEnv = { [tokenEnv]: 'tk_test' } as unknown as Env
-    await ntfy.send(baseEvent, { topic: 't', tokenEnv }, secretEnv, fetchMock as unknown as typeof fetch)
+    await ntfy.send(baseEvent, { topic: 't', tokenEnv }, secretEnv, deliveryContext, fetchMock as unknown as typeof fetch)
   })
 
   it('rejects a configured token when its secret is missing', async () => {
     const fetchMock = vi.fn()
     await expect(
-      ntfy.send(baseEvent, { topic: 't', tokenEnv: 'SINK_NTFY_PHONE_TOKEN' }, env, fetchMock as unknown as typeof fetch),
+      ntfy.send(
+        baseEvent,
+        { topic: 't', tokenEnv: 'SINK_NTFY_PHONE_TOKEN' },
+        env,
+        deliveryContext,
+        fetchMock as unknown as typeof fetch,
+      ),
     ).rejects.toThrow(/secret not set: SINK_NTFY_PHONE_TOKEN/)
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -71,7 +84,13 @@ describe('ntfy sink', () => {
         expect(new Headers(init?.headers).get('Priority')).toBe(expected)
         return new Response('ok', { status: 200 })
       })
-      await ntfy.send({ ...baseEvent, severity }, { topic: 't' }, env, fetchMock as unknown as typeof fetch)
+      await ntfy.send(
+        { ...baseEvent, severity },
+        { topic: 't' },
+        env,
+        deliveryContext,
+        fetchMock as unknown as typeof fetch,
+      )
     }
   })
 
@@ -80,11 +99,23 @@ describe('ntfy sink', () => {
       expect(new Headers(init?.headers).get('Click')).toBeNull()
       return new Response('ok', { status: 200 })
     })
-    await ntfy.send({ ...baseEvent, url: undefined }, { topic: 't' }, env, fetchMock as unknown as typeof fetch)
+    await ntfy.send(
+      { ...baseEvent, url: undefined },
+      { topic: 't' },
+      env,
+      deliveryContext,
+      fetchMock as unknown as typeof fetch,
+    )
   })
 
   it('throws on non-2xx response', async () => {
     const fetchMock = vi.fn(async () => new Response('nope', { status: 500 }))
-    await expect(ntfy.send(baseEvent, { topic: 't' }, env, fetchMock as unknown as typeof fetch)).rejects.toThrow(/500/)
+    await expect(ntfy.send(
+      baseEvent,
+      { topic: 't' },
+      env,
+      deliveryContext,
+      fetchMock as unknown as typeof fetch,
+    )).rejects.toThrow(/500/)
   })
 })

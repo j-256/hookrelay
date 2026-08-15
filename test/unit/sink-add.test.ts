@@ -3,10 +3,13 @@ import {
   normalizeDiscordWebhookUrl,
   parseSinkAddArgs,
   prepareDiscordSink,
+  prepareWebhookSink,
 } from '../../scripts/sink-add'
 import { parseRoutes } from '../../scripts/sync'
 
 const DISCORD_URL = 'https://discord.com/api/webhooks/123456789/fake-token'
+const WEBHOOK_URL = 'https://receiver.example.com/hooks?tenant=hookrelay'
+const WEBHOOK_SECRET = 'generated-signing-secret'
 const ROUTES = `
 // Sink config remains safe to store locally
 {
@@ -20,6 +23,14 @@ describe('parseSinkAddArgs', () => {
     expect(parseSinkAddArgs(['discord', 'discord'])).toEqual({ name: 'discord', type: 'discord', yes: false })
   })
 
+  it('accepts a named generic webhook sink', () => {
+    expect(parseSinkAddArgs(['automation', 'webhook'])).toEqual({
+      name: 'automation',
+      type: 'webhook',
+      yes: false,
+    })
+  })
+
   it('accepts -y and rejects unknown short options', () => {
     expect(parseSinkAddArgs(['discord', 'discord', '-y'])).toEqual({ name: 'discord', type: 'discord', yes: true })
     expect(() => parseSinkAddArgs(['discord', 'discord', '-x'])).toThrow(/unknown option: -x/)
@@ -27,6 +38,44 @@ describe('parseSinkAddArgs', () => {
 
   it('rejects unsupported sink types', () => {
     expect(() => parseSinkAddArgs(['alerts', 'slack'])).toThrow(/unsupported sink type/)
+  })
+})
+
+describe('generic webhook sink preparation', () => {
+  it('stores only secret references while preparing both local secrets', () => {
+    const prepared = prepareWebhookSink(
+      ROUTES,
+      'CF_ACCESS_AUD=test\n',
+      'automation',
+      WEBHOOK_URL,
+      WEBHOOK_SECRET,
+    )
+    const routes = parseRoutes(prepared.routesText)
+
+    expect(prepared.routesText).not.toContain(WEBHOOK_URL)
+    expect(prepared.routesText).not.toContain(WEBHOOK_SECRET)
+    expect(routes.sinks).toEqual([{
+      name: 'automation',
+      type: 'webhook',
+      urlEnv: 'SINK_AUTOMATION_URL',
+      signingSecretEnv: 'SINK_AUTOMATION_SIGNING_SECRET',
+    }])
+    expect(prepared.devVarsText).toContain(`SINK_AUTOMATION_URL=${WEBHOOK_URL}\n`)
+    expect(prepared.devVarsText).toContain(`SINK_AUTOMATION_SIGNING_SECRET=${WEBHOOK_SECRET}\n`)
+    expect(prepared.secrets).toEqual([
+      { name: 'SINK_AUTOMATION_URL', value: WEBHOOK_URL },
+      { name: 'SINK_AUTOMATION_SIGNING_SECRET', value: WEBHOOK_SECRET },
+    ])
+  })
+
+  it('rejects private endpoints, fragments, and derived secret collisions', () => {
+    expect(() => prepareWebhookSink(ROUTES, '', 'local', 'https://127.0.0.1/hook', WEBHOOK_SECRET))
+      .toThrow(/public host/)
+    expect(() => prepareWebhookSink(ROUTES, '', 'fragment', `${WEBHOOK_URL}#secret`, WEBHOOK_SECRET))
+      .toThrow(/fragment/)
+    const first = prepareWebhookSink(ROUTES, '', 'automation', WEBHOOK_URL, WEBHOOK_SECRET)
+    expect(() => prepareWebhookSink(first.routesText, '', 'AUTOMATION', WEBHOOK_URL, WEBHOOK_SECRET))
+      .toThrow(/secret name|already exists/)
   })
 })
 

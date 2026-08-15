@@ -343,7 +343,8 @@ export async function prepareProduction(secrets: SecretValue | SecretValue[] | n
     : 'Preview the production KV plan?'
   if (!yes && !(await confirm(action))) return 'local-only'
 
-  for (const secret of secretList) await putWranglerSecret(secret)
+  if (secretList.length === 1) await putWranglerSecret(secretList[0]!)
+  if (secretList.length > 1) await putWranglerSecretsBulk(secretList)
   if (yes) {
     await runSync(true)
     return 'applied'

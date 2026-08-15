@@ -66,6 +66,33 @@ const SINK_POLICY_ROUTES = FILTERED_ROUTES.replace(
       "auth":`,
 )
 
+const CLOUDEVENTS_ROUTES = `
+{
+  "subs": [
+    {
+      "name": "automation",
+      "source": "cloudevents",
+      "slugHash": "${CLAUDE_HASH}",
+      "enabled": true,
+      "sinks": ["outbound"],
+      "auth": {
+        "scheme": "hookrelay-sha256",
+        "secretEnv": "HMAC_AUTOMATION",
+        "alternateSecretEnvs": ["HMAC_AUTOMATION_NEXT"]
+      }
+    }
+  ],
+  "sinks": [
+    {
+      "name": "outbound",
+      "type": "webhook",
+      "urlEnv": "SINK_OUTBOUND_URL",
+      "signingSecretEnv": "SINK_OUTBOUND_SIGNING_SECRET"
+    }
+  ]
+}
+`
+
 const ACTIVITY_ROUTES = ROUTES.replace(
   '"eventProfiles": ["recommended", "stars"]',
   '"eventProfiles": ["activity"]',
@@ -167,6 +194,20 @@ describe('parseRoutes', () => {
         eventTypes: { include: ['pull_request.*'] },
         severities: { include: ['error', 'critical'] },
       },
+    })
+  })
+
+  it('parses rotating CloudEvents auth and signed webhook references', () => {
+    const cfg = parseRoutes(CLOUDEVENTS_ROUTES)
+    expect(cfg.subs[0]?.auth).toEqual({
+      scheme: 'hookrelay-sha256',
+      secretEnv: 'HMAC_AUTOMATION',
+      alternateSecretEnvs: ['HMAC_AUTOMATION_NEXT'],
+    })
+    expect(cfg.sinks[0]).toMatchObject({
+      type: 'webhook',
+      urlEnv: 'SINK_OUTBOUND_URL',
+      signingSecretEnv: 'SINK_OUTBOUND_SIGNING_SECRET',
     })
   })
 
@@ -274,7 +315,7 @@ describe('validateRoutes', () => {
       sinkSchemas: { ntfy: { topic: 'string' } } as any,
       secretsAvailable: new Set(['HMAC_GH', 'HMAC_GH_NEXT']),
     })
-    expect(issues.join('\n')).toMatch(/only valid for GitHub subscriptions/)
+    expect(issues.join('\n')).toMatch(/only valid for rotating HMAC subscriptions/)
   })
 
   it('rejects rotating auth with a non-GitHub scheme', () => {
@@ -285,7 +326,43 @@ describe('validateRoutes', () => {
       sinkSchemas: { ntfy: { topic: 'string' } } as any,
       secretsAvailable: new Set(['HMAC_GH', 'HMAC_GH_NEXT']),
     })
-    expect(issues.join('\n')).toMatch(/requires the github-sha256 scheme/)
+    expect(issues.join('\n')).toMatch(/requires an HMAC-SHA256 scheme/)
+  })
+
+  it('accepts CloudEvents secret rotation and validates both webhook secrets', () => {
+    const cfg = parseRoutes(CLOUDEVENTS_ROUTES)
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['cloudevents']),
+      knownSinkTypes: new Set(['webhook']),
+      sinkSchemas: {
+        webhook: {
+          safeParse: () => ({ success: true }),
+        } as any,
+      },
+      secretsAvailable: new Set([
+        'HMAC_AUTOMATION',
+        'HMAC_AUTOMATION_NEXT',
+        'SINK_OUTBOUND_URL',
+        'SINK_OUTBOUND_SIGNING_SECRET',
+      ]),
+    })
+    expect(issues).toEqual([])
+  })
+
+  it('requires the CloudEvents HMAC scheme', () => {
+    const cfg = parseRoutes(CLOUDEVENTS_ROUTES.replace('hookrelay-sha256', 'github-sha256'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['cloudevents']),
+      knownSinkTypes: new Set(['webhook']),
+      sinkSchemas: {},
+      secretsAvailable: new Set([
+        'HMAC_AUTOMATION',
+        'HMAC_AUTOMATION_NEXT',
+        'SINK_OUTBOUND_URL',
+        'SINK_OUTBOUND_SIGNING_SECRET',
+      ]),
+    })
+    expect(issues.join('\n')).toMatch(/require the hookrelay-sha256 scheme/)
   })
 
   it('reports missing secret for an authenticated ntfy sink', () => {

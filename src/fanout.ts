@@ -1,7 +1,7 @@
 import { getSink } from './sinks'
 import type { Env } from './index'
 import { HttpError } from './lib/http'
-import type { NormalizedEvent } from './types'
+import type { NormalizedEvent, SinkDeliveryContext } from './types'
 
 interface SinkConfig {
   type: string
@@ -18,6 +18,12 @@ export async function dispatchSink(
   env: Env,
   event: NormalizedEvent,
   sinkName: string,
+  context: SinkDeliveryContext = {
+    eventId: `${event.source}:${event.id}`,
+    sinkName,
+    generation: 0,
+    attempt: 1,
+  },
 ): Promise<DispatchResult> {
   let raw: string | null
   try {
@@ -47,7 +53,7 @@ export async function dispatchSink(
   }
 
   try {
-    await sink.send(event, parsed.data, env)
+    await sink.send(event, parsed.data, env, context)
     return { ok: true }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

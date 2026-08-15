@@ -213,6 +213,34 @@ describe('subscription preparation', () => {
     expect(prepared.devVarsText).toBe('CF_ACCESS_AUD=test\n')
   })
 
+  it('prepares an HMAC-authenticated CloudEvents route', async () => {
+    const options = parseSubAddArgs([
+      'automation-events',
+      'cloudevents',
+      '--base-url',
+      'https://hooks.example.com',
+    ])
+    const prepared = await prepareSubscription(ROUTES, '', options, {
+      slug: RAW_SLUG,
+      senderSecret: HMAC_SECRET,
+    })
+    const sub = parseRoutes(prepared.routesText).subs[0]
+
+    expect(sub).toEqual({
+      name: 'automation-events',
+      source: 'cloudevents',
+      slugHash: await hashSubscriptionSlug(RAW_SLUG),
+      enabled: true,
+      sinks: ['discord'],
+      auth: {
+        scheme: 'hookrelay-sha256',
+        secretEnv: 'HMAC_AUTOMATION_EVENTS',
+      },
+    })
+    expect(prepared.devVarsText).toContain(`HMAC_AUTOMATION_EVENTS=${HMAC_SECRET}\n`)
+    expect(prepared.webhookUrl).toBe(`https://hooks.example.com/hook/cloudevents/${RAW_SLUG}`)
+  })
+
   it('generates lowercase hexadecimal routes for email providers', async () => {
     const options = parseSubAddArgs([
       'openai-status',

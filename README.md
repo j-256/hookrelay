@@ -13,11 +13,13 @@ Built-in sources (v1):
 - GitHub repo webhooks
 - Cloudflare Notifications
 - UptimeRobot
+- HMAC-authenticated structured CloudEvents 1.0
 - Generic email, including multipart plain text and HTML messages
 
 Built-in sinks (v1):
 - ntfy.sh push (also self-hostable)
 - Discord channel webhook
+- Signed structured CloudEvents webhook
 
 Admin: `/admin` redirects to the Cloudflare Access-protected `/admin/events` dashboard for browsing recent events, inspecting per-sink delivery state, and retrying exhausted deliveries.
 
@@ -81,6 +83,7 @@ Steps:
    ```sh
    pnpm sub:add claude-status statuspage --fallback-url https://status.claude.com/
    pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events activity,alerts
+   pnpm sub:add automation-events cloudevents
    pnpm sub:add openai-status email --email-base relay@mail.example.com --primary-link-label "View incident" --fallback-url https://status.openai.com/
    ```
    Email subscriptions require the one-time Email Routing setup described in [Forwarding email notifications](#forwarding-email-notifications).
@@ -127,9 +130,10 @@ Set with `npx wrangler secret put <NAME>`. Wrangler lists their names but does n
 | --- | --- |
 | `CF_ACCESS_TEAM_DOMAIN` | Your Zero Trust team subdomain (the part before `.cloudflareaccess.com`). Identifies your org, so it is a secret rather than a committed var. |
 | `CF_ACCESS_AUD` | The AUD tag of the Access application protecting `/admin/*`. |
-| `HMAC_<label>` | Per-subscription HMAC key for signed senders (e.g. GitHub). The name is your choice; it is referenced by `auth.secretEnv` in `routes.jsonc`. |
+| `HMAC_<label>` | Per-subscription HMAC key for signed senders, such as GitHub or structured CloudEvents. The name is your choice; it is referenced by `auth.secretEnv` in `routes.jsonc`. |
 | `SINK_<name>_TOKEN` | Access token for an authenticated sink such as ntfy. Referenced by the sink's `tokenEnv` in `routes.jsonc`. |
 | `SINK_<name>_URL` | A sink credential, such as a Discord webhook URL. Referenced by the sink's `urlEnv` in `routes.jsonc`. |
+| `SINK_<name>_SIGNING_SECRET` | HMAC key used to sign the exact body sent by a generic webhook sink. Referenced by `signingSecretEnv` in `routes.jsonc`. |
 
 The names are a convention, not a requirement – whatever you put in `routes.jsonc` (`auth.secretEnv`, a sink's `tokenEnv` or `urlEnv`) must match a secret name you have set. `pnpm sync` validates that every referenced secret exists before it writes anything.
 
@@ -142,9 +146,9 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | `baseUrl` | Optional public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. Without it, the command discovers the single production custom domain attached to the Worker through Cloudflare's API and saves the result here. This local setup value is not written to KV. |
 | `emailBaseAddress` | Base address for Cloudflare Email Routing, such as `relay@mail.example.com`. `pnpm sub:add` appends a private plus-address route token. This local setup value is not written to KV. |
 | `subs[].slugHash` | Lowercase SHA-256 digest of the private slug. The Worker hashes the incoming path segment and uses `sub:sha256:<slugHash>` for KV lookup; neither KV nor this file needs the raw slug. Generate it with `pnpm sub:add` rather than choosing a low-entropy slug. |
-| `subs[].source` | Source name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`, `email`). |
+| `subs[].source` | Source name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`, `cloudevents`, `email`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
-| `subs[].auth` | Optional `{ scheme, secretEnv }` for signature/secret verification on top of the slug. |
+| `subs[].auth` | Optional `{ scheme, secretEnv, alternateSecretEnvs? }` for signature or secret verification on top of the slug. GitHub uses `github-sha256`; structured CloudEvents use `hookrelay-sha256`. Alternate secret references allow staged HMAC rotation. |
 | `subs[].fallbackUrl` | Optional public HTTPS URL used only when a source event has no more specific target. Credentials, query strings, and fragments are rejected so the value remains safe to publish. |
 | `subs[].email.allowedSenders` | Optional email noise filter containing exact mailboxes or exact domains written as `@example.com`. Both the SMTP envelope sender and parsed `From`/`Sender` identities must match when the list is nonempty. |
 | `subs[].email.primaryLinkLabels` | Exact, case-insensitive visible labels allowed to select one email deep link, such as `View incident`. Every email URL is removed from sink-visible text, and zero or multiple distinct matching targets fail closed to `fallbackUrl`. |
@@ -155,6 +159,8 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | `sinks[].type: ntfy` -> `server` | Optional. Base URL of a self-hosted ntfy server; defaults to `https://ntfy.sh`. |
 | `sinks[].type: ntfy` -> `tokenEnv` | Optional Wrangler secret name containing an ntfy access token. Strongly recommended for Cloudflare Workers so publishes use the account's quota instead of a shared anonymous egress-IP quota. Authentication does not make an unreserved topic private. |
 | `sinks[].type: discord` -> `urlEnv` | Name of the Wrangler secret holding the Discord webhook URL (not the URL itself). |
+| `sinks[].type: webhook` -> `urlEnv` | Name of the Wrangler secret holding a public HTTPS endpoint. Credentials, fragments, private hosts, and redirects are rejected. |
+| `sinks[].type: webhook` -> `signingSecretEnv` | Name of the Wrangler secret used for the outbound `X-Hookrelay-Signature-256` HMAC. |
 
 Incoming HTTP slugs, email plus-route tokens, and Discord webhook URLs are bearer values, but Hookrelay uses them differently. It hashes route tokens because it only needs to recognize an incoming value. It keeps the Discord URL in a Worker secret because it must recover that value to make an outbound request. Guard generated webhook URLs and email addresses, unreserved ntfy topics, and sink credentials in a password manager and keep them out of logs, screenshots, and commits.
 
@@ -162,7 +168,7 @@ Incoming HTTP slugs, email plus-route tokens, and Discord webhook URLs are beare
 
 `sink:add` and `sub:add` follow this order:
 
-1. Read and validate gitignored `routes.jsonc` and `.dev.vars`. `sink:add` reads the Discord URL through concealed input. `sub:add` generates its private values and resolves the HTTP origin or email base address for the selected source.
+1. Read and validate gitignored `routes.jsonc` and `.dev.vars`. `sink:add` reads the destination URL through concealed input. `sub:add` generates its private values and resolves the HTTP origin or email base address for the selected source.
 2. Write the local desired state. Routing and hash-only subscription data go to `routes.jsonc`; Worker-readable secrets go to `.dev.vars`, which is kept at mode `600`. The commands do not populate Miniflare's local KV.
 3. Print anything that belongs in your password manager. In particular, the raw incoming slug is not added to `.dev.vars`, because the Worker only needs its hash.
 4. Ask before changing production. Approval installs any new Wrangler secret, then runs `pnpm sync` to compare `routes.jsonc` with remote Worker KV.
@@ -175,9 +181,11 @@ If every prompt is approved, no later sync is needed. Declining a production pro
 
 `pnpm sink:add <name> discord` is the guided Discord path. It reads the webhook URL from concealed input, validates that it is a Discord webhook, derives `SINK_<NAME>_URL`, appends a sink containing only that secret reference to `routes.jsonc`, and mirrors the URL into the gitignored `.dev.vars`. It then offers to install the same value as a Wrangler secret, preview the KV plan, and apply it.
 
+`pnpm sink:add <name> webhook` adds a generic signed destination. It reads a public HTTPS endpoint without echoing it, generates a separate HMAC key, writes both values only to `.dev.vars`, stores their secret names in `routes.jsonc`, and offers one bulk Wrangler installation before KV sync. Save the endpoint under `SINK_<NAME>_URL` and the generated signing key under `SINK_<NAME>_SIGNING_SECRET` when the command prints the password-manager handoff.
+
 The sink name is a stable routing label, not a description of what feeds it. `discord` is a sensible first name. If several Discord destinations exist, names such as `discord-personal` and `discord-builds` produce independent `SINK_DISCORD_PERSONAL_URL` and `SINK_DISCORD_BUILDS_URL` secrets. Subscriptions refer to these names and remain independent of the sink implementation.
 
-The command refuses to replace an existing sink or secret. The raw Discord URL never enters `routes.jsonc`, KV, process arguments, or command output. Save it in your password manager under the derived key printed by the command.
+The command refuses to replace an existing sink or secret. A raw destination URL never enters `routes.jsonc`, KV, process arguments, or command output. Save it in your password manager under the derived key printed by the command.
 
 Pass `-y` or `--yes` to skip the production confirmation prompts. The URL is still read through concealed input when interactive, or from stdin for automation.
 
@@ -262,6 +270,21 @@ The `--events` value accepts comma-separated profiles. Profiles compose by set u
 The base URL resolves from an explicit `--base-url`, then the value already saved in `routes.jsonc`, then the single production custom domain attached to the Worker named in `wrangler.jsonc`. Automatic discovery uses `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; an absent or ambiguous domain produces an error asking for `--base-url`.
 
 With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and KV route are live.
+
+### Structured CloudEvents and signed webhook delivery
+
+Create a generic route and destination with the guided commands:
+
+```sh
+pnpm sink:add automation webhook
+pnpm sub:add automation-events cloudevents --sink automation
+```
+
+CloudEvents ingress accepts only `POST` requests with `application/cloudevents+json`. The envelope must use `specversion: "1.0"` and contain nonempty `id`, `source`, and `type` strings. Sign the exact UTF-8 request bytes with the subscription HMAC and send the lowercase digest as `X-Hookrelay-Signature-256: sha256=<hex>`. The optional `time`, `subject`, `title`, `severity`, `url`, and `data` fields become the normalized event; a missing severity is `info`, invalid or private URLs are omitted, and the complete verified envelope remains available as raw data.
+
+The webhook sink sends `application/cloudevents+json` without following redirects. Its `Idempotency-Key` and `X-Hookrelay-Delivery-Id` remain stable for the same persisted event and sink across automatic or manual retries. `X-Hookrelay-Event-Id` identifies the persisted event, while the envelope data includes the current delivery generation and attempt. `X-Hookrelay-Signature-256` is HMAC-SHA256 over the exact outbound body using `signingSecretEnv`; receivers should verify the bytes before parsing JSON and deduplicate on the idempotency key.
+
+For staged ingress-key rotation, add the next Wrangler secret name to `auth.alternateSecretEnvs`, sync it, switch senders, then remove the old reference. Hookrelay tries every available referenced key without exposing which one matched.
 
 ### Forwarding email notifications
 
@@ -421,6 +444,15 @@ curl -s -X POST \
 curl -s -X POST -H 'content-type: application/json' \
   https://hooks.example.com/hook/uptime/<your-uptime-slug> \
   -d @test/fixtures/uptime/down.json
+
+# Structured CloudEvents
+BODY='{"specversion":"1.0","id":"smoke-1","source":"urn:example:smoke","type":"example.smoke","data":{"message":"hello"}}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac "$HMAC_CLOUDEVENTS_SMOKE" -hex | awk '{print $2}')
+curl -s -X POST \
+  -H 'content-type: application/cloudevents+json' \
+  -H "x-hookrelay-signature-256: sha256=$SIG" \
+  https://hooks.example.com/hook/cloudevents/<your-cloudevents-slug> \
+  -d "$BODY"
 ```
 
 Expected for each webhook command: it returns `{"ok":true,"eventId":"..."}` after the event and delivery intent are durable. The event appears at `/admin/events`, normally moving from `queued` or `processing` to `delivered` within seconds.
@@ -484,7 +516,7 @@ To support a new destination ("Slack"):
    const sink: Sink<Config> = {
      type: 'slack',
      configSchema,
-     async send(event, config, env, fetchFn) {
+     async send(event, config, env, _context, fetchFn) {
        const url = (env as any)[config.urlEnv]
        if (!url) throw new Error(`slack webhook url not set: ${config.urlEnv}`)
        await postJson(url, { text: `*${event.title}*\n${event.body}` }, { fetch: fetchFn })

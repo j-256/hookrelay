@@ -7,6 +7,10 @@ function toHex(buf: ArrayBuffer): string {
   return out
 }
 
+export async function sha256Hex(body: Uint8Array): Promise<string> {
+  return toHex(await crypto.subtle.digest('SHA-256', body))
+}
+
 export async function hmacSha256Hex(secret: string, body: Uint8Array): Promise<string> {
   const key = await crypto.subtle.importKey(
     'raw',
@@ -17,6 +21,26 @@ export async function hmacSha256Hex(secret: string, body: Uint8Array): Promise<s
   )
   const sig = await crypto.subtle.sign('HMAC', key, body)
   return toHex(sig)
+}
+
+export function parseHmacSha256Header(value: string | null): string | null {
+  const match = /^sha256=([a-f0-9]{64})$/.exec(value ?? '')
+  return match?.[1] ?? null
+}
+
+export async function hmacSha256MatchesAny(
+  secrets: readonly string[],
+  body: Uint8Array,
+  provided: string,
+): Promise<boolean> {
+  const expectedSignatures = await Promise.all(
+    secrets.map((secret) => hmacSha256Hex(secret, body)),
+  )
+  let matches = false
+  for (const expected of expectedSignatures) {
+    matches = timingSafeEqualHex(expected, provided) || matches
+  }
+  return matches
 }
 
 export function timingSafeEqualString(a: string, b: string): boolean {

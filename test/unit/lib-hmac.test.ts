@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { hmacSha256Hex, timingSafeEqualHex } from '../../src/lib/hmac'
+import {
+  hmacSha256Hex,
+  hmacSha256MatchesAny,
+  parseHmacSha256Header,
+  sha256Hex,
+  timingSafeEqualHex,
+} from '../../src/lib/hmac'
 
 describe('hmacSha256Hex', () => {
   it('produces stable hex digest for known inputs', async () => {
@@ -12,6 +18,28 @@ describe('hmacSha256Hex', () => {
     const a = await hmacSha256Hex('secret-a', new TextEncoder().encode('hello'))
     const b = await hmacSha256Hex('secret-b', new TextEncoder().encode('hello'))
     expect(a).not.toBe(b)
+  })
+})
+
+describe('generic digest and signature helpers', () => {
+  it('produces the standard SHA-256 digest vector', async () => {
+    expect(await sha256Hex(new TextEncoder().encode('hello')))
+      .toBe('2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824')
+  })
+
+  it('parses only canonical lowercase HMAC headers', () => {
+    const digest = 'a'.repeat(64)
+    expect(parseHmacSha256Header(`sha256=${digest}`)).toBe(digest)
+    expect(parseHmacSha256Header(`SHA256=${digest}`)).toBeNull()
+    expect(parseHmacSha256Header(`sha256=${digest.toUpperCase()}`)).toBeNull()
+    expect(parseHmacSha256Header('sha256=abc')).toBeNull()
+  })
+
+  it('matches any available rotation secret', async () => {
+    const body = new TextEncoder().encode('payload')
+    const signature = await hmacSha256Hex('next', body)
+    await expect(hmacSha256MatchesAny(['primary', 'next'], body, signature)).resolves.toBe(true)
+    await expect(hmacSha256MatchesAny(['primary'], body, signature)).resolves.toBe(false)
   })
 })
 

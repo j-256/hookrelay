@@ -20,6 +20,13 @@ const baseEvent: NormalizedEvent = {
   raw: {},
 }
 
+const deliveryContext = {
+  eventId: 'github:d-1',
+  sinkName: 'discord',
+  generation: 1,
+  attempt: 1,
+}
+
 describe('discord sink', () => {
   it('config schema accepts {urlEnv} and rejects extras', () => {
     expect(() => discord.configSchema.parse({ urlEnv: 'X' })).not.toThrow()
@@ -39,7 +46,7 @@ describe('discord sink', () => {
       expect(parsed.embeds[0].color).toBe(0xfee75c)
       return new Response(null, { status: 204 })
     }) as unknown as typeof fetch
-    await discord.send(baseEvent, { urlEnv: URL_ENV }, env, fetchMock)
+    await discord.send(baseEvent, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)
   })
 
   it('maps severity to embed color', async () => {
@@ -56,7 +63,7 @@ describe('discord sink', () => {
         expect(parsed.embeds[0].color).toBe(expected)
         return new Response(null, { status: 204 })
       }) as unknown as typeof fetch
-      await discord.send({ ...baseEvent, severity }, { urlEnv: URL_ENV }, env, fetchMock)
+      await discord.send({ ...baseEvent, severity }, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)
     }
   })
 
@@ -67,15 +74,21 @@ describe('discord sink', () => {
       expect(parsed.embeds[0].description.length).toBe(4096)
       return new Response(null, { status: 204 })
     }) as unknown as typeof fetch
-    await discord.send({ ...baseEvent, body: long }, { urlEnv: URL_ENV }, env, fetchMock)
+    await discord.send({ ...baseEvent, body: long }, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)
   })
 
   it('throws when urlEnv is unset', async () => {
-    await expect(discord.send(baseEvent, { urlEnv: 'NOT_SET' }, env, vi.fn() as unknown as typeof fetch)).rejects.toThrow(/NOT_SET/)
+    await expect(discord.send(
+      baseEvent,
+      { urlEnv: 'NOT_SET' },
+      env,
+      deliveryContext,
+      vi.fn() as unknown as typeof fetch,
+    )).rejects.toThrow(/NOT_SET/)
   })
 
   it('throws on non-2xx response', async () => {
     const fetchMock = vi.fn(async () => new Response('boom', { status: 502 })) as unknown as typeof fetch
-    await expect(discord.send(baseEvent, { urlEnv: URL_ENV }, env, fetchMock)).rejects.toThrow(/502/)
+    await expect(discord.send(baseEvent, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)).rejects.toThrow(/502/)
   })
 })

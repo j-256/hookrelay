@@ -27,7 +27,7 @@ const sink: Sink<Config> = {
   type: 'ntfy',
   configSchema,
 
-  async send(event, config, env: Env, fetchFn) {
+  async send(event, config, env: Env, _context, fetchFn) {
     const server = config.server ?? 'https://ntfy.sh'
     const url = `${server}/${encodeURIComponent(config.topic)}`
     const headers: Record<string, string> = {
