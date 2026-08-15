@@ -1,6 +1,6 @@
 import type { Env } from '../index'
 import { redriveDelivery } from '../delivery'
-import type { DeliveryStatus, FanoutResults } from '../types'
+import type { DeliveryDecisionReason, DeliveryStatus, FanoutResults } from '../types'
 import { verifyAccessJwt } from './access'
 import { ADMIN_STYLES } from './styles'
 
@@ -79,6 +79,7 @@ interface DeliveryRow {
   status: DeliveryStatus
   attempts: number
   last_error: string | null
+  decision_reason: DeliveryDecisionReason | null
   updated_at: string
 }
 
@@ -135,7 +136,8 @@ function buildEventWhere(f: Filters): { clause: string; binds: unknown[] } {
     )`)
     where.push(`NOT EXISTS (
       SELECT 1 FROM deliveries delivery_filter
-      WHERE delivery_filter.event_id = events.id AND delivery_filter.status <> 'delivered'
+      WHERE delivery_filter.event_id = events.id
+        AND delivery_filter.status NOT IN ('delivered', 'filtered')
     )`)
   }
   return {
@@ -165,7 +167,7 @@ async function queryEvents(env: Env, f: Filters): Promise<EventPage> {
 
   const placeholders = rows.map(() => '?').join(', ')
   const deliveries = await env.EVENTS_DB.prepare(
-    `SELECT event_id, sink_name, status, attempts, last_error, updated_at
+    `SELECT event_id, sink_name, status, attempts, last_error, decision_reason, updated_at
      FROM deliveries WHERE event_id IN (${placeholders}) ORDER BY sink_name`,
   )
     .bind(...rows.map((row) => row.id))
@@ -174,10 +176,11 @@ async function queryEvents(env: Env, f: Filters): Promise<EventPage> {
   for (const delivery of deliveries.results ?? []) {
     const eventResults = byEvent.get(delivery.event_id) ?? {}
     eventResults[delivery.sink_name] = {
-      ok: delivery.status === 'delivered',
+      ok: delivery.status === 'delivered' || delivery.status === 'filtered',
       status: delivery.status,
       attempts: delivery.attempts,
       ...(delivery.last_error ? { errMsg: delivery.last_error } : {}),
+      ...(delivery.decision_reason ? { decisionReason: delivery.decision_reason } : {}),
       updatedAt: delivery.updated_at,
     }
     byEvent.set(delivery.event_id, eventResults)
@@ -246,8 +249,9 @@ function eventsHref(f: Filters, overrides: Partial<Filters> = {}): string {
   return `/admin/events${query ? `?${query}` : ''}`
 }
 
-function deliveryTone(status: string): 'success' | 'warning' | 'danger' {
+function deliveryTone(status: string): 'success' | 'warning' | 'danger' | 'neutral' {
   if (status === 'delivered') return 'success'
+  if (status === 'filtered') return 'neutral'
   if (status === 'exhausted' || status === 'failed') return 'danger'
   return 'warning'
 }
@@ -270,6 +274,9 @@ function renderDelivery(
   const error = result.errMsg
     ? `<p class="delivery-error">${escapeHtml(result.errMsg)}</p>`
     : ''
+  const decision = result.decisionReason
+    ? `<div><dt>Decision</dt><dd>${escapeHtml(result.decisionReason)}</dd></div>`
+    : ''
   return `<div class="delivery-row">
     <details class="delivery-details"${retryable ? ' open' : ''}>
       <summary class="status-pill status-pill--${tone}">
@@ -280,6 +287,7 @@ function renderDelivery(
         <dl class="delivery-facts">
           <div><dt>Attempts</dt><dd>${escapeHtml(attempts)}</dd></div>
           <div><dt>Updated</dt><dd>${updatedAt}</dd></div>
+          ${decision}
         </dl>
         ${error}
       </div>
@@ -406,7 +414,7 @@ function renderPage(result: EventPage, f: Filters): string {
         ${renderQuickView(f, undefined, 'All events')}
         ${renderQuickView(f, 'attention', 'Needs attention')}
         ${renderQuickView(f, 'active', 'In progress')}
-        ${renderQuickView(f, 'delivered', 'Fully delivered')}
+        ${renderQuickView(f, 'delivered', 'Fully handled')}
       </nav>
       <form class="filters" method="get" action="/admin/events">
         <label class="field field-search">
@@ -441,7 +449,7 @@ function renderPage(result: EventPage, f: Filters): string {
             <option value="">Any state</option>
             <option value="attention"${f.delivery === 'attention' ? ' selected' : ''}>Needs attention</option>
             <option value="active"${f.delivery === 'active' ? ' selected' : ''}>In progress</option>
-            <option value="delivered"${f.delivery === 'delivered' ? ' selected' : ''}>Fully delivered</option>
+            <option value="delivered"${f.delivery === 'delivered' ? ' selected' : ''}>Fully handled</option>
           </select>
         </label>
         <button class="filter-submit" type="submit">Apply</button>

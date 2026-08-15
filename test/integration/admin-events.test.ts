@@ -41,7 +41,7 @@ function bypassAccess() {
 
 async function insertDelivery(
   eventId: string,
-  status: 'queued' | 'delivered' | 'exhausted',
+  status: 'queued' | 'delivered' | 'filtered' | 'exhausted',
   sinkName = 'phone',
   lastError: string | null = null,
 ) {
@@ -143,6 +143,29 @@ describe('GET /admin/events', () => {
     const deliveredHtml = await delivered.text()
     expect(deliveredHtml).toContain('statuspage:s1')
     expect(deliveredHtml).not.toContain('github:d2')
+  })
+
+  it('treats filtered sink decisions as fully handled and explains them', async () => {
+    bypassAccess()
+    await insertDelivery('github:d1', 'delivered', 'discord')
+    const timestamp = '2026-06-06T12:05:00Z'
+    await env.EVENTS_DB.prepare(
+      `INSERT INTO deliveries
+       (event_id, sink_name, status, attempts, decision_reason, created_at, updated_at)
+       VALUES (?, ?, 'filtered', 0, 'sink-filter', ?, ?)`,
+    )
+      .bind('github:d1', 'phone', timestamp, timestamp)
+      .run()
+
+    const response = await worker.fetch(
+      new Request('https://hooks.example.com/admin/events?delivery=delivered'),
+      env,
+      ctx,
+    )
+    const html = await response.text()
+    expect(html).toContain('github:d1')
+    expect(html).toContain('phone: filtered')
+    expect(html).toContain('<dt>Decision</dt><dd>sink-filter</dd>')
   })
 
   it('shows exact result counts and navigation in both directions', async () => {

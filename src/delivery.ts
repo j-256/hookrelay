@@ -1,7 +1,14 @@
 import { dispatchSink } from './fanout'
 import type { Env } from './index'
 import { loadNormalizedEvent, updateFanoutResult } from './persistence'
-import type { DeliveryMessage, DeliveryStatus, FanoutResult, FanoutResults } from './types'
+import type {
+  DeliveryDecisionReason,
+  DeliveryMessage,
+  DeliveryPlan,
+  DeliveryStatus,
+  FanoutResult,
+  FanoutResults,
+} from './types'
 
 export const DELIVERY_QUEUE_NAME = 'hookrelay-delivery'
 export const DELIVERY_DLQ_NAME = 'hookrelay-delivery-dlq'
@@ -19,6 +26,7 @@ interface DeliveryRow {
   status: DeliveryStatus
   attempts: number
   last_error: string | null
+  decision_reason: DeliveryDecisionReason | null
   lease_until: string | null
 }
 
@@ -41,12 +49,14 @@ function displayResult(
   attempts: number,
   updatedAt: string,
   errMsg?: string,
+  decisionReason?: DeliveryDecisionReason,
 ): FanoutResult {
   return {
-    ok: status === 'delivered',
+    ok: status === 'delivered' || status === 'filtered',
     status,
     attempts,
     ...(errMsg ? { errMsg } : {}),
+    ...(decisionReason ? { decisionReason } : {}),
     updatedAt,
   }
 }
@@ -133,7 +143,7 @@ async function getDelivery(
   sinkName: string,
 ): Promise<DeliveryRow | null> {
   return env.EVENTS_DB.prepare(
-    `SELECT event_id, sink_name, generation, status, attempts, last_error, lease_until
+    `SELECT event_id, sink_name, generation, status, attempts, last_error, decision_reason, lease_until
      FROM deliveries WHERE event_id = ? AND sink_name = ?`,
   )
     .bind(eventId, sinkName)
@@ -143,10 +153,13 @@ async function getDelivery(
 export async function ensureDeliveryRows(
   env: Env,
   eventId: string,
-  sinkNames: string[],
+  requestedPlans: readonly (string | DeliveryPlan)[],
 ): Promise<void> {
-  const uniqueSinkNames = [...new Set(sinkNames)]
-  if (uniqueSinkNames.length === 0) return
+  const plans = requestedPlans.map((plan): DeliveryPlan => (
+    typeof plan === 'string' ? { sinkName: plan, deliver: true } : plan
+  ))
+  const uniquePlans = [...new Map(plans.map((plan) => [plan.sinkName, plan])).values()]
+  if (uniquePlans.length === 0) return
   const event = await env.EVENTS_DB.prepare(
     'SELECT received_at, fanout_results FROM events WHERE id = ?',
   )
@@ -154,14 +167,14 @@ export async function ensureDeliveryRows(
     .first<{ received_at: string; fanout_results: string }>()
   if (!event) throw new Error(`event not found while creating deliveries: ${eventId}`)
   const legacy = parseFanoutResults(event.fanout_results)
-  for (let offset = 0; offset < uniqueSinkNames.length; offset += OUTBOX_BATCH_SIZE) {
-    const chunk = uniqueSinkNames.slice(offset, offset + OUTBOX_BATCH_SIZE)
+  for (let offset = 0; offset < uniquePlans.length; offset += OUTBOX_BATCH_SIZE) {
+    const chunk = uniquePlans.slice(offset, offset + OUTBOX_BATCH_SIZE)
     await env.EVENTS_DB.batch(
-      chunk.map((sinkName) => {
-        const result = legacy[sinkName]
+      chunk.map((plan) => {
+        const result = legacy[plan.sinkName]
         const status: DeliveryStatus = result
           ? result.ok ? 'delivered' : 'exhausted'
-          : 'pending'
+          : plan.deliver ? 'pending' : 'filtered'
         const attempts = typeof result?.attempts === 'number' &&
           Number.isInteger(result.attempts) &&
           result.attempts >= 0
@@ -170,14 +183,15 @@ export async function ensureDeliveryRows(
         const updatedAt = result?.updatedAt ?? event.received_at
         return env.EVENTS_DB.prepare(
           `INSERT OR IGNORE INTO deliveries
-           (event_id, sink_name, status, attempts, last_error, created_at, updated_at, delivered_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+           (event_id, sink_name, status, attempts, last_error, decision_reason, created_at, updated_at, delivered_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         ).bind(
           eventId,
-          sinkName,
+          plan.sinkName,
           status,
           attempts,
           result?.errMsg ?? null,
+          status === 'filtered' && !plan.deliver ? plan.decisionReason : null,
           event.received_at,
           updatedAt,
           status === 'delivered' ? updatedAt : null,
@@ -190,13 +204,13 @@ export async function ensureDeliveryRows(
 async function pendingDeliveries(env: Env, eventId?: string): Promise<DeliveryRow[]> {
   const statement = eventId
     ? env.EVENTS_DB.prepare(
-        `SELECT event_id, sink_name, generation, status, attempts, last_error, lease_until
+        `SELECT event_id, sink_name, generation, status, attempts, last_error, decision_reason, lease_until
          FROM deliveries
          WHERE status = 'pending' AND event_id = ?
          ORDER BY updated_at ASC LIMIT ?`,
       ).bind(eventId, OUTBOX_BATCH_SIZE)
     : env.EVENTS_DB.prepare(
-        `SELECT event_id, sink_name, generation, status, attempts, last_error, lease_until
+        `SELECT event_id, sink_name, generation, status, attempts, last_error, decision_reason, lease_until
          FROM deliveries
          WHERE status = 'pending'
          ORDER BY updated_at ASC LIMIT ?`,
@@ -310,9 +324,9 @@ export async function enqueuePendingDeliveries(
 export async function prepareDeliveries(
   env: Env,
   eventId: string,
-  sinkNames: string[],
+  plans: readonly (string | DeliveryPlan)[],
 ): Promise<EnqueueSummary> {
-  await ensureDeliveryRows(env, eventId, sinkNames)
+  await ensureDeliveryRows(env, eventId, plans)
   return enqueuePendingDeliveries(env, eventId)
 }
 

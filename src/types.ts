@@ -1,4 +1,12 @@
-export type Severity = 'debug' | 'info' | 'warning' | 'error' | 'critical'
+export const SEVERITIES = ['debug', 'info', 'warning', 'error', 'critical'] as const
+export type Severity = (typeof SEVERITIES)[number]
+
+export const DELIVERY_DECISION_REASONS = [
+  'source-record-only',
+  'subscription-filter',
+  'sink-filter',
+] as const
+export type DeliveryDecisionReason = (typeof DELIVERY_DECISION_REASONS)[number]
 
 export interface NormalizedEvent {
   source: string
@@ -11,6 +19,7 @@ export interface NormalizedEvent {
   url?: string
   severity?: Severity
   shouldDeliver?: boolean
+  deliveryDecisionReason?: DeliveryDecisionReason
   raw: unknown
 }
 
@@ -30,9 +39,17 @@ export interface EventTypeFilter {
   exclude?: string[]
 }
 
-export interface SubscriptionFilter {
-  eventTypes: EventTypeFilter
+export interface SeverityFilter {
+  include?: Severity[]
+  exclude?: Severity[]
 }
+
+export interface EventFilter {
+  eventTypes?: EventTypeFilter
+  severities?: SeverityFilter
+}
+
+export type SubscriptionFilter = EventFilter
 
 export interface Subscription {
   name: string
@@ -43,6 +60,7 @@ export interface Subscription {
   fallbackUrl?: string
   email?: EmailSubscriptionConfig
   filter?: SubscriptionFilter
+  sinkFilters?: Record<string, EventFilter>
 }
 
 export type DeliveryStatus =
@@ -51,6 +69,7 @@ export type DeliveryStatus =
   | 'processing'
   | 'retrying'
   | 'delivered'
+  | 'filtered'
   | 'exhausted'
 
 export interface FanoutResult {
@@ -58,10 +77,15 @@ export interface FanoutResult {
   status?: DeliveryStatus
   attempts?: number
   errMsg?: string
+  decisionReason?: DeliveryDecisionReason
   updatedAt?: string
 }
 
 export type FanoutResults = Record<string, FanoutResult>
+
+export type DeliveryPlan =
+  | { sinkName: string; deliver: true }
+  | { sinkName: string; deliver: false; decisionReason: DeliveryDecisionReason }
 
 export interface DeliveryMessage {
   version: 1

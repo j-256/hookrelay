@@ -15,6 +15,7 @@ import {
 import { normalizeEmailLinkLabel } from '../src/lib/email-links'
 import { EVENT_TYPE_FILTER_PATTERN_RE } from '../src/lib/event-filter'
 import { normalizeFallbackUrl } from '../src/lib/public-url'
+import { SEVERITIES } from '../src/types'
 import { KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { githubEventTypeFilter, parseGitHubEventSelection } from './github-events'
 import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
@@ -34,11 +35,25 @@ const eventTypeFilterSchema = z
     message: 'eventTypes requires include or exclude',
   })
 
-const subscriptionFilterSchema = z
+const severityFilterSchema = z
   .object({
-    eventTypes: eventTypeFilterSchema,
+    include: z.array(z.enum(SEVERITIES)).min(1).optional(),
+    exclude: z.array(z.enum(SEVERITIES)).min(1).optional(),
   })
   .strict()
+  .refine((filter) => filter.include !== undefined || filter.exclude !== undefined, {
+    message: 'severities requires include or exclude',
+  })
+
+const eventFilterSchema = z
+  .object({
+    eventTypes: eventTypeFilterSchema.optional(),
+    severities: severityFilterSchema.optional(),
+  })
+  .strict()
+  .refine((filter) => filter.eventTypes !== undefined || filter.severities !== undefined, {
+    message: 'filter requires eventTypes or severities',
+  })
 
 const subSchema = z
   .object({
@@ -64,7 +79,8 @@ const subSchema = z
       })
       .strict()
       .optional(),
-    filter: subscriptionFilterSchema.optional(),
+    filter: eventFilterSchema.optional(),
+    sinkFilters: z.record(z.string().min(1), eventFilterSchema).optional(),
     setup: z
       .object({
         github: z
@@ -214,9 +230,31 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
     } else if (sub.email) {
       issues.push(`sub '${sub.name}': email configuration is only valid for email subscriptions`)
     }
-    for (const [mode, patterns] of Object.entries(sub.filter?.eventTypes ?? {})) {
-      if (patterns && new Set(patterns).size !== patterns.length) {
-        issues.push(`sub '${sub.name}': duplicate event type ${mode} pattern`)
+    if (new Set(sub.sinks).size !== sub.sinks.length) {
+      issues.push(`sub '${sub.name}': duplicate sink reference`)
+    }
+    const namedFilters = [
+      ['subscription', sub.filter] as const,
+      ...Object.entries(sub.sinkFilters ?? {}).map(([sinkName, filter]) => [
+        `sink '${sinkName}'`,
+        filter,
+      ] as const),
+    ]
+    for (const [label, filter] of namedFilters) {
+      for (const [mode, patterns] of Object.entries(filter?.eventTypes ?? {})) {
+        if (patterns && new Set(patterns).size !== patterns.length) {
+          issues.push(`sub '${sub.name}' ${label}: duplicate event type ${mode} pattern`)
+        }
+      }
+      for (const [mode, severities] of Object.entries(filter?.severities ?? {})) {
+        if (severities && new Set(severities).size !== severities.length) {
+          issues.push(`sub '${sub.name}' ${label}: duplicate severity ${mode} value`)
+        }
+      }
+    }
+    for (const sinkName of Object.keys(sub.sinkFilters ?? {})) {
+      if (!sub.sinks.includes(sinkName)) {
+        issues.push(`sub '${sub.name}': sink filter '${sinkName}' is not listed in sinks[]`)
       }
     }
     for (const sinkName of sub.sinks) {
@@ -344,6 +382,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
           }
         : {}),
       ...(runtimeFilter ? { filter: runtimeFilter } : {}),
+      ...(sub.sinkFilters ? { sinkFilters: sub.sinkFilters } : {}),
     })
     const existing = current.subs[key]
     const existingCanon = existing != null ? canonicalizeJson(existing) : null

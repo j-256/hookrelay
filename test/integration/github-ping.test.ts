@@ -42,7 +42,7 @@ afterEach(async () => {
 })
 
 describe('GitHub ping delivery', () => {
-  it('persists the ping without creating sink deliveries', async () => {
+  it('persists the ping with an explicit source record-only decision', async () => {
     const payload = JSON.stringify({
       zen: 'Keep it logically awesome.',
       hook_id: 123,
@@ -75,18 +75,18 @@ describe('GitHub ping delivery', () => {
     )
       .bind('github:ping-delivery-1')
       .first<{ id: string; type: string; title: string }>()
-    const deliveries = await env.EVENTS_DB.prepare(
-      'SELECT COUNT(*) AS count FROM deliveries WHERE event_id = ?',
+    const delivery = await env.EVENTS_DB.prepare(
+      'SELECT status, decision_reason FROM deliveries WHERE event_id = ? AND sink_name = ?',
     )
-      .bind('github:ping-delivery-1')
-      .first<{ count: number }>()
+      .bind('github:ping-delivery-1', 'phone')
+      .first<{ status: string; decision_reason: string | null }>()
 
     expect(event).toMatchObject({
       id: 'github:ping-delivery-1',
       type: 'ping.event',
       title: 'example-owner/example-repo: ping.event',
     })
-    expect(deliveries?.count).toBe(0)
+    expect(delivery).toEqual({ status: 'filtered', decision_reason: 'source-record-only' })
   })
 
   it('accepts a ping signed with an alternate secret', async () => {

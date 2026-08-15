@@ -54,6 +54,18 @@ const FILTERED_ROUTES = ROUTES.replace(
       },`,
 )
 
+const SINK_POLICY_ROUTES = FILTERED_ROUTES.replace(
+  '      "sinks": ["phone"],\n      "auth":',
+  `      "sinks": ["phone"],
+      "sinkFilters": {
+        "phone": {
+          "eventTypes": { "include": ["pull_request.*"] },
+          "severities": { "include": ["error", "critical"] }
+        }
+      },
+      "auth":`,
+)
+
 const ACTIVITY_ROUTES = ROUTES.replace(
   '"eventProfiles": ["recommended", "stars"]',
   '"eventProfiles": ["activity"]',
@@ -144,6 +156,16 @@ describe('parseRoutes', () => {
       eventTypes: {
         include: ['pull_request.opened', 'pull_request.closed'],
         exclude: ['pull_request.synchronize'],
+      },
+    })
+  })
+
+  it('parses per-sink event type and severity filters', () => {
+    const cfg = parseRoutes(SINK_POLICY_ROUTES)
+    expect(cfg.subs[1]?.sinkFilters).toEqual({
+      phone: {
+        eventTypes: { include: ['pull_request.*'] },
+        severities: { include: ['error', 'critical'] },
       },
     })
   })
@@ -310,7 +332,29 @@ describe('validateRoutes', () => {
       sinkSchemas: { ntfy: { topic: 'string' } } as any,
       secretsAvailable: new Set(['HMAC_GH']),
     })
-    expect(issues).toContain("sub 'gh': duplicate event type include pattern")
+    expect(issues).toContain("sub 'gh' subscription: duplicate event type include pattern")
+  })
+
+  it('rejects sink filters for sinks not selected by the subscription', () => {
+    const cfg = parseRoutes(SINK_POLICY_ROUTES.replace('"phone": {', '"missing": {'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH']),
+    })
+    expect(issues).toContain("sub 'gh': sink filter 'missing' is not listed in sinks[]")
+  })
+
+  it('reports duplicate per-sink severity values', () => {
+    const cfg = parseRoutes(SINK_POLICY_ROUTES.replace('"error", "critical"', '"error", "error"'))
+    const issues = validateRoutes(cfg, {
+      knownSources: new Set(['statuspage', 'github']),
+      knownSinkTypes: new Set(['ntfy']),
+      sinkSchemas: { ntfy: { topic: 'string' } } as any,
+      secretsAvailable: new Set(['HMAC_GH']),
+    })
+    expect(issues).toContain("sub 'gh' sink 'phone': duplicate severity include value")
   })
 
   it('reports invalid local GitHub setup metadata', () => {
@@ -442,6 +486,18 @@ describe('computePlan', () => {
       eventTypes: {
         include: ['pull_request.opened', 'pull_request.closed'],
         exclude: ['pull_request.synchronize'],
+      },
+    })
+  })
+
+  it('serializes per-sink filters into runtime subscription configuration', () => {
+    const cfg = parseRoutes(SINK_POLICY_ROUTES)
+    const plan = computePlan(cfg, { subs: {}, sinks: {} })
+    const githubPut = plan.subPuts.find((entry) => entry.key === `sub:sha256:${GITHUB_HASH}`)
+    expect(JSON.parse(githubPut!.value).sinkFilters).toEqual({
+      phone: {
+        eventTypes: { include: ['pull_request.*'] },
+        severities: { include: ['error', 'critical'] },
       },
     })
   })

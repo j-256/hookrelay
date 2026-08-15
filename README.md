@@ -6,7 +6,7 @@ A small, extensible notification receiver for Cloudflare Workers. Drop in adapte
 
 ## What it does
 
-Receives webhooks at `/hook/<source>/<slug>` or MIME email through Cloudflare Email Routing, normalizes the payload, persists every event to D1+R2, then queues one durable delivery per subscription sink (ntfy push, Discord channel, etc). Failed sink requests retry independently, and exhausted deliveries remain visible and manually retryable in the admin page.
+Receives webhooks at `/hook/<source>/<slug>` or MIME email through Cloudflare Email Routing, normalizes the payload, persists every event to D1+R2, then records one durable decision per configured sink. Allowed deliveries are queued independently, policy-filtered destinations remain visible with their decision reason, and exhausted deliveries remain manually retryable in the admin page.
 
 Built-in sources (v1):
 - Statuspage incidents and scheduled maintenance (Atlassian)
@@ -148,7 +148,8 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | `subs[].fallbackUrl` | Optional public HTTPS URL used only when a source event has no more specific target. Credentials, query strings, and fragments are rejected so the value remains safe to publish. |
 | `subs[].email.allowedSenders` | Optional email noise filter containing exact mailboxes or exact domains written as `@example.com`. Both the SMTP envelope sender and parsed `From`/`Sender` identities must match when the list is nonempty. |
 | `subs[].email.primaryLinkLabels` | Exact, case-insensitive visible labels allowed to select one email deep link, such as `View incident`. Every email URL is removed from sink-visible text, and zero or multiple distinct matching targets fail closed to `fallbackUrl`. |
-| `subs[].filter.eventTypes` | Optional delivery filter over normalized event types. `include` and `exclude` accept exact values, `*`, or trailing wildcards such as `pull_request.*`; exclusion wins. Nonmatching events remain persisted but do not create sink deliveries. |
+| `subs[].filter` | Optional subscription-wide delivery filter over normalized event types and severities. Event-type `include` and `exclude` accept exact values, `*`, or trailing wildcards such as `pull_request.*`; severity values are `debug`, `info`, `warning`, `error`, and `critical`. Exclusion wins within each dimension and every configured dimension must pass. |
+| `subs[].sinkFilters` | Optional per-sink filters keyed by names present in `subs[].sinks`. The subscription filter runs first, then each selected sink's filter, so one event can be delivered to one destination and deliberately filtered from another. |
 | `subs[].setup` | Local-only provider setup metadata, including a GitHub repository and event profile names. `pnpm sync` validates it but does not write it to KV. |
 | `sinks[].type: ntfy` -> `topic` | **Bearer secret for unreserved topics.** Anyone who knows an unreserved topic can read its notifications. Use a long random topic and treat it like a password. |
 | `sinks[].type: ntfy` -> `server` | Optional. Base URL of a self-hosted ntfy server; defaults to `https://ntfy.sh`. |
@@ -234,11 +235,21 @@ GitHub event profiles can supply a shared filter for every subscription using th
   "eventTypes": {
     "include": ["push.*", "pull_request.opened", "pull_request.closed"],
     "exclude": ["push.deleted"]
+  },
+  "severities": {
+    "exclude": ["debug"]
+  }
+},
+"sinkFilters": {
+  "ntfy:urgent": {
+    "severities": {
+      "include": ["error", "critical"]
+    }
   }
 }
 ```
 
-An omitted `include` accepts every type, an omitted `exclude` rejects none, and at least one must be present. Filtering happens after authentication and normalization. Filtered events are still recorded in D1 and R2 and receive the ordinary successful sender response, but they do not create delivery rows or queue messages. An explicit subscription filter replaces its profile-derived filter, can suppress delivery, and cannot re-enable an event that an adapter has already marked record-only.
+An omitted `include` accepts every value, an omitted `exclude` rejects none, and at least one must be present in each configured dimension. Filtering happens after authentication and normalization. Every configured sink gets a durable decision row: matching destinations are queued, while nonmatching destinations receive a terminal `filtered` decision with `subscription-filter` or `sink-filter` as its reason. Adapter record-only events use `source-record-only`, and no configuration filter can re-enable them. All filtered events remain recorded in D1 and R2 and receive the ordinary successful sender response. An explicit subscription filter replaces its profile-derived filter.
 
 For a GitHub repository, pass the repository separately instead of deriving it from the subscription name. Subscription names may still use a readable namespace such as `github:example-owner/example-repo`:
 
@@ -361,7 +372,7 @@ Statuspage incident and scheduled-maintenance updates use the same `statuspage` 
 
 ## Durable delivery
 
-The webhook request writes the event to D1 and R2 and creates one D1 delivery row per sink before returning `200`. It then publishes a compact queue message containing only the event ID, sink name, and delivery generation; the consumer reloads the normalized event from R2. A failure in one sink never resends a sink that already succeeded.
+The webhook request writes the event to D1 and R2 and creates one D1 delivery decision per configured sink before returning `200`. Allowed destinations start as `pending`; policy-rejected destinations are terminal `filtered` rows and are never queued. Hookrelay publishes a compact queue message containing only the event ID, sink name, and delivery generation for each pending destination, and the consumer reloads the normalized event from R2. A failure in one sink never resends a sink that already succeeded or re-evaluates a settled filtered decision.
 
 The primary queue retries failures with bounded exponential backoff and honors a valid HTTP `Retry-After` delay. After automatic retries are exhausted, Cloudflare moves the message to `hookrelay-delivery-dlq`, whose consumer marks the D1 row `exhausted`. That final D1 update also retries for the queue's retention window if D1 is unavailable. The Access-protected admin page exposes a retry button for that sink only.
 

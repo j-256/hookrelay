@@ -163,6 +163,43 @@ describe('durable delivery', () => {
     expect(await fanoutResult()).toMatchObject({ ok: false, status: 'queued', attempts: 0 })
   })
 
+  it('persists filtered decisions without publishing queue messages', async () => {
+    const queue = recordingQueue()
+    const result = await prepareDeliveries(withQueue(queue.binding), EVENT_ID, [
+      { sinkName: SINK_NAME, deliver: false, decisionReason: 'sink-filter' },
+    ])
+
+    expect(result).toEqual({ queued: 0, deferred: 0 })
+    expect(queue.messages).toEqual([])
+    await expect(
+      env.EVENTS_DB.prepare(
+        'SELECT status, attempts, decision_reason FROM deliveries WHERE event_id = ? AND sink_name = ?',
+      )
+        .bind(EVENT_ID, SINK_NAME)
+        .first(),
+    ).resolves.toEqual({ status: 'filtered', attempts: 0, decision_reason: 'sink-filter' })
+  })
+
+  it('does not reclassify a settled filtered decision on duplicate ingestion', async () => {
+    const queue = recordingQueue()
+    const testEnv = withQueue(queue.binding)
+    await prepareDeliveries(testEnv, EVENT_ID, [
+      { sinkName: SINK_NAME, deliver: false, decisionReason: 'subscription-filter' },
+    ])
+    await prepareDeliveries(testEnv, EVENT_ID, [
+      { sinkName: SINK_NAME, deliver: true },
+    ])
+
+    expect(queue.messages).toEqual([])
+    await expect(
+      env.EVENTS_DB.prepare(
+        'SELECT status, decision_reason FROM deliveries WHERE event_id = ? AND sink_name = ?',
+      )
+        .bind(EVENT_ID, SINK_NAME)
+        .first(),
+    ).resolves.toEqual({ status: 'filtered', decision_reason: 'subscription-filter' })
+  })
+
   it.each([
     [true, 'delivered'],
     [false, 'exhausted'],

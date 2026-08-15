@@ -1,11 +1,39 @@
 import { prepareDeliveries } from './delivery'
 import type { Env } from './index'
+import { applySubscriptionFilter, eventPassesFilter } from './lib/event-filter'
 import { persistEvent, primaryKey } from './persistence'
-import type { NormalizedEvent } from './types'
+import type { DeliveryPlan, NormalizedEvent, Subscription } from './types'
 
 export interface IngestResult {
   eventId: string
   duplicate: boolean
+}
+
+export interface PlannedEvent {
+  event: NormalizedEvent
+  deliveries: DeliveryPlan[]
+}
+
+export function planEventDeliveries(
+  event: NormalizedEvent,
+  subscription: Subscription,
+): PlannedEvent {
+  const filteredEvent = applySubscriptionFilter(event, subscription.filter)
+  const deliveries = subscription.sinks.map((sinkName): DeliveryPlan => {
+    if (filteredEvent.shouldDeliver === false) {
+      return {
+        sinkName,
+        deliver: false,
+        decisionReason: filteredEvent.deliveryDecisionReason ?? 'source-record-only',
+      }
+    }
+    const sinkFilter = subscription.sinkFilters?.[sinkName]
+    if (sinkFilter && !eventPassesFilter(filteredEvent, sinkFilter)) {
+      return { sinkName, deliver: false, decisionReason: 'sink-filter' }
+    }
+    return { sinkName, deliver: true }
+  })
+  return { event: filteredEvent, deliveries }
 }
 
 export async function ingestEvent(
@@ -14,26 +42,26 @@ export async function ingestEvent(
   rawBody: Uint8Array,
   contentType: string,
   subscriptionHash: string,
-  sinkNames: string[],
+  subscription: Subscription,
 ): Promise<IngestResult> {
+  const planned = planEventDeliveries(event, subscription)
   const persisted = await persistEvent(
     env,
-    event,
+    planned.event,
     rawBody,
     contentType,
     subscriptionHash,
   )
-  const eventId = primaryKey(event)
-  const deliverySinks = event.shouldDeliver === false ? [] : sinkNames
-  const enqueue = await prepareDeliveries(env, eventId, deliverySinks)
+  const eventId = primaryKey(planned.event)
+  const enqueue = await prepareDeliveries(env, eventId, planned.deliveries)
 
   if (enqueue.deferred > 0) {
     console.log(JSON.stringify({
       level: 'warn',
       msg: 'event.delivery.deferred',
       eventId,
-      source: event.source,
-      subName: event.subName,
+      source: planned.event.source,
+      subName: planned.event.subName,
       count: enqueue.deferred,
     }))
   }
@@ -43,9 +71,9 @@ export async function ingestEvent(
       level: 'info',
       msg: 'event.duplicate',
       eventId,
-      source: event.source,
-      subName: event.subName,
-      type: event.type,
+      source: planned.event.source,
+      subName: planned.event.subName,
+      type: planned.event.type,
     }))
     return { eventId, duplicate: true }
   }
@@ -54,11 +82,12 @@ export async function ingestEvent(
     level: 'info',
     msg: 'event.accepted',
     eventId,
-    source: event.source,
-    subName: event.subName,
-    type: event.type,
-    severity: event.severity ?? null,
-    sinks: deliverySinks,
+    source: planned.event.source,
+    subName: planned.event.subName,
+    type: planned.event.type,
+    severity: planned.event.severity ?? null,
+    sinks: planned.deliveries.filter((delivery) => delivery.deliver).map((delivery) => delivery.sinkName),
+    filteredSinks: planned.deliveries.filter((delivery) => !delivery.deliver).map((delivery) => delivery.sinkName),
   }))
   return { eventId, duplicate: false }
 }

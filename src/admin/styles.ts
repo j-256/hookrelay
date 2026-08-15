@@ -537,6 +537,12 @@ export const ADMIN_STYLES = String.raw`
     background: var(--danger-soft);
   }
 
+  .status-pill--neutral {
+    border-color: var(--border-strong);
+    color: var(--text-muted);
+    background: rgba(255, 255, 255, 0.04);
+  }
+
   .status-dot {
     width: 0.42rem;
     height: 0.42rem;

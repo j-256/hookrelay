@@ -2,10 +2,13 @@ import { describe, expect, it } from 'vitest'
 import {
   EVENT_TYPE_FILTER_PATTERN_RE,
   applySubscriptionFilter,
+  eventPassesFilter,
   eventTypeMatchesPattern,
   eventTypePassesFilter,
+  severityPassesFilter,
 } from '../../src/lib/event-filter'
-import type { NormalizedEvent } from '../../src/types'
+import { planEventDeliveries } from '../../src/ingest'
+import type { EventFilter, NormalizedEvent, SeverityFilter, Subscription } from '../../src/types'
 
 const EVENT: NormalizedEvent = {
   source: 'github',
@@ -51,11 +54,58 @@ describe('event type delivery filters', () => {
 
   it('marks only nonmatching deliverable events as record-only', () => {
     const filter = { eventTypes: { include: ['pull_request.closed'] } }
-    expect(applySubscriptionFilter(EVENT, filter)).toEqual({ ...EVENT, shouldDeliver: false })
+    expect(applySubscriptionFilter(EVENT, filter)).toEqual({
+      ...EVENT,
+      shouldDeliver: false,
+      deliveryDecisionReason: 'subscription-filter',
+    })
     expect(applySubscriptionFilter({ ...EVENT, type: 'pull_request.closed' }, filter))
       .toEqual({ ...EVENT, type: 'pull_request.closed' })
     expect(applySubscriptionFilter({ ...EVENT, shouldDeliver: false }, {
       eventTypes: { include: ['pull_request.*'] },
-    })).toEqual({ ...EVENT, shouldDeliver: false })
+    })).toEqual({
+      ...EVENT,
+      shouldDeliver: false,
+      deliveryDecisionReason: 'source-record-only',
+    })
+  })
+
+  it('filters normalized severity with info as the default', () => {
+    const filter: SeverityFilter = { include: ['error', 'critical'] }
+    expect(severityPassesFilter('critical', filter)).toBe(true)
+    expect(severityPassesFilter('warning', filter)).toBe(false)
+    expect(eventPassesFilter(EVENT, { severities: filter })).toBe(false)
+    expect(eventPassesFilter({ ...EVENT, severity: 'error' }, { severities: filter })).toBe(true)
+  })
+
+  it('requires every configured filter dimension to pass', () => {
+    const filter: EventFilter = {
+      eventTypes: { include: ['pull_request.*'] },
+      severities: { exclude: ['debug', 'info'] },
+    }
+    expect(eventPassesFilter({ ...EVENT, severity: 'warning' }, filter)).toBe(true)
+    expect(eventPassesFilter({ ...EVENT, severity: 'info' }, filter)).toBe(false)
+    expect(eventPassesFilter({ ...EVENT, type: 'push.updated', severity: 'warning' }, filter)).toBe(false)
+  })
+
+  it('plans each sink independently after the subscription filter', () => {
+    const subscription: Subscription = {
+      name: EVENT.subName,
+      source: EVENT.source,
+      enabled: true,
+      sinks: ['discord', 'phone'],
+      auth: null,
+      filter: { eventTypes: { include: ['pull_request.*'] } },
+      sinkFilters: {
+        phone: { severities: { include: ['error', 'critical'] } },
+      },
+    }
+    expect(planEventDeliveries({ ...EVENT, severity: 'warning' }, subscription)).toEqual({
+      event: { ...EVENT, severity: 'warning' },
+      deliveries: [
+        { sinkName: 'discord', deliver: true },
+        { sinkName: 'phone', deliver: false, decisionReason: 'sink-filter' },
+      ],
+    })
   })
 })

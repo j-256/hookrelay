@@ -17,6 +17,16 @@
     //   "filter": {
     //     "eventTypes": {
     //       "include": ["email.received"]
+    //     },
+    //     "severities": {
+    //       "exclude": ["debug"]
+    //     }
+    //   },
+    //   "sinkFilters": {
+    //     "ntfy:urgent": {
+    //       "severities": {
+    //         "include": ["error", "critical"]
+    //       }
     //     }
     //   },
     //   "email": {

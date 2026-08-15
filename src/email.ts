@@ -266,7 +266,7 @@ export async function handleEmail(
       rawMessage,
       RAW_EMAIL_CONTENT_TYPE,
       hash,
-      subscription.sinks,
+      subscription,
     )
   } catch (err) {
     if (!(err instanceof EmailRejection)) throw err

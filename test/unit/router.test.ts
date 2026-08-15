@@ -204,7 +204,7 @@ describe('handleHook', () => {
     expect(body.duplicate).toBe(true)
   })
 
-  it('persists record-only events without creating sink deliveries', async () => {
+  it('persists an explicit filtered decision for record-only events', async () => {
     await env.SUBS.put(SUB_KEY, JSON.stringify({ ...sub, sinks: ['phone'] }))
     const res = await handleHook(
       new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
@@ -218,11 +218,13 @@ describe('handleHook', () => {
     const event = await env.EVENTS_DB.prepare('SELECT id FROM events WHERE id = ?')
       .bind('fixture:record-only')
       .first<{ id: string }>()
-    const deliveries = await env.EVENTS_DB.prepare('SELECT COUNT(*) AS count FROM deliveries WHERE event_id = ?')
-      .bind('fixture:record-only')
-      .first<{ count: number }>()
+    const delivery = await env.EVENTS_DB.prepare(
+      'SELECT status, decision_reason FROM deliveries WHERE event_id = ? AND sink_name = ?',
+    )
+      .bind('fixture:record-only', 'phone')
+      .first<{ status: string; decision_reason: string | null }>()
     expect(event?.id).toBe('fixture:record-only')
-    expect(deliveries?.count).toBe(0)
+    expect(delivery).toEqual({ status: 'filtered', decision_reason: 'source-record-only' })
   })
 
   it('persists filtered events while creating deliveries only for matches', async () => {
@@ -262,7 +264,8 @@ describe('handleHook', () => {
       .bind('fixture:filtered-match', 'fixture:filtered-nonmatch')
       .all<{ id: string }>()
     const deliveries = await env.EVENTS_DB.prepare(
-      `SELECT event_id, sink_name FROM deliveries WHERE event_id IN (?, ?) ORDER BY event_id`,
+      `SELECT event_id, sink_name, status, decision_reason
+       FROM deliveries WHERE event_id IN (?, ?) ORDER BY event_id`,
     )
       .bind('fixture:filtered-match', 'fixture:filtered-nonmatch')
       .all<{ event_id: string; sink_name: string }>()
@@ -271,7 +274,18 @@ describe('handleHook', () => {
       'fixture:filtered-nonmatch',
     ])
     expect(deliveries.results).toEqual([
-      { event_id: 'fixture:filtered-match', sink_name: 'phone' },
+      {
+        event_id: 'fixture:filtered-match',
+        sink_name: 'phone',
+        status: 'queued',
+        decision_reason: null,
+      },
+      {
+        event_id: 'fixture:filtered-nonmatch',
+        sink_name: 'phone',
+        status: 'filtered',
+        decision_reason: 'subscription-filter',
+      },
     ])
   })
 
