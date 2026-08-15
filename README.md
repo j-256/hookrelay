@@ -415,6 +415,26 @@ When `operations` is configured, scheduled maintenance detects deliveries that e
 
 The Access-protected `/admin/health` page shows delivery totals, the oldest active delivery, recent redacted signals, alert state, last accepted event per subscription, last successful delivery per sink, and configured retention. From a filtered `Needs attention` view, `Retry matching deliveries` opens a confirmation page that rechecks the filters on POST, requires the browser's same origin, redrives only still-exhausted rows, enforces a fixed batch maximum, and reports succeeded, skipped, and capped selections. Individual retry remains available for a single exhausted sink.
 
+## Retention
+
+Retention is disabled by omission. Add `retention.r2Days` to manage raw and normalized objects under the `events/` R2 prefix, add `retention.d1Days` to prune persisted event metadata, or configure both. Removing `d1Days` stops D1 pruning after KV sync. Removing `r2Days` makes absence of Hookrelay's managed lifecycle rule the desired state, so a confirmed `pnpm retention apply` removes only that rule and stops future managed R2 expiration. Neither disablement path deletes data directly.
+
+The R2 lifecycle workflow reads the `EVENTS_RAW` bucket name from `wrangler.jsonc`, the desired lifetime from `routes.jsonc`, and Cloudflare credentials from `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The token needs the [Workers R2 Storage Write permission](https://developers.cloudflare.com/r2/buckets/object-lifecycles/). Credentials remain in environment headers and never enter command arguments or plan output.
+
+```sh
+pnpm retention plan
+pnpm retention apply
+pnpm retention verify
+pnpm sync
+pnpm sync -y
+```
+
+`plan` performs only a lifecycle GET. `apply` asks before its production PUT unless `-y` is supplied, preserves every unrelated lifecycle rule value-for-value, and adds, replaces, or removes only the stable `hookrelay-events-retention` rule. With `r2Days` configured, `verify` requires that rule to be enabled, scoped to `events/`, age-based, and exactly equal to the configured lifetime. Without `r2Days`, it requires the managed rule to be absent. Cloudflare applies lifecycle expiration asynchronously, so an applied rule does not imply that every older object disappears immediately.
+
+After the retention configuration reaches runtime KV through `pnpm sync -y`, scheduled maintenance claims at most one D1 pruning pass per day. Each pass selects a bounded oldest-first event batch, deletes those events, relies on the event foreign key to cascade delivery rows, and records the last successful cutoff and event count in `maintenance_state`. A failed pass creates the same fixed-code signal or KV fallback used by operational health.
+
+The admin raw endpoint reports `410 expired` only when a missing object's event is older than configured `r2Days`. If R2 retention is omitted or runtime configuration cannot be read, a missing object remains a `502` storage failure rather than being assumed expired.
+
 For an existing deployment that predates queues, the D1 migration imports old successful fanout results as `delivered` and old failures as `exhausted`. The Worker performs the same import lazily if it encounters an old event that was written after the migration. Roll out in this order so the Worker never references missing resources or schema:
 
 ```sh

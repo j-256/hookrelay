@@ -1,6 +1,7 @@
 import { applyD1Migrations, env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import worker from '../../src/index'
+import { RETENTION_CONFIG_KEY } from '../../src/lib/runtime-config'
 
 const SUB_HASH = 'a'.repeat(64)
 
@@ -11,6 +12,7 @@ beforeAll(async () => {
 beforeEach(async () => {
   ;(env as unknown as Record<string, string>).TEST_BYPASS_ACCESS = '1'
   await env.EVENTS_DB.exec('DELETE FROM events')
+  await env.SUBS.delete(RETENTION_CONFIG_KEY)
 })
 
 afterEach(() => {
@@ -54,6 +56,7 @@ describe('GET /admin/events/{id}/raw', () => {
   })
 
   it('returns 502 when R2 object is missing within retention window', async () => {
+    await env.SUBS.put(RETENTION_CONFIG_KEY, JSON.stringify({ r2Days: 30 }))
     const recent = new Date(Date.now() - 5 * 86400e3).toISOString()
     await insertRow('fixture:no-r2', recent, 'events/2026/06/01/fixture_no-r2.raw')
 
@@ -68,6 +71,7 @@ describe('GET /admin/events/{id}/raw', () => {
   })
 
   it('returns 410 with received_at when R2 object is missing past retention', async () => {
+    await env.SUBS.put(RETENTION_CONFIG_KEY, JSON.stringify({ r2Days: 30 }))
     const ancient = new Date(Date.now() - 200 * 86400e3).toISOString()
     await insertRow('fixture:expired', ancient, 'events/2025/12/01/fixture_expired.raw')
 
@@ -80,6 +84,19 @@ describe('GET /admin/events/{id}/raw', () => {
     const body = await res.json<{ reason: string; received_at: string }>()
     expect(body.reason).toBe('expired')
     expect(body.received_at).toBe(ancient)
+  })
+
+  it('returns 502 for an old missing object when R2 retention is not configured', async () => {
+    const ancient = new Date(Date.now() - 200 * 86400e3).toISOString()
+    await insertRow('fixture:unmanaged', ancient, 'events/2025/12/01/fixture_unmanaged.raw')
+
+    const res = await worker.fetch(
+      new Request(`https://hooks.example.com/admin/events/${encodeURIComponent('fixture:unmanaged')}/raw`),
+      env,
+      ctx,
+    )
+    expect(res.status).toBe(502)
+    await expect(res.json()).resolves.toEqual({ reason: 'missing' })
   })
 
   it('returns 403 when CF Access bypass is off and JWT is missing', async () => {

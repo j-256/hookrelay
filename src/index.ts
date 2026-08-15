@@ -9,6 +9,7 @@ import {
 import { handleEmail, type IncomingEmailMessage } from './email'
 import { handleHook } from './router'
 import { runOperationalMaintenance } from './operations'
+import { runD1Retention } from './retention'
 import type { DeliveryMessage } from './types'
 
 const ADMIN_ROOT_PATH = '/admin'
@@ -90,6 +91,14 @@ export default {
         msg: 'delivery.outbox.swept',
         queued: result.queued,
         deferred: result.deferred,
+      }))
+    }
+    const retention = await runD1Retention(env)
+    if (retention.status === 'succeeded' && retention.deleted > 0) {
+      console.log(JSON.stringify({
+        level: 'info',
+        msg: 'retention.events.pruned',
+        deleted: retention.deleted,
       }))
     }
     const operations = await runOperationalMaintenance(env)

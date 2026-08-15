@@ -12,6 +12,7 @@
     "types:generate": "wrangler types --include-env=false",
     "typecheck": "pnpm types:generate && tsc --noEmit",
     "sync": "tsx scripts/sync.ts",
+    "retention": "tsx scripts/retention.ts",
     "github:fleet": "tsx scripts/github-fleet.ts",
     "new-sub": "tsx scripts/new-sub.ts",
     "sub:add": "tsx scripts/sub-add.ts",

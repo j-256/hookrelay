@@ -1,6 +1,7 @@
 import type { Env } from '../index'
 import { redriveDelivery } from '../delivery'
 import type { DeliveryDecisionReason, DeliveryStatus, FanoutResults } from '../types'
+import { parseRetentionConfig, RETENTION_CONFIG_KEY } from '../lib/runtime-config'
 import { verifyAccessJwt } from './access'
 import { ADMIN_STYLES } from './styles'
 
@@ -508,8 +509,6 @@ export function adminHtmlResponse(body: string, status = 200): Response {
   })
 }
 
-const R2_RETENTION_DAYS = 90
-
 interface RawRow {
   received_at: string
   r2_key: string
@@ -534,8 +533,12 @@ export async function handleAdminRaw(req: Request, env: Env, eventId: string): P
     return new Response(obj.body, { status: 200, headers })
   }
 
+  let r2Days: number | undefined
+  try {
+    r2Days = parseRetentionConfig(await env.SUBS.get(RETENTION_CONFIG_KEY))?.r2Days
+  } catch {}
   const ageDays = (Date.now() - new Date(row.received_at).getTime()) / 86400e3
-  if (ageDays > R2_RETENTION_DAYS) {
+  if (r2Days !== undefined && ageDays > r2Days) {
     return new Response(
       JSON.stringify({ reason: 'expired', received_at: row.received_at }),
       { status: 410, headers: { 'content-type': 'application/json' } },
