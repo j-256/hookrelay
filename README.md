@@ -608,6 +608,12 @@ To support a new destination ("Slack"):
 3. Add the type to `knownSinkTypes` and the schema to `sinkSchemas` in `scripts/sync.ts`.
 4. Tests in `test/unit/sinks/slack.test.ts`.
 
+## Versioning and releases
+
+Run `npm version <major|minor|patch>` from clean `main` to prepare a semantic version. npm checks that the worktree is clean, Hookrelay's `preversion` guard requires `main` and runs typechecking and tests, and npm creates the version commit and annotated `v<version>` tag. The `postversion` hook atomically pushes `main` and that tag to `origin`, so GitHub updates both refs or neither. The pushed tag is the source snapshot for the matching GitHub Release.
+
+If the intended release commit changes after a tag is created, run `pnpm retag` from clean `main`. The command moves the current package version tag to `HEAD`, preserves an existing annotated tag message, and force-pushes only that tag. It queries GitHub before changing the local tag and refuses to move a tag attached to a published Release. For an intentional repair of an already published release, use `pnpm retag --allow-published`; this rewrites a public version tag and should remain exceptional.
+
 ## Project layout
 
 See `src/` for components and `test/` for unit and integration tests. Key files:
