@@ -282,6 +282,14 @@ pnpm sink:add automation webhook
 pnpm sub:add automation-events cloudevents --sink automation
 ```
 
+Send a valid signed test event through the configured route:
+
+```sh
+pnpm cloudevents:send
+```
+
+The sender reads the full private Hookrelay URL and sender HMAC through concealed input, generates a uniquely identified structured CloudEvent, signs its exact bytes, and gives the URL and signature to `curl` through stdin configuration rather than process arguments. The temporary request body is mode `0600` and is removed after the request. For non-interactive use, provide the URL and HMAC as exactly two newline-separated stdin values.
+
 CloudEvents ingress accepts only `POST` requests with `application/cloudevents+json`. The envelope must use `specversion: "1.0"` and contain nonempty `id`, `source`, and `type` strings. Sign the exact UTF-8 request bytes with the subscription HMAC and send the lowercase digest as `X-Hookrelay-Signature-256: sha256=<hex>`. The optional `time`, `subject`, `title`, `severity`, `url`, and `data` fields become the normalized event; a missing severity is `info`, invalid or private URLs are omitted, and the complete verified envelope remains available as raw data.
 
 The webhook sink sends `application/cloudevents+json` without following redirects. Its `Idempotency-Key` and `X-Hookrelay-Delivery-Id` remain stable for the same persisted event and sink across automatic or manual retries. `X-Hookrelay-Event-Id` identifies the persisted event, while the envelope data includes the current delivery generation and attempt. `X-Hookrelay-Signature-256` is HMAC-SHA256 over the exact outbound body using `signingSecretEnv`; receivers should verify the bytes before parsing JSON and deduplicate on the idempotency key.

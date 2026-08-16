@@ -23,6 +23,8 @@ export function commandReference(): string {
     '      Update or reconcile an existing GitHub webhook event selection',
     '  pnpm sub:retire <name> --manifest <file>',
     '      Disable a subscription, then finalize from a private recovery archive',
+    '  pnpm cloudevents:send',
+    '      Send a valid signed test event without exposing its URL or HMAC in process arguments',
     '  pnpm github:fleet plan --root <directory> --manifest <file>',
     '      Audit public or explicitly selected private repositories and preview the three-hook fleet',
     '  pnpm github:fleet prepare --root <directory> --manifest <file>',

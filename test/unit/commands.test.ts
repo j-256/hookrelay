@@ -13,6 +13,7 @@ describe('commandReference', () => {
     expect(reference).toContain('pnpm sub:add <name> <source> [-s <sink>]')
     expect(reference).toContain('--email-base, --allow-sender')
     expect(reference).toContain('pnpm sub:events <name> [-e <profiles>]')
+    expect(reference).toContain('pnpm cloudevents:send')
     expect(reference).toContain('pnpm github:fleet plan --root <directory> --manifest <file>')
     expect(reference).toContain('pnpm github:fleet prepare --root <directory> --manifest <file>')
     expect(reference).toContain('pnpm github:fleet apply --root <directory> --manifest <file> [production write]')

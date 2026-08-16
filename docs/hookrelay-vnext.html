@@ -984,6 +984,11 @@
                 <span class="command-badge">Guided setup</span>
                 <p>Creates an authenticated CloudEvents route attached to the new sink, generates its private URL slug and sender HMAC, writes the hash-only route locally, and offers to install the HMAC and sync the route.</p>
               </div>
+              <div class="command">
+                <code class="command-code">pnpm cloudevents:send</code>
+                <span class="command-badge" data-kind="write">Live test event</span>
+                <p>Reads the private Hookrelay URL and sender HMAC without echoing, generates a unique valid CloudEvent, signs its exact bytes, and feeds the URL and signature to <code>curl</code> through stdin instead of process arguments.</p>
+              </div>
             </div>
           </div>
           <div class="operator-card">
