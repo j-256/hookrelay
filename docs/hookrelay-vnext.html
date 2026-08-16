@@ -1,0 +1,1065 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Hookrelay vNext change walkthrough</title>
+  <style>
+    :root {
+      --ink: #10243e;
+      --muted: #5e6f82;
+      --paper: #f4f7f9;
+      --panel: #ffffff;
+      --line: #dbe4ea;
+      --navy: #112b49;
+      --cyan: #03a9c7;
+      --cyan-soft: #e5f8fb;
+      --coral: #f16b50;
+      --coral-soft: #fff0ec;
+      --gold: #e6a72e;
+      --gold-soft: #fff7df;
+      --green: #2f9e78;
+      --green-soft: #e9f8f2;
+      --violet: #7868d8;
+      --violet-soft: #f0edff;
+      --shadow: 0 18px 50px rgba(17, 43, 73, 0.09);
+      --radius: 22px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      background:
+        radial-gradient(circle at 5% 0%, rgba(3, 169, 199, 0.11), transparent 28rem),
+        radial-gradient(circle at 100% 18%, rgba(120, 104, 216, 0.09), transparent 30rem),
+        var(--paper);
+      color: var(--ink);
+      font-family: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      line-height: 1.55;
+    }
+
+    .skip-link {
+      position: absolute;
+      left: -9999px;
+      top: 1rem;
+      z-index: 10;
+      padding: 0.65rem 1rem;
+      border-radius: 999px;
+      background: var(--ink);
+      color: white;
+    }
+
+    .skip-link:focus {
+      left: 1rem;
+    }
+
+    .shell {
+      width: min(1180px, calc(100% - 2rem));
+      margin: 0 auto;
+    }
+
+    .hero {
+      position: relative;
+      overflow: hidden;
+      margin-top: 1rem;
+      padding: clamp(2.2rem, 6vw, 5rem);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 30px;
+      background: var(--navy);
+      color: white;
+      box-shadow: var(--shadow);
+    }
+
+    .hero::before,
+    .hero::after {
+      content: "";
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+    }
+
+    .hero::before {
+      width: 25rem;
+      height: 25rem;
+      right: -9rem;
+      top: -12rem;
+      border: 1px solid rgba(255, 255, 255, 0.2);
+      box-shadow: 0 0 0 4rem rgba(255, 255, 255, 0.025), 0 0 0 8rem rgba(255, 255, 255, 0.018);
+    }
+
+    .hero::after {
+      width: 11rem;
+      height: 11rem;
+      right: 17%;
+      bottom: -8rem;
+      background: var(--cyan);
+      filter: blur(1px);
+      opacity: 0.38;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.55rem;
+      margin-bottom: 1.2rem;
+      font-size: 0.76rem;
+      font-weight: 800;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+    }
+
+    .eyebrow::before {
+      width: 0.65rem;
+      height: 0.65rem;
+      border-radius: 50%;
+      background: var(--cyan);
+      box-shadow: 0 0 0 5px rgba(3, 169, 199, 0.18);
+      content: "";
+    }
+
+    h1,
+    h2,
+    h3,
+    p {
+      margin-top: 0;
+    }
+
+    h1 {
+      position: relative;
+      max-width: 900px;
+      margin-bottom: 1.25rem;
+      font-size: clamp(2.55rem, 6vw, 5.4rem);
+      font-weight: 780;
+      letter-spacing: -0.055em;
+      line-height: 0.98;
+    }
+
+    .hero-copy {
+      position: relative;
+      max-width: 760px;
+      margin-bottom: 2rem;
+      color: #cbd9e7;
+      font-size: clamp(1rem, 2vw, 1.2rem);
+    }
+
+    .pillars {
+      position: relative;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.75rem;
+    }
+
+    .pillar {
+      min-height: 6.8rem;
+      padding: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.13);
+      border-radius: 16px;
+      background: rgba(255, 255, 255, 0.055);
+      backdrop-filter: blur(8px);
+    }
+
+    .pillar span {
+      display: block;
+      margin-bottom: 0.45rem;
+      color: var(--cyan);
+      font: 800 0.7rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.1em;
+    }
+
+    .pillar strong {
+      display: block;
+      font-size: 0.98rem;
+      line-height: 1.3;
+    }
+
+    main {
+      padding: 4rem 0 5rem;
+    }
+
+    .section-heading {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      align-items: start;
+      gap: 1rem;
+      margin-bottom: 1.5rem;
+    }
+
+    .section-number {
+      display: grid;
+      width: 2.5rem;
+      height: 2.5rem;
+      place-items: center;
+      border-radius: 12px;
+      background: var(--ink);
+      color: white;
+      font: 800 0.78rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+
+    h2 {
+      margin-bottom: 0.35rem;
+      font-size: clamp(1.8rem, 4vw, 3rem);
+      letter-spacing: -0.04em;
+      line-height: 1.05;
+    }
+
+    .section-lede {
+      max-width: 760px;
+      margin-bottom: 0;
+      color: var(--muted);
+    }
+
+    .panel {
+      margin-bottom: 4rem;
+      padding: clamp(1rem, 3vw, 2rem);
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: var(--shadow);
+    }
+
+    .system-map {
+      display: block;
+      width: 100%;
+      height: auto;
+      min-height: 270px;
+    }
+
+    .mobile-system-map {
+      display: none;
+      margin: 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .mobile-system-map > li {
+      position: relative;
+      margin-bottom: 1.6rem;
+      padding: 0.8rem;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: white;
+      font-size: 0.84rem;
+      font-weight: 800;
+      text-align: center;
+    }
+
+    .mobile-system-map > li:not(:last-child)::after {
+      position: absolute;
+      left: 50%;
+      bottom: -1.45rem;
+      transform: translateX(-50%);
+      color: var(--muted);
+      font-size: 1rem;
+      content: "\2193";
+    }
+
+    .mobile-system-map small {
+      display: block;
+      margin-top: 0.2rem;
+      color: var(--muted);
+      font-weight: 600;
+    }
+
+    .mobile-system-map .mobile-branches {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.55rem;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .mobile-branch {
+      padding: 0.75rem 0.4rem;
+      border: 1px solid var(--coral);
+      border-radius: 12px;
+      background: var(--coral-soft);
+    }
+
+    .mobile-branch:last-child {
+      border-color: var(--green);
+      background: var(--green-soft);
+    }
+
+    .mobile-system-map .mobile-observers {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.55rem;
+      margin-bottom: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+    }
+
+    .mobile-observer {
+      padding: 0.75rem 0.4rem;
+      border-radius: 12px;
+      background: var(--navy);
+      color: white;
+    }
+
+    figcaption {
+      margin-top: 0.9rem;
+      color: var(--muted);
+      font-size: 0.9rem;
+    }
+
+    .chapters {
+      display: grid;
+      gap: 1.25rem;
+    }
+
+    .chapter {
+      --tone: var(--cyan);
+      --tone-soft: var(--cyan-soft);
+      --tone-ink: #006f82;
+      display: grid;
+      grid-template-columns: minmax(0, 1.08fr) minmax(280px, 0.92fr);
+      gap: clamp(1.25rem, 4vw, 3rem);
+      padding: clamp(1.35rem, 4vw, 2.5rem);
+      border: 1px solid var(--line);
+      border-left: 7px solid var(--tone);
+      border-radius: var(--radius);
+      background: var(--panel);
+      box-shadow: 0 12px 38px rgba(17, 43, 73, 0.06);
+    }
+
+    .chapter[data-tone="coral"] {
+      --tone: var(--coral);
+      --tone-soft: var(--coral-soft);
+      --tone-ink: #a63d28;
+    }
+
+    .chapter[data-tone="gold"] {
+      --tone: var(--gold);
+      --tone-soft: var(--gold-soft);
+      --tone-ink: #765000;
+    }
+
+    .chapter[data-tone="green"] {
+      --tone: var(--green);
+      --tone-soft: var(--green-soft);
+      --tone-ink: #176449;
+    }
+
+    .chapter[data-tone="violet"] {
+      --tone: var(--violet);
+      --tone-soft: var(--violet-soft);
+      --tone-ink: #4e419e;
+    }
+
+    .chapter-kicker {
+      margin-bottom: 0.55rem;
+      color: var(--tone-ink);
+      font: 800 0.72rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    h3 {
+      margin-bottom: 0.75rem;
+      font-size: clamp(1.35rem, 2.5vw, 2rem);
+      letter-spacing: -0.025em;
+      line-height: 1.12;
+    }
+
+    .chapter p {
+      color: var(--muted);
+    }
+
+    .clean-list {
+      margin: 1.2rem 0 0;
+      padding: 0;
+      list-style: none;
+    }
+
+    .clean-list li {
+      position: relative;
+      margin-top: 0.65rem;
+      padding-left: 1.4rem;
+    }
+
+    .clean-list li::before {
+      position: absolute;
+      left: 0;
+      top: 0.44rem;
+      width: 0.65rem;
+      height: 0.65rem;
+      border-radius: 3px;
+      background: var(--tone);
+      content: "";
+    }
+
+    .visual-card {
+      align-self: center;
+      padding: 1.15rem;
+      border-radius: 18px;
+      background: var(--tone-soft);
+    }
+
+    .visual-label {
+      margin-bottom: 0.8rem;
+      color: var(--tone-ink);
+      font-size: 0.73rem;
+      font-weight: 850;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+    }
+
+    .decision-tree,
+    .signed-path,
+    .signal-loop,
+    .retention-split,
+    .retirement-steps {
+      display: grid;
+      gap: 0.65rem;
+    }
+
+    .decision-row,
+    .signed-row,
+    .signal-row,
+    .retention-row {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      align-items: center;
+      gap: 0.5rem;
+    }
+
+    .node {
+      padding: 0.72rem 0.8rem;
+      border: 1px solid color-mix(in srgb, var(--tone), white 55%);
+      border-radius: 12px;
+      background: white;
+      color: var(--ink);
+      font-size: 0.82rem;
+      font-weight: 750;
+      line-height: 1.25;
+      text-align: center;
+    }
+
+    .node small {
+      display: block;
+      margin-top: 0.25rem;
+      color: var(--muted);
+      font-size: 0.69rem;
+      font-weight: 600;
+    }
+
+    .arrow {
+      color: var(--tone);
+      font-size: 1.1rem;
+      font-weight: 900;
+    }
+
+    .branch {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.65rem;
+    }
+
+    .branch .node:first-child {
+      border-color: var(--green);
+    }
+
+    .branch .node:last-child {
+      border-color: var(--coral);
+    }
+
+    .loop-note {
+      padding: 0.75rem;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.64);
+      color: var(--muted);
+      font-size: 0.78rem;
+      text-align: center;
+    }
+
+    .retirement-steps {
+      grid-template-columns: repeat(4, 1fr);
+      counter-reset: retirement;
+    }
+
+    .retirement-step {
+      position: relative;
+      min-height: 6.7rem;
+      padding: 2.15rem 0.65rem 0.65rem;
+      border: 1px solid color-mix(in srgb, var(--tone), white 55%);
+      border-radius: 12px;
+      background: white;
+      font-size: 0.74rem;
+      font-weight: 750;
+      line-height: 1.3;
+      text-align: center;
+      counter-increment: retirement;
+    }
+
+    .retirement-step::before {
+      position: absolute;
+      top: 0.6rem;
+      left: 50%;
+      display: grid;
+      width: 1.15rem;
+      height: 1.15rem;
+      place-items: center;
+      border-radius: 50%;
+      transform: translateX(-50%);
+      background: var(--tone);
+      color: white;
+      font: 800 0.62rem/1 ui-monospace, SFMono-Regular, Menlo, monospace;
+      content: counter(retirement);
+    }
+
+    .operator-grid {
+      display: grid;
+      gap: 1rem;
+    }
+
+    .operator-card {
+      padding: clamp(1rem, 3vw, 1.5rem);
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fbfcfd;
+    }
+
+    .operator-card h3 {
+      margin-bottom: 0.75rem;
+      font-size: 1rem;
+      letter-spacing: 0;
+    }
+
+    .operator-card > p {
+      max-width: 780px;
+      margin-bottom: 0;
+      color: var(--muted);
+      font-size: 0.88rem;
+    }
+
+    .command-list {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 0.8rem;
+      margin-top: 1rem;
+    }
+
+    .command {
+      min-width: 0;
+      padding: 0.85rem;
+      border: 1px solid var(--line);
+      border-radius: 13px;
+      background: white;
+    }
+
+    .command:last-child:nth-child(odd) {
+      grid-column: 1 / -1;
+    }
+
+    .command-code {
+      display: block;
+      width: 100%;
+      padding: 0.72rem 0.8rem;
+      border-radius: 10px;
+      background: var(--navy);
+      color: #e8f1f8;
+      font-size: 0.72rem;
+      line-height: 1.5;
+      overflow-wrap: anywhere;
+      white-space: normal;
+      word-break: break-word;
+    }
+
+    .command-badge {
+      display: inline-block;
+      margin-top: 0.6rem;
+      padding: 0.28rem 0.55rem;
+      border-radius: 999px;
+      background: var(--cyan-soft);
+      color: #006f82;
+      font-size: 0.66rem;
+      font-weight: 850;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .command-badge[data-kind="read"] {
+      background: var(--green-soft);
+      color: #176449;
+    }
+
+    .command-badge[data-kind="write"] {
+      background: var(--coral-soft);
+      color: #a63d28;
+    }
+
+    .command-badge[data-kind="stage"] {
+      background: var(--violet-soft);
+      color: #4e419e;
+    }
+
+    .command p {
+      margin: 0.65rem 0 0;
+      color: var(--muted);
+      font-size: 0.8rem;
+      line-height: 1.45;
+    }
+
+    code {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    }
+
+    .safety-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 0.8rem;
+      margin-top: 1.25rem;
+    }
+
+    .safety-item {
+      padding: 1rem;
+      border-top: 3px solid var(--cyan);
+      border-radius: 0 0 12px 12px;
+      background: var(--cyan-soft);
+    }
+
+    .safety-item strong {
+      display: block;
+      margin-bottom: 0.3rem;
+      font-size: 0.86rem;
+    }
+
+    .safety-item span {
+      color: var(--muted);
+      font-size: 0.78rem;
+      line-height: 1.35;
+    }
+
+    .rollout {
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 1rem;
+      align-items: start;
+      margin-top: 1.25rem;
+      padding: 1.15rem;
+      border: 1px solid #f0d796;
+      border-radius: 16px;
+      background: var(--gold-soft);
+    }
+
+    .rollout-mark {
+      display: grid;
+      width: 2.4rem;
+      height: 2.4rem;
+      place-items: center;
+      border-radius: 50%;
+      background: var(--gold);
+      color: white;
+      font-weight: 900;
+    }
+
+    .rollout p {
+      min-width: 0;
+      margin-bottom: 0;
+      color: #68521d;
+    }
+
+    .rollout code {
+      overflow-wrap: anywhere;
+      word-break: break-word;
+    }
+
+    footer {
+      padding: 1.5rem 0 3rem;
+      color: var(--muted);
+      font-size: 0.83rem;
+      text-align: center;
+    }
+
+    @media (max-width: 900px) {
+      .pillars,
+      .safety-grid {
+        grid-template-columns: repeat(2, 1fr);
+      }
+
+      .chapter {
+        grid-template-columns: 1fr;
+      }
+
+    }
+
+    @media (max-width: 620px) {
+      .shell {
+        width: min(100% - 1rem, 1180px);
+      }
+
+      .hero {
+        margin-top: 0.5rem;
+        padding: 2rem 1.25rem;
+        border-radius: 22px;
+      }
+
+      .pillars,
+      .safety-grid,
+      .retirement-steps {
+        grid-template-columns: 1fr;
+      }
+
+      .command-list {
+        grid-template-columns: 1fr;
+      }
+
+      .command:last-child:nth-child(odd) {
+        grid-column: auto;
+      }
+
+      .system-map {
+        display: none;
+      }
+
+      .mobile-system-map {
+        display: block;
+      }
+
+      .decision-row,
+      .signed-row,
+      .signal-row,
+      .retention-row {
+        grid-template-columns: 1fr;
+      }
+
+      .arrow {
+        transform: rotate(90deg);
+        text-align: center;
+      }
+
+      .section-heading {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    @media print {
+      body {
+        background: white;
+      }
+
+      .shell {
+        width: 100%;
+      }
+
+      .hero,
+      .panel,
+      .chapter {
+        box-shadow: none;
+      }
+
+      .chapter {
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <a class="skip-link" href="#content">Skip to content</a>
+  <header class="hero shell">
+    <div class="eyebrow">Hookrelay vNext change walkthrough</div>
+    <h1>From webhook relay to resilient event control plane.</h1>
+    <p class="hero-copy">The release adds policy-aware fanout, signed generic interoperability, proactive health, and explicit data and resource lifecycle control while preserving the existing durable-delivery model.</p>
+    <div class="pillars">
+      <div class="pillar"><span>POLICY</span><strong>Explainable decisions for every configured sink</strong></div>
+      <div class="pillar"><span>INTEROP</span><strong>Authenticated CloudEvents in and signed webhooks out</strong></div>
+      <div class="pillar"><span>HEALTH</span><strong>Redacted signals, guarded redrive, and direct alerts</strong></div>
+      <div class="pillar"><span>LIFECYCLE</span><strong>Verifiable retention and recovery-aware retirement</strong></div>
+    </div>
+  </header>
+
+  <main class="shell" id="content">
+    <section aria-labelledby="flow-title">
+      <div class="section-heading">
+        <span class="section-number">00</span>
+        <div>
+          <h2 id="flow-title">The new end-to-end shape</h2>
+          <p class="section-lede">One authenticated event becomes durable state before any destination is contacted. Policy, delivery, health, and lifecycle behavior all work from that shared record.</p>
+        </div>
+      </div>
+      <figure class="panel">
+        <svg class="system-map" viewBox="0 0 1120 330" role="img" aria-labelledby="system-map-title system-map-desc">
+          <title id="system-map-title">Hookrelay vNext event flow</title>
+          <desc id="system-map-desc">Incoming hooks are authenticated and normalized, persisted to D1 and R2, planned into per-sink decisions, then either filtered or queued for delivery. Operational health and retention observe the durable state.</desc>
+          <defs>
+            <marker id="map-arrow" markerWidth="9" markerHeight="9" refX="8" refY="4.5" orient="auto"><path d="M0,0 L9,4.5 L0,9 Z" fill="#91a5b8"></path></marker>
+            <filter id="map-shadow" x="-10%" y="-20%" width="120%" height="150%"><feDropShadow dx="0" dy="5" stdDeviation="6" flood-color="#112b49" flood-opacity="0.12"></feDropShadow></filter>
+          </defs>
+          <g fill="none" stroke="#91a5b8" stroke-width="3" marker-end="url(#map-arrow)">
+            <path d="M165 96 H225"></path><path d="M375 96 H435"></path><path d="M585 96 H645"></path><path d="M795 96 H855"></path><path d="M930 131 V173"></path><path d="M930 131 C930 155 742 148 742 173"></path><path d="M510 131 V250"></path><path d="M742 231 V250"></path>
+          </g>
+          <g filter="url(#map-shadow)">
+            <rect x="25" y="58" width="140" height="76" rx="16" fill="#e5f8fb" stroke="#03a9c7" stroke-width="2"></rect>
+            <rect x="225" y="58" width="150" height="76" rx="16" fill="#ffffff" stroke="#dbe4ea" stroke-width="2"></rect>
+            <rect x="435" y="58" width="150" height="76" rx="16" fill="#ffffff" stroke="#dbe4ea" stroke-width="2"></rect>
+            <rect x="645" y="58" width="150" height="76" rx="16" fill="#fff7df" stroke="#e6a72e" stroke-width="2"></rect>
+            <rect x="855" y="58" width="150" height="76" rx="16" fill="#f0edff" stroke="#7868d8" stroke-width="2"></rect>
+            <rect x="650" y="173" width="184" height="58" rx="14" fill="#fff0ec" stroke="#f16b50" stroke-width="2"></rect>
+            <rect x="852" y="173" width="156" height="58" rx="14" fill="#e9f8f2" stroke="#2f9e78" stroke-width="2"></rect>
+            <rect x="382" y="250" width="256" height="58" rx="14" fill="#112b49"></rect>
+            <rect x="660" y="250" width="244" height="58" rx="14" fill="#112b49"></rect>
+          </g>
+          <g fill="#10243e" font-family="Inter, ui-sans-serif, sans-serif" text-anchor="middle">
+            <text x="95" y="90" font-size="15" font-weight="800">Incoming hook</text><text x="95" y="112" font-size="12" fill="#5e6f82">Provider or CloudEvent</text>
+            <text x="300" y="90" font-size="15" font-weight="800">Verify + normalize</text><text x="300" y="112" font-size="12" fill="#5e6f82">Known route, typed event</text>
+            <text x="510" y="90" font-size="15" font-weight="800">Persist once</text><text x="510" y="112" font-size="12" fill="#5e6f82">D1 metadata + R2 payload</text>
+            <text x="720" y="90" font-size="15" font-weight="800">Plan decisions</text><text x="720" y="112" font-size="12" fill="#5e6f82">Subscription + sink policy</text>
+            <text x="930" y="90" font-size="15" font-weight="800">Durable rows</text><text x="930" y="112" font-size="12" fill="#5e6f82">One decision per sink</text>
+            <text x="742" y="198" font-size="14" font-weight="800">Filtered</text><text x="742" y="216" font-size="11" fill="#5e6f82">Terminal + explained</text>
+            <text x="930" y="198" font-size="14" font-weight="800">Queue + deliver</text><text x="930" y="216" font-size="11" fill="#5e6f82">Lease, retry, exhaust</text>
+          </g>
+          <g fill="#ffffff" font-family="Inter, ui-sans-serif, sans-serif" text-anchor="middle">
+            <text x="510" y="276" font-size="14" font-weight="800">Operational health</text><text x="510" y="294" font-size="11" fill="#cbd9e7">Signals, alerts, admin redrive</text>
+            <text x="782" y="276" font-size="14" font-weight="800">Lifecycle control</text><text x="782" y="294" font-size="11" fill="#cbd9e7">Retention, drain, archive, remove</text>
+          </g>
+        </svg>
+        <ol class="mobile-system-map" aria-label="Hookrelay vNext event flow">
+          <li>Incoming hook<small>Provider or CloudEvent</small></li>
+          <li>Verify + normalize<small>Known route and typed event</small></li>
+          <li>Persist once<small>D1 metadata and R2 payload</small></li>
+          <li>Plan decisions<small>Subscription and sink policy</small></li>
+          <li class="mobile-branches"><div class="mobile-branch">Filtered<small>Terminal and explained</small></div><div class="mobile-branch">Queue + deliver<small>Lease, retry, exhaust</small></div></li>
+          <li class="mobile-observers"><div class="mobile-observer">Operational health</div><div class="mobile-observer">Lifecycle control</div></li>
+        </ol>
+        <figcaption>The sender receives success only after the event and all per-sink intents are durable. Policy-rejected destinations never enter the queue.</figcaption>
+      </figure>
+    </section>
+
+    <section aria-labelledby="changes-title">
+      <div class="section-heading">
+        <span class="section-number">01</span>
+        <div>
+          <h2 id="changes-title">Implementation checkpoints</h2>
+          <p class="section-lede">Each checkpoint is independently useful, but the shared event and delivery model is what makes the combined system coherent.</p>
+        </div>
+      </div>
+
+      <div class="chapters">
+        <article class="chapter">
+          <div>
+            <div class="chapter-kicker">Policy-based sink delivery decisions</div>
+            <h3>Decide once, explain forever.</h3>
+            <p>Subscriptions can filter normalized event types and severities globally, then narrow individual sinks further. Exclusions win, all configured dimensions must pass, and source-level record-only decisions cannot be overridden.</p>
+            <ul class="clean-list">
+              <li>Exact values, wildcard <code>*</code>, and trailing patterns such as <code>pull_request.*</code></li>
+              <li>Terminal <code>filtered</code> rows with <code>subscription-filter</code>, <code>sink-filter</code>, or <code>source-record-only</code></li>
+              <li>Admin-visible reasoning without queueing filtered destinations</li>
+              <li>Omitted filters preserve the previous deliver-to-all behavior</li>
+            </ul>
+          </div>
+          <div class="visual-card">
+            <div class="visual-label">Per-sink decision tree</div>
+            <div class="decision-tree">
+              <div class="node">Normalized event<small>type + severity</small></div>
+              <div class="decision-row"><div class="node">Subscription filter</div><span class="arrow">&rarr;</span><div class="node">Sink filters</div></div>
+              <div class="branch"><div class="node">Pending<small>publish to queue</small></div><div class="node">Filtered<small>persist reason</small></div></div>
+              <div class="loop-note">A duplicate event reuses settled decisions instead of re-evaluating them.</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="chapter" data-tone="coral">
+          <div>
+            <div class="chapter-kicker">Signed CloudEvents interoperability</div>
+            <h3>Generic events in. Verifiable events out.</h3>
+            <p>A structured CloudEvents 1.0 adapter provides a provider-neutral ingress, while a generic webhook sink emits signed CloudEvents with stable delivery identity.</p>
+            <ul class="clean-list">
+              <li>Exact-byte HMAC verification before JSON parsing</li>
+              <li>Stable event identity derived from CloudEvent source and ID</li>
+              <li>Alternate secret references for staged key rotation</li>
+              <li>Outbound signatures, stable idempotency keys, public HTTPS validation, and no redirect following</li>
+            </ul>
+          </div>
+          <div class="visual-card">
+            <div class="visual-label">Authenticated bridge</div>
+            <div class="signed-path">
+              <div class="signed-row"><div class="node">Producer<small>CloudEvents 1.0</small></div><span class="arrow">&rarr;</span><div class="node">Hookrelay<small>verify exact bytes</small></div></div>
+              <div class="loop-note"><code>X-Hookrelay-Signature-256</code><br>HMAC-SHA256 over the exact body</div>
+              <div class="signed-row"><div class="node">Hookrelay<small>stable delivery ID</small></div><span class="arrow">&rarr;</span><div class="node">Receiver<small>verify + deduplicate</small></div></div>
+            </div>
+          </div>
+        </article>
+
+        <article class="chapter" data-tone="gold">
+          <div>
+            <div class="chapter-kicker">Proactive operational health</div>
+            <h3>Failures become controlled signals, not leaked exceptions.</h3>
+            <p>Known-route ingress failures, exhausted deliveries, stale work, and retention failures aggregate into fixed-code operational signals with secret-free fingerprints and summaries.</p>
+            <ul class="clean-list">
+              <li>KV fallback records survive temporary D1 unavailability and import after recovery</li>
+              <li>Direct alerts bypass subscription fanout, obey cooldowns, and skip an implicated sink</li>
+              <li>Alert failures do not recursively create more alerts</li>
+              <li>The Access-protected health page and guarded bulk redrive operate on live D1 state</li>
+            </ul>
+          </div>
+          <div class="visual-card">
+            <div class="visual-label">Recursion-safe signal loop</div>
+            <div class="signal-loop">
+              <div class="signal-row"><div class="node">Known failure<small>fixed code only</small></div><span class="arrow">&rarr;</span><div class="node">D1 signal<small>aggregate fingerprint</small></div></div>
+              <div class="signal-row"><div class="node">Health page<small>inspect + redrive</small></div><span class="arrow">&larr;</span><div class="node">Direct alert<small>cooldown + skip sink</small></div></div>
+              <div class="loop-note">If D1 is unavailable, a compact expiring KV record preserves the signal for later import.</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="chapter" data-tone="green">
+          <div>
+            <div class="chapter-kicker">Configurable event retention</div>
+            <h3>One policy, two storage systems, explicit verification.</h3>
+            <p>Optional R2 and D1 lifetimes separate object expiration from metadata pruning. Omission disables the corresponding behavior without directly deleting data.</p>
+            <ul class="clean-list">
+              <li>Plan, apply, and verify one stable R2 lifecycle rule under <code>events/</code></li>
+              <li>Preserve unrelated lifecycle rules value-for-value</li>
+              <li>Claim one bounded oldest-first D1 pruning pass per day</li>
+              <li>Return <code>410 expired</code> only when configured age explains a missing R2 object</li>
+            </ul>
+          </div>
+          <div class="visual-card">
+            <div class="visual-label">Independent retention paths</div>
+            <div class="retention-split">
+              <div class="node">Runtime retention config<small><code>r2Days</code> and <code>d1Days</code></small></div>
+              <div class="retention-row"><div class="node">R2 lifecycle<small>managed prefix rule</small></div><span class="arrow">+</span><div class="node">D1 maintenance<small>bounded daily batch</small></div></div>
+              <div class="loop-note">R2 expiration is asynchronous. D1 deletion cascades to the event's delivery rows.</div>
+            </div>
+          </div>
+        </article>
+
+        <article class="chapter" data-tone="violet">
+          <div>
+            <div class="chapter-kicker">Staged resource retirement workflows</div>
+            <h3>Drain first. Archive before deletion. Resume safely.</h3>
+            <p>Subscriptions, sinks, and GitHub fleet repositories gain explicit staged retirement backed by private recovery manifests and persistent phase markers.</p>
+            <ul class="clean-list">
+              <li>Subscriptions disable before exact hook, KV, and unshared secret cleanup</li>
+              <li>Sinks remain in <code>retiredSinks</code> and KV until subscription and delivery references clear</li>
+              <li>GitHub fleet manifests record lifecycle state and resumable phase markers</li>
+              <li>Verification checks absence without GitHub pings; partial reruns converge</li>
+            </ul>
+          </div>
+          <div class="visual-card">
+            <div class="visual-label">Recovery-aware lifecycle</div>
+            <div class="retirement-steps">
+              <div class="retirement-step">Prepare private recovery state</div>
+              <div class="retirement-step">Disable and drain references</div>
+              <div class="retirement-step">Finalize exact owned state</div>
+              <div class="retirement-step">Verify absence without ping</div>
+            </div>
+            <div class="loop-note" style="margin-top: 0.65rem">Every destructive boundary follows an archive write and records completion for retry safety.</div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <section aria-labelledby="operator-title" style="margin-top: 4rem">
+      <div class="section-heading">
+        <span class="section-number">02</span>
+        <div>
+          <h2 id="operator-title">Operator surface</h2>
+          <p class="section-lede">The new behaviors remain opt-in through configuration or explicit phased commands.</p>
+        </div>
+      </div>
+      <div class="panel">
+        <div class="operator-grid">
+          <div class="operator-card">
+            <h3>Generic interoperability</h3>
+            <p>Both setup commands write and validate local state first, then offer separate prompts for Worker secrets and production KV.</p>
+            <div class="command-list">
+              <div class="command">
+                <code class="command-code">pnpm sink:add automation webhook</code>
+                <span class="command-badge">Guided setup</span>
+                <p>Reads a public HTTPS destination through concealed input, generates an outbound signing key, writes both values to <code>.dev.vars</code>, stores only their secret names in <code>routes.jsonc</code>, and offers to install and sync them.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm sub:add automation-events cloudevents --sink automation</code>
+                <span class="command-badge">Guided setup</span>
+                <p>Creates an authenticated CloudEvents route attached to the new sink, generates its private URL slug and sender HMAC, writes the hash-only route locally, and offers to install the HMAC and sync the route.</p>
+              </div>
+            </div>
+          </div>
+          <div class="operator-card">
+            <h3>Retention</h3>
+            <p>R2 lifecycle configuration and runtime KV are separate surfaces. Plan and verify are read-only; only the explicitly confirmed commands write production state.</p>
+            <div class="command-list">
+              <div class="command">
+                <code class="command-code">pnpm retention plan</code>
+                <span class="command-badge" data-kind="read">Read only</span>
+                <p>Reads the current R2 lifecycle rules and previews the exact managed-rule change implied by <code>retention.r2Days</code>, while counting unrelated rules that will be preserved.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm retention apply</code>
+                <span class="command-badge" data-kind="write">Production write</span>
+                <p>Asks for confirmation, adds, replaces, or removes only Hookrelay's managed <code>events/</code> R2 lifecycle rule, preserves every unrelated rule, and reads it back to verify the write.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm retention verify</code>
+                <span class="command-badge" data-kind="read">Read only</span>
+                <p>Requires the remote managed R2 rule to match <code>routes.jsonc</code> exactly, or to be absent when R2 retention is disabled.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm sync</code>
+                <span class="command-badge" data-kind="read">Read only</span>
+                <p>Validates routes and referenced secrets, then compares <code>routes.jsonc</code> with production KV and prints the desired-state plan without applying it.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm sync -y</code>
+                <span class="command-badge" data-kind="write">Production write</span>
+                <p>Applies the KV plan, making runtime D1 retention configuration active and removing remote route or sink entries that are absent from the complete local desired state.</p>
+              </div>
+            </div>
+          </div>
+          <div class="operator-card">
+            <h3>Individual retirement</h3>
+            <p>Use the same private manifest path for both phases. Staging makes the resource inert; finalization archives recovery data before exact owned-state cleanup.</p>
+            <div class="command-list">
+              <div class="command">
+                <code class="command-code">pnpm sub:retire &lt;name&gt; --manifest &lt;private-file&gt;</code>
+                <span class="command-badge" data-kind="stage">Stage + confirm</span>
+                <p>Disables the subscription in local desired state, previews the normal KV plan, and asks before applying the disabled route to production.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm sub:retire &lt;name&gt; --manifest &lt;private-file&gt; --finalize</code>
+                <span class="command-badge" data-kind="write">Guarded cleanup</span>
+                <p>Requires the production route to be disabled, archives its configuration and recoverable authentication, removes only a matching owned GitHub hook and KV route, and cleans only unshared secrets.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm sink:retire &lt;name&gt; --manifest &lt;private-file&gt;</code>
+                <span class="command-badge" data-kind="stage">Stage + confirm</span>
+                <p>Requires no enabled subscription or operations alert to use the sink, moves it to <code>retiredSinks</code>, keeps it available to disabled references, and asks before syncing that staged state.</p>
+              </div>
+              <div class="command">
+                <code class="command-code">pnpm sink:retire &lt;name&gt; --manifest &lt;private-file&gt; --finalize</code>
+                <span class="command-badge" data-kind="write">Guarded cleanup</span>
+                <p>Proves through D1 that no unfinished delivery references the sink, archives its recoverable values, removes its local and KV definition, and cleans only unshared secrets.</p>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="safety-grid">
+          <div class="safety-item"><strong>Backward compatible</strong><span>Existing route shapes remain valid and missing feature configuration preserves prior behavior.</span></div>
+          <div class="safety-item"><strong>Secret bounded</strong><span>Tracked routes hold hashes and secret names; private values remain in protected operator files and Worker secrets.</span></div>
+          <div class="safety-item"><strong>Read before write</strong><span>Retention and retirement expose plan, confirmation, verification, and exact ownership checks.</span></div>
+          <div class="safety-item"><strong>Durable recovery</strong><span>Phase markers and archives let interrupted finalization resume without regenerating values.</span></div>
+        </div>
+
+        <div class="rollout">
+          <div class="rollout-mark">!</div>
+          <p><strong>Deployment boundary:</strong> apply <code>migrations/0004_vnext_foundations.sql</code> before deploying Worker code that uses filtered decisions, operational signals, or maintenance state. Production retention and retirement remain separate, explicit operator actions.</p>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="shell">Hookrelay vNext &middot; A self-contained implementation walkthrough</footer>
+</body>
+</html>
