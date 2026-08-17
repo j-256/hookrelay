@@ -9,9 +9,14 @@ import {
   type GitHubFleetValues,
 } from './github-fleet-model'
 
-const MANIFEST_VERSION = 2
+const LEGACY_MANIFEST_VERSION = 2
+const MANIFEST_VERSION = 3
 const REPOSITORY_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
 const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/
+
+const profileSchema = z.custom<GitHubFleetProfileName>((value) => (
+  typeof value === 'string' && GITHUB_FLEET_PROFILE_NAMES.includes(value as GitHubFleetProfileName)
+))
 
 const secretSchema = z.object({
   name: z.string().regex(SECRET_NAME_RE),
@@ -27,6 +32,7 @@ const slugsSchema = z.object({
 const baseRepositorySchema = z.object({
   hmac: secretSchema,
   slugs: slugsSchema,
+  profiles: z.array(profileSchema).min(1).optional(),
 }).strict()
 
 const hookRetirementSchema = z.object({
@@ -56,7 +62,7 @@ const retiredRepositorySchema = baseRepositorySchema.extend({
 }).strict()
 
 const manifestSchema = z.object({
-  version: z.literal(MANIFEST_VERSION),
+  version: z.union([z.literal(LEGACY_MANIFEST_VERSION), z.literal(MANIFEST_VERSION)]),
   repositories: z.record(z.string().regex(REPOSITORY_RE), repositorySchema),
   retiredRepositories: z.record(z.string().regex(REPOSITORY_RE), retiredRepositorySchema),
 }).strict()
@@ -106,6 +112,13 @@ export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void
   const slugOwners = new Map<string, string>()
   const hmacValueOwners = new Map<string, string>()
 
+  if (
+    manifest.version === LEGACY_MANIFEST_VERSION
+    && repositories.some((repo) => (manifest.repositories[repo] ?? retiredRepositories[repo])?.profiles !== undefined)
+  ) {
+    throw new Error(`manifest version ${MANIFEST_VERSION} is required for selected profiles`)
+  }
+
   for (const repo of Object.keys(manifest.repositories)) {
     const entry = manifest.repositories[repo]!
     if (entry.state === 'retiring' && !entry.retirement) {
@@ -121,6 +134,15 @@ export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void
     const expectedName = githubFleetHmacName(repo)
     if (entry.hmac.name !== expectedName) {
       throw new Error(`manifest repository ${repo} must use HMAC name ${expectedName}`)
+    }
+    if (entry.profiles) {
+      const canonicalProfiles = GITHUB_FLEET_PROFILE_NAMES.filter((profile) => entry.profiles!.includes(profile))
+      if (
+        canonicalProfiles.length !== entry.profiles.length
+        || !canonicalProfiles.every((profile, index) => entry.profiles![index] === profile)
+      ) {
+        throw new Error(`manifest repository ${repo} profiles must be unique and use canonical order`)
+      }
     }
     const localSlugs = new Set(Object.values(entry.slugs))
     if (localSlugs.size !== GITHUB_FLEET_PROFILE_NAMES.length) {
@@ -150,6 +172,7 @@ export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): str
         stars: entry.slugs.stars,
         alerts: entry.slugs.alerts,
       },
+      ...(entry.profiles ? { profiles: [...entry.profiles] } : {}),
       state: entry.state,
       ...(entry.retirement
         ? {
@@ -175,16 +198,20 @@ export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): str
         stars: entry.slugs.stars,
         alerts: entry.slugs.alerts,
       },
+      ...(entry.profiles ? { profiles: [...entry.profiles] } : {}),
       retiredAt: entry.retiredAt,
     }
   }
-  return `${JSON.stringify({ version: MANIFEST_VERSION, repositories, retiredRepositories }, null, 2)}\n`
+  return `${JSON.stringify({ version: manifest.version, repositories, retiredRepositories }, null, 2)}\n`
 }
 
 export function generateGitHubFleetManifestRepository(
   repo: string,
   randomValues: GitHubFleetRandomValues = DEFAULT_RANDOM_VALUES,
+  profiles: readonly GitHubFleetProfileName[] = GITHUB_FLEET_PROFILE_NAMES,
 ): GitHubFleetManifestRepository {
+  const savesDefaultProfiles = profiles.length === GITHUB_FLEET_PROFILE_NAMES.length
+    && profiles.every((profile, index) => GITHUB_FLEET_PROFILE_NAMES[index] === profile)
   return {
     hmac: {
       name: githubFleetHmacName(repo),
@@ -195,6 +222,7 @@ export function generateGitHubFleetManifestRepository(
       stars: randomValues.slug(),
       alerts: randomValues.slug(),
     },
+    ...(!savesDefaultProfiles ? { profiles: [...profiles] } : {}),
     state: 'active',
   }
 }
@@ -289,13 +317,14 @@ export function completeGitHubFleetRepositoryRetirement(
   }
   const { [repo]: _removed, ...repositories } = manifest.repositories
   const next: GitHubFleetManifest = {
-    version: MANIFEST_VERSION,
+    version: manifest.version,
     repositories,
     retiredRepositories: {
       ...manifest.retiredRepositories,
       [repo]: {
         hmac: entry.hmac,
         slugs: entry.slugs,
+        ...(entry.profiles ? { profiles: [...entry.profiles] } : {}),
         retiredAt,
       },
     },
@@ -311,4 +340,10 @@ export function githubFleetManifestValues(
     hmacName: entry.hmac.name,
     slugs: { ...entry.slugs } as Record<GitHubFleetProfileName, string>,
   }
+}
+
+export function githubFleetManifestProfiles(
+  entry: GitHubFleetManifestRepository | GitHubFleetRetiredRepository,
+): readonly GitHubFleetProfileName[] {
+  return entry.profiles ?? GITHUB_FLEET_PROFILE_NAMES
 }

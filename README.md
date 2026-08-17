@@ -349,7 +349,7 @@ GitHub may return the same events in a different order, so order alone does not 
 
 ### Managing a GitHub repository fleet
 
-`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and can explicitly admit selected private repositories. It manages a standard three-hook topology for each eligible repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, whose shared delivery rule admits pushes, workflow runs, and only opened or closed pull requests without adding filters to individual repository routes. Stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. The three hooks have distinct private URLs but share one per-repository HMAC.
+`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and can explicitly admit selected private repositories. By default, it manages a standard three-hook topology for each eligible repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, whose shared delivery rule admits pushes, workflow runs, and only opened or closed pull requests without adding filters to individual repository routes. Stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. A repository's selected hooks have distinct private URLs but share one HMAC.
 
 The command requires an explicit manifest path so a deployment can choose its own encrypted or otherwise access-controlled secret store without embedding that location in Hookrelay. The JSON manifest is the recovery source for each repository's raw slugs and HMAC. It and `.dev.vars` must be regular, non-symlink files with mode `0600`; `routes.jsonc` stores only slug hashes. Treat the manifest and full GitHub hook URLs as secrets and never commit the manifest unless the repository encrypts it before storage.
 
@@ -357,7 +357,7 @@ The manifest is strict, versioned JSON with this repository shape:
 
 ```json
 {
-  "version": 2,
+  "version": 3,
   "repositories": {
     "owner/repo": {
       "hmac": {
@@ -369,6 +369,7 @@ The manifest is strict, versioned JSON with this repository shape:
         "stars": "<private-slug>",
         "alerts": "<private-slug>"
       },
+      "profiles": ["alerts"],
       "state": "active"
     }
   },
@@ -376,7 +377,7 @@ The manifest is strict, versioned JSON with this repository shape:
 }
 ```
 
-Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. Active and retiring repositories carry explicit lifecycle state, and a retiring entry also carries resumable hook, route, KV, and secret phase markers. A completed entry moves to `retiredRepositories` with its recovery values intact.
+Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. The optional `profiles` array saves a nonempty subset in canonical `activity`, `stars`, `alerts` order; omission preserves the default three-profile topology. Active and retiring repositories carry explicit lifecycle state, and a retiring entry also carries resumable hook, route, KV, and secret phase markers. A completed entry moves to `retiredRepositories` with its recovery values intact.
 
 Use the four phases in order:
 
@@ -391,6 +392,14 @@ pnpm github:fleet verify --root <directory> --manifest <file>
 
 Repeat `--repo <owner/repo>` to limit new additions for a canary rollout. Already managed public repositories are still audited. Omit `--repo` to select every eligible discovered public repository. `--secret-limit` sets the capacity guard, and `-y` is accepted only by `apply` to skip its confirmation.
 
+Add `--profiles <comma-separated names>` with one or more explicit `--repo` selectors to save a subset for newly enrolled repositories. Repeat the same repository and profile selectors through all four phases so each preview records the intended scope. The saved selection remains authoritative when the option is omitted, while a conflicting selection is blocked. The ordinary additive workflow treats a saved selection as immutable, preventing a profile change from silently orphaning production state.
+
+```sh
+pnpm github:fleet prepare --root <directory> --manifest <file> --repo owner/repo --profiles alerts
+```
+
+Planning and verification require inactive profile routes, Hookrelay-owned hooks, and production KV entries to be absent. A subset therefore proves that excluded profiles are not forwarding events instead of merely omitting them from reconciliation.
+
 Private repositories require `--include-private` together with one or more `--repo <owner/repo>` selectors. Only those named private repositories become eligible, and future audits must repeat both options; `--include-private` without `--repo` is rejected. Review the configured sinks before opting in because private webhook payloads can contain non-public repository activity and security details.
 
 ```sh
@@ -399,7 +408,7 @@ pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/private
 
 The ordinary fleet workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST.
 
-Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
+Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Long discovery, hook, KV, propagation, and reconciliation phases emit count-based progress on stderr without printing repository names, keys, values, secret values, or raw slugs. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
 
 Fleet retirement is a separate, explicit use of the same phases and selection arguments:
 

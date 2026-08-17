@@ -5,6 +5,7 @@ import {
   buildGitHubFleetSubscription,
   githubFleetHmacName,
   githubFleetSubscriptionName,
+  parseGitHubFleetProfiles,
 } from '../../scripts/github-fleet-model'
 
 const SLUGS = {
@@ -14,6 +15,13 @@ const SLUGS = {
 }
 
 describe('GitHub fleet model', () => {
+  it('parses unique profile subsets in canonical order', () => {
+    expect(parseGitHubFleetProfiles('alerts,activity')).toEqual(['activity', 'alerts'])
+    expect(() => parseGitHubFleetProfiles('')).toThrow(/empty/)
+    expect(() => parseGitHubFleetProfiles('alerts,alerts')).toThrow(/more than once/)
+    expect(() => parseGitHubFleetProfiles('unknown')).toThrow(/valid values/)
+  })
+
   it('uses the fixed names, event profiles, and sinks', async () => {
     expect(githubFleetSubscriptionName('example-owner/example-repo', 'activity')).toBe('github:example-owner/example-repo')
     expect(githubFleetSubscriptionName('example-owner/example-repo', 'stars')).toBe('github:example-owner/example-repo:stars')

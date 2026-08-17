@@ -11,14 +11,15 @@ import {
   type GitHubFleetPlan,
 } from './github-fleet'
 import {
+  githubFleetManifestProfiles,
   parseGitHubFleetManifest,
   type GitHubFleetManifest,
 } from './github-fleet-manifest'
 import {
-  GITHUB_FLEET_PROFILE_NAMES,
   GITHUB_FLEET_PROFILES,
   githubFleetSubscriptionName,
   type GitHubFleetProfileName,
+  type GitHubFleetProgress,
 } from './github-fleet-model'
 import { parseGitHubEventSelection } from './github-events'
 import {
@@ -62,7 +63,7 @@ export interface GitHubFleetReconcileDependencies {
   pingHook?: typeof pingAndVerifyGitHubRepositoryHook
   listSecrets?: typeof listWranglerSecrets
   putSecrets?: (secrets: readonly SecretValue[]) => Promise<Set<string>>
-  readKv?: () => Promise<RemoteKvSnapshot>
+  readKv?: (progress?: GitHubFleetProgress) => Promise<RemoteKvSnapshot>
   putKv?: (binding: string, key: string, value: string) => Promise<void>
   routeTimeoutMs?: number
   routeIntervalMs?: number
@@ -95,7 +96,7 @@ interface ResolvedDependencies {
   pingHook: typeof pingAndVerifyGitHubRepositoryHook
   listSecrets: typeof listWranglerSecrets
   putSecrets: (secrets: readonly SecretValue[]) => Promise<Set<string>>
-  readKv: () => Promise<RemoteKvSnapshot>
+  readKv: (progress?: GitHubFleetProgress) => Promise<RemoteKvSnapshot>
   putKv: (binding: string, key: string, value: string) => Promise<void>
   routeTimeoutMs: number
   routeIntervalMs: number
@@ -107,6 +108,12 @@ interface ResolvedDependencies {
 interface FleetFiles {
   routes: Routes
   manifest: GitHubFleetManifest
+}
+
+function repositoryProfiles(manifest: GitHubFleetManifest, repo: string): readonly GitHubFleetProfileName[] {
+  const entry = manifest.repositories[repo]
+  if (!entry) throw new Error(`${repo}: manifest entry is missing`)
+  return githubFleetManifestProfiles(entry)
 }
 
 export interface DesiredHook {
@@ -133,7 +140,7 @@ function resolvedDependencies(input: GitHubFleetReconcileDependencies): Resolved
     pingHook: input.pingHook ?? pingAndVerifyGitHubRepositoryHook,
     listSecrets: input.listSecrets ?? listWranglerSecrets,
     putSecrets: input.putSecrets ?? ((secrets) => putWranglerSecretsBulk(secrets)),
-    readKv: input.readKv ?? readRemoteKvSnapshot,
+    readKv: input.readKv ?? ((progress) => readRemoteKvSnapshot(undefined, progress)),
     putKv: input.putKv ?? putRemoteKv,
     routeTimeoutMs: input.routeTimeoutMs ?? ROUTE_PROPAGATION_TIMEOUT_MS,
     routeIntervalMs: input.routeIntervalMs ?? ROUTE_PROBE_INTERVAL_MS,
@@ -208,23 +215,32 @@ function targetSubscriptionKeys(routes: Routes, names: readonly string[]): Set<s
 async function syncSubscriptionRoutes(
   routes: Routes,
   names: readonly string[],
+  sinkNames: readonly string[],
   dependencies: ResolvedDependencies,
-  includeSinks = false,
+  progress?: GitHubFleetProgress,
 ): Promise<void> {
   const keys = targetSubscriptionKeys(routes, names)
-  const current = await dependencies.readKv()
+  const sinkKeys = new Set(sinkNames.map((name) => `sink:${name}`))
+  progress?.('Reading remote routes before synchronization')
+  const current = await dependencies.readKv(progress)
   const plan = computePlan(routes, current)
-  for (const put of plan.subPuts.filter((entry) => keys.has(entry.key))) {
+  const subscriptionPuts = plan.subPuts.filter((entry) => keys.has(entry.key))
+  for (const [index, put] of subscriptionPuts.entries()) {
+    progress?.(`Writing subscription route ${index + 1}/${subscriptionPuts.length}`)
     await dependencies.putKv('SUBS', put.key, put.value)
   }
-  if (includeSinks) {
-    for (const put of plan.sinkPuts) await dependencies.putKv('SINKS', put.key, put.value)
+  const sinkPuts = plan.sinkPuts.filter((entry) => sinkKeys.has(entry.key))
+  for (const [index, put] of sinkPuts.entries()) {
+    progress?.(`Writing sink route ${index + 1}/${sinkPuts.length}`)
+    await dependencies.putKv('SINKS', put.key, put.value)
   }
-  const verified = computePlan(routes, await dependencies.readKv())
+  progress?.('Verifying remote route synchronization')
+  const verified = computePlan(routes, await dependencies.readKv(progress))
   const remaining = verified.subPuts.filter((entry) => keys.has(entry.key))
   if (remaining.length > 0) throw new Error(`central KV did not retain ${remaining.length} subscription updates`)
-  if (includeSinks && verified.sinkPuts.length > 0) {
-    throw new Error(`central KV did not retain ${verified.sinkPuts.length} sink updates`)
+  const remainingSinks = verified.sinkPuts.filter((entry) => sinkKeys.has(entry.key))
+  if (remainingSinks.length > 0) {
+    throw new Error(`central KV did not retain ${remainingSinks.length} sink updates`)
   }
 }
 
@@ -402,12 +418,16 @@ export async function applyGitHubFleet(
     if (!approved) throw new Error('GitHub fleet apply cancelled')
   }
 
+  options.progress?.('Reading prepared fleet files and Worker secrets')
   const files = await readFleetFiles(options, projectRoot, dependencies)
   let secretNames = await dependencies.listSecrets()
   const missingSecrets = selected
     .map((repo) => files.manifest.repositories[repo]?.hmac)
     .filter((secret): secret is SecretValue => secret !== undefined && !secretNames.has(secret.name))
-  if (missingSecrets.length > 0) secretNames = await dependencies.putSecrets(missingSecrets)
+  if (missingSecrets.length > 0) {
+    options.progress?.(`Installing ${missingSecrets.length} repository HMAC(s)`)
+    secretNames = await dependencies.putSecrets(missingSecrets)
+  }
   for (const repo of selected) {
     const entry = files.manifest.repositories[repo]
     if (!entry) throw new Error(`${repo}: manifest entry is missing`)
@@ -415,47 +435,56 @@ export async function applyGitHubFleet(
   }
 
   const subscriptionNames = selected.flatMap((repo) => (
-    GITHUB_FLEET_PROFILE_NAMES.map((profile) => githubFleetSubscriptionName(repo, profile))
+    repositoryProfiles(files.manifest, repo).map((profile) => githubFleetSubscriptionName(repo, profile))
   ))
-  await syncSubscriptionRoutes(files.routes, subscriptionNames, dependencies, true)
-  for (const repo of selected) {
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
-      await waitForRouteStatus(desiredHook(files.routes, files.manifest, repo, profile), 401, dependencies)
-    }
+  const sinkNames = [...new Set(selected.flatMap((repo) => (
+    repositoryProfiles(files.manifest, repo).map((profile) => GITHUB_FLEET_PROFILES[profile].sink)
+  )))]
+  await syncSubscriptionRoutes(files.routes, subscriptionNames, sinkNames, dependencies, options.progress)
+  const hooks = selected.flatMap((repo) => (
+    repositoryProfiles(files.manifest, repo).map((profile) => desiredHook(files.routes, files.manifest, repo, profile))
+  ))
+  for (const [index, hook] of hooks.entries()) {
+    options.progress?.(`Probing authenticated route ${index + 1}/${hooks.length}`)
+    await waitForRouteStatus(hook, 401, dependencies)
   }
   if (dependencies.routeGraceMs > 0) {
+    options.progress?.(`Waiting ${dependencies.routeGraceMs / 1_000} seconds for route propagation`)
     await dependencies.sleep(dependencies.routeGraceMs)
-    for (const repo of selected) {
-      for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
-        await waitForRouteStatus(desiredHook(files.routes, files.manifest, repo, profile), 401, dependencies)
-      }
+    for (const [index, hook] of hooks.entries()) {
+      options.progress?.(`Rechecking authenticated route ${index + 1}/${hooks.length}`)
+      await waitForRouteStatus(hook, 401, dependencies)
     }
   }
 
   let reconciledHooks = 0
-  for (const repo of selected) {
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
-      await reconcileManagedHook(desiredHook(files.routes, files.manifest, repo, profile), dependencies)
-      reconciledHooks += 1
-    }
+  for (const [index, hook] of hooks.entries()) {
+    options.progress?.(`Reconciling repository hook ${index + 1}/${hooks.length}`)
+    await reconcileManagedHook(hook, dependencies)
+    reconciledHooks += 1
   }
   return { selected, installedSecrets: missingSecrets.length, reconciledHooks }
 }
 
 async function remoteRouteIssues(
   routes: Routes,
+  manifest: GitHubFleetManifest,
   repositories: readonly string[],
   dependencies: ResolvedDependencies,
+  progress?: GitHubFleetProgress,
 ): Promise<string[]> {
   const names = repositories.flatMap((repo) => (
-    GITHUB_FLEET_PROFILE_NAMES.map((profile) => githubFleetSubscriptionName(repo, profile))
+    repositoryProfiles(manifest, repo).map((profile) => githubFleetSubscriptionName(repo, profile))
   ))
   const keys = targetSubscriptionKeys(routes, names)
-  const plan = computePlan(routes, await dependencies.readKv())
+  const sinkKeys = new Set(repositories.flatMap((repo) => (
+    repositoryProfiles(manifest, repo).map((profile) => `sink:${GITHUB_FLEET_PROFILES[profile].sink}`)
+  )))
+  const plan = computePlan(routes, await dependencies.readKv(progress))
   return plan.subPuts
     .filter((put) => keys.has(put.key))
     .map((put) => `production KV differs for ${names.find((name) => subscriptionKvKey(namedSubscription(routes, name).slugHash) === put.key)}`)
-    .concat(plan.sinkPuts.map((put) => `production KV differs for ${put.key}`))
+    .concat(plan.sinkPuts.filter((put) => sinkKeys.has(put.key)).map((put) => `production KV differs for ${put.key}`))
 }
 
 export async function verifyGitHubFleet(
@@ -469,9 +498,11 @@ export async function verifyGitHubFleet(
   if (plan.manifestAdditions.length > 0) issues.push('manifest additions are not prepared')
   if (plan.subscriptionAdditions.length > 0) issues.push('subscription additions are not prepared')
   const repositories = verificationRepositories(options, plan)
+  options.progress?.('Reading prepared fleet files and Worker secrets')
   const files = await readFleetFiles(options, projectRoot, dependencies)
   const secretNames = await dependencies.listSecrets()
-  issues.push(...await remoteRouteIssues(files.routes, repositories, dependencies))
+  options.progress?.('Checking remote routes')
+  issues.push(...await remoteRouteIssues(files.routes, files.manifest, repositories, dependencies, options.progress))
 
   for (const repo of repositories) {
     const entry = files.manifest.repositories[repo]
@@ -482,22 +513,24 @@ export async function verifyGitHubFleet(
     if (!secretNames.has(entry.hmac.name)) issues.push(`${repo}: Wrangler HMAC is missing`)
   }
   let verifiedHooks = 0
-  for (const repo of repositories) {
-    if (!files.manifest.repositories[repo]) continue
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
-      const hook = desiredHook(files.routes, files.manifest, repo, profile)
-      try {
-        await waitForRouteStatus(hook, 401, dependencies)
-        const existing = await requireOneManagedHook(hook, dependencies)
-        if (!gitHubRepositoryHookMatches(existing, hook.url, hook.events)) {
-          issues.push(`${hook.subscriptionName}: GitHub hook metadata differs`)
-          continue
-        }
-        await pingWithRetry(repo, existing.id, dependencies)
-        verifiedHooks += 1
-      } catch (err) {
-        issues.push(err instanceof Error ? err.message : String(err))
+  const hooks = repositories.flatMap((repo) => (
+    files.manifest.repositories[repo]
+      ? repositoryProfiles(files.manifest, repo).map((profile) => desiredHook(files.routes, files.manifest, repo, profile))
+      : []
+  ))
+  for (const [index, hook] of hooks.entries()) {
+    options.progress?.(`Verifying repository hook ${index + 1}/${hooks.length}`)
+    try {
+      await waitForRouteStatus(hook, 401, dependencies)
+      const existing = await requireOneManagedHook(hook, dependencies)
+      if (!gitHubRepositoryHookMatches(existing, hook.url, hook.events)) {
+        issues.push(`${hook.subscriptionName}: GitHub hook metadata differs`)
+        continue
       }
+      await pingWithRetry(hook.repo, existing.id, dependencies)
+      verifiedHooks += 1
+    } catch (err) {
+      issues.push(err instanceof Error ? err.message : String(err))
     }
   }
   return { repositories, verifiedHooks, issues }

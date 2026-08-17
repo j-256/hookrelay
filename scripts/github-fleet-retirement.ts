@@ -6,6 +6,7 @@ import { discoverGitHubFleet, type GitHubFleetDiscoveryOptions } from './github-
 import {
   beginGitHubFleetRepositoryRetirement,
   completeGitHubFleetRepositoryRetirement,
+  githubFleetManifestProfiles,
   githubFleetManifestValues,
   parseGitHubFleetManifest,
   serializeGitHubFleetManifest,
@@ -19,6 +20,7 @@ import {
   buildGitHubFleetSubscription,
   githubFleetSubscriptionName,
   type GitHubFleetProfileName,
+  type GitHubFleetProgress,
   type GitHubFleetSubscription,
 } from './github-fleet-model'
 import type { GitHubFleetOptions } from './github-fleet'
@@ -86,7 +88,7 @@ export interface GitHubFleetRetirementDependencies {
   readPrivateText(path: string): Promise<string>
   writeText(path: string, text: string): Promise<void>
   writePrivateText(path: string, text: string): Promise<void>
-  readKv(): Promise<RemoteKvSnapshot>
+  readKv(progress?: GitHubFleetProgress): Promise<RemoteKvSnapshot>
   putKv(binding: string, key: string, value: string): Promise<void>
   deleteKv(binding: string, key: string): Promise<void>
   listHooks(repo: string): Promise<GitHubRepositoryHook[]>
@@ -110,7 +112,7 @@ const DEFAULT_DEPENDENCIES: GitHubFleetRetirementDependencies = {
   readPrivateText: readPrivateOptionalText,
   writeText,
   writePrivateText,
-  readKv: readRemoteKvSnapshot,
+  readKv: (progress) => readRemoteKvSnapshot(undefined, progress),
   putKv: putRemoteKv,
   deleteKv: deleteRemoteKv,
   listHooks: listGitHubRepositoryHooks,
@@ -145,7 +147,10 @@ function paths(options: GitHubFleetOptions, projectRoot: string) {
 }
 
 function discoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscoveryOptions {
-  return { privateRepositories: new Set(options.includePrivate ? options.repositories : []) }
+  return {
+    privateRepositories: new Set(options.includePrivate ? options.repositories : []),
+    progress: options.progress,
+  }
 }
 
 async function readFiles(
@@ -171,6 +176,11 @@ function selectedRepositories(options: GitHubFleetOptions): string[] {
   if (!options.retire) throw new Error('GitHub fleet retirement requires --retire')
   if (options.repositories.length === 0) throw new Error('GitHub fleet retirement requires at least one --repo')
   return [...options.repositories].sort()
+}
+
+function repositoryProfiles(manifest: GitHubFleetManifest, repo: string): readonly GitHubFleetProfileName[] {
+  const entry = manifest.repositories[repo] ?? manifest.retiredRepositories[repo]
+  return entry ? githubFleetManifestProfiles(entry) : GITHUB_FLEET_PROFILE_NAMES
 }
 
 function profileRoutes(routes: Routes, repo: string): Partial<Record<GitHubFleetProfileName, Sub>> {
@@ -255,8 +265,10 @@ export async function planGitHubFleetRetirement(
   projectRoot = process.cwd(),
 ): Promise<GitHubFleetRetirementPlan> {
   const selected = selectedRepositories(options)
+  options.progress?.('Reading fleet retirement files')
   const files = await readFiles(options, projectRoot, dependencies)
   const resolved = paths(options, projectRoot)
+  options.progress?.('Discovering repository checkouts')
   const discovery = await dependencies.discover(resolved.root, discoveryOptions(options))
   const discovered = new Set(discovery.repositories.map((repository) => repository.nameWithOwner))
   const blockers = [...discovery.blockers]
@@ -267,16 +279,18 @@ export async function planGitHubFleetRetirement(
   const hooksToDelete: string[] = []
   const routesToDelete: string[] = []
   const secretsToDelete: string[] = []
-  const [remote, secretNames] = await Promise.all([dependencies.readKv(), dependencies.listSecrets()])
+  options.progress?.('Reading Worker secrets and remote routes')
+  const [remote, secretNames] = await Promise.all([dependencies.readKv(options.progress), dependencies.listSecrets()])
   const selectedRouteNames = new Set(selected.flatMap((repo) => (
-    GITHUB_FLEET_PROFILE_NAMES.map((profile) => githubFleetSubscriptionName(repo, profile))
+    repositoryProfiles(files.manifest, repo).map((profile) => githubFleetSubscriptionName(repo, profile))
   )))
   const remainingRoutes: Routes = {
     ...files.routes,
     subs: files.routes.subs.filter((subscription) => !selectedRouteNames.has(subscription.name)),
   }
 
-  for (const repo of selected) {
+  for (const [repoIndex, repo] of selected.entries()) {
+    options.progress?.(`Inspecting retirement repository ${repoIndex + 1}/${selected.length}`)
     if (!discovered.has(repo)) blockers.push(`${repo}: selected retirement repository was not discovered`)
     const retiredEntry = files.manifest.retiredRepositories[repo]
     if (retiredEntry) {
@@ -292,7 +306,7 @@ export async function planGitHubFleetRetirement(
     else active.push(repo)
     const desired = await desiredSubscriptions(repo, entry)
     const actual = profileRoutes(files.routes, repo)
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const name = githubFleetSubscriptionName(repo, profile)
       const route = actual[profile]
       if (!route) {
@@ -310,7 +324,7 @@ export async function planGitHubFleetRetirement(
     }
     try {
       const hooks = await dependencies.listHooks(repo)
-      for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+      for (const profile of githubFleetManifestProfiles(entry)) {
         const matches = await matchingGitHubRepositoryHooks(hooks, desired[profile].slugHash)
         if (matches.length > 1) blockers.push(`${githubFleetSubscriptionName(repo, profile)}: multiple matching GitHub hooks exist`)
         if (matches.length === 1) hooksToDelete.push(githubFleetSubscriptionName(repo, profile))
@@ -381,7 +395,9 @@ export async function prepareGitHubFleetRetirement(
   let disabledSubscriptions = 0
   for (const repo of selected) {
     if (manifest.retiredRepositories[repo]) continue
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    const entry = manifest.repositories[repo]
+    if (!entry) continue
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const result = disableSubscription(routesText, githubFleetSubscriptionName(repo, profile))
       routesText = result.routesText
       if (result.changed) disabledSubscriptions += 1
@@ -396,6 +412,7 @@ async function syncDisabledRoutes(
   manifest: GitHubFleetManifest,
   selected: readonly string[],
   dependencies: GitHubFleetRetirementDependencies,
+  progress?: GitHubFleetProgress,
 ): Promise<void> {
   const keys = new Set<string>()
   const subscriptions = [...routes.subs]
@@ -404,7 +421,7 @@ async function syncDisabledRoutes(
     if (!entry || entry.state !== 'retiring' || entry.retirement?.kvRemoved) continue
     const desired = await desiredSubscriptions(repo, entry)
     const existing = profileRoutes(routes, repo)
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const route = existing[profile]
       if (route?.enabled) throw new Error(`${route.name}: retirement route is still enabled locally`)
       const disabled = route ?? { ...desired[profile], enabled: false }
@@ -413,11 +430,15 @@ async function syncDisabledRoutes(
     }
   }
   const desiredRoutes = { ...routes, subs: subscriptions }
-  const plan = computePlan(desiredRoutes, await dependencies.readKv())
-  for (const put of plan.subPuts.filter((entry) => keys.has(entry.key))) {
+  progress?.('Reading remote routes before retirement synchronization')
+  const plan = computePlan(desiredRoutes, await dependencies.readKv(progress))
+  const puts = plan.subPuts.filter((entry) => keys.has(entry.key))
+  for (const [index, put] of puts.entries()) {
+    progress?.(`Disabling remote route ${index + 1}/${puts.length}`)
     await dependencies.putKv('SUBS', put.key, put.value)
   }
-  const verification = computePlan(desiredRoutes, await dependencies.readKv())
+  progress?.('Verifying disabled remote routes')
+  const verification = computePlan(desiredRoutes, await dependencies.readKv(progress))
   if (verification.subPuts.some((entry) => keys.has(entry.key))) {
     throw new Error('production KV did not retain every disabled fleet route')
   }
@@ -435,15 +456,17 @@ async function recordHookPlans(
   manifest: GitHubFleetManifest,
   selected: readonly string[],
   dependencies: GitHubFleetRetirementDependencies,
+  progress?: GitHubFleetProgress,
 ): Promise<GitHubFleetManifest> {
   let updated = manifest
-  for (const repo of selected) {
+  for (const [index, repo] of selected.entries()) {
+    progress?.(`Recording repository hook retirement ${index + 1}/${selected.length}`)
     const entry = updated.repositories[repo]
     if (!entry || entry.state !== 'retiring' || !entry.retirement) continue
     const desired = await desiredSubscriptions(repo, entry)
     const hooks = await dependencies.listHooks(repo)
     const plannedHooks = { ...entry.retirement.hooks }
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       if (plannedHooks[profile]) continue
       const matches = await matchingGitHubRepositoryHooks(hooks, desired[profile].slugHash)
       if (matches.length > 1) throw new Error(`${githubFleetSubscriptionName(repo, profile)}: multiple matching GitHub hooks exist`)
@@ -459,14 +482,21 @@ async function deletePlannedHooks(
   selected: readonly string[],
   manifestPath: string,
   dependencies: GitHubFleetRetirementDependencies,
+  progress?: GitHubFleetProgress,
 ): Promise<{ manifest: GitHubFleetManifest; count: number }> {
   let updated = manifest
   let count = 0
+  const total = selected.reduce((sum, repo) => (
+    sum + (updated.repositories[repo] ? githubFleetManifestProfiles(updated.repositories[repo]!).length : 0)
+  ), 0)
+  let index = 0
   for (const repo of selected) {
     let entry = updated.repositories[repo]
     if (!entry || entry.state !== 'retiring' || !entry.retirement) continue
     const desired = await desiredSubscriptions(repo, entry)
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
+      index += 1
+      progress?.(`Deleting repository hook ${index}/${total}`)
       const retirement = entry.retirement
       if (!retirement) throw new Error(`${repo}: retirement phase state disappeared`)
       const planned = retirement.hooks[profile]
@@ -507,7 +537,7 @@ async function removeLocalRoutes(
   for (const repo of selected) {
     const entry = updated.repositories[repo]
     if (!entry || entry.state !== 'retiring' || !entry.retirement || entry.retirement.routesRemoved) continue
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const name = githubFleetSubscriptionName(repo, profile)
       if (parseRoutes(routesText).subs.some((subscription) => subscription.name === name)) {
         routesText = removeSubscription(routesText, name).routesText
@@ -526,17 +556,25 @@ async function deleteRemoteRoutes(
   selected: readonly string[],
   manifestPath: string,
   dependencies: GitHubFleetRetirementDependencies,
+  progress?: GitHubFleetProgress,
 ): Promise<GitHubFleetManifest> {
   let updated = manifest
+  const total = selected.reduce((sum, repo) => (
+    sum + (updated.repositories[repo] ? githubFleetManifestProfiles(updated.repositories[repo]!).length : 0)
+  ), 0)
+  let index = 0
   for (const repo of selected) {
     const entry = updated.repositories[repo]
     if (!entry || entry.state !== 'retiring' || !entry.retirement || entry.retirement.kvRemoved) continue
     const desired = await desiredSubscriptions(repo, entry)
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
+      index += 1
+      progress?.(`Deleting remote route ${index}/${total}`)
       await dependencies.deleteKv('SUBS', subscriptionKvKey(desired[profile].slugHash))
     }
-    const remote = await dependencies.readKv()
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    progress?.('Verifying deleted remote routes')
+    const remote = await dependencies.readKv(progress)
+    for (const profile of githubFleetManifestProfiles(entry)) {
       if (remote.subs[subscriptionKvKey(desired[profile].slugHash)] !== undefined) {
         throw new Error(`${githubFleetSubscriptionName(repo, profile)}: production KV route still exists after deletion`)
       }
@@ -605,28 +643,29 @@ export async function applyGitHubFleetRetirement(
   }
   if (pending.length === 0) return { repositories: selected, deletedHooks: 0, deletedRoutes: 0, deletedSecrets: 0 }
 
-  await syncDisabledRoutes(files.routes, files.manifest, pending, dependencies)
-  for (const repo of pending) {
+  await syncDisabledRoutes(files.routes, files.manifest, pending, dependencies, options.progress)
+  const routeChecks = pending.flatMap((repo) => {
     const entry = files.manifest.repositories[repo]!
-    if (entry.retirement?.routesRemoved) continue
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
-      await waitForDisabledRoute(files.routes, repo, entry, profile, dependencies)
-    }
+    return entry.retirement?.routesRemoved
+      ? []
+      : githubFleetManifestProfiles(entry).map((profile) => ({ repo, entry, profile }))
+  })
+  for (const [index, check] of routeChecks.entries()) {
+    options.progress?.(`Probing disabled route ${index + 1}/${routeChecks.length}`)
+    await waitForDisabledRoute(files.routes, check.repo, check.entry, check.profile, dependencies)
   }
   if (dependencies.routeGraceMs > 0) {
+    options.progress?.(`Waiting ${dependencies.routeGraceMs / 1_000} seconds for route propagation`)
     await dependencies.sleep(dependencies.routeGraceMs)
-    for (const repo of pending) {
-      const entry = files.manifest.repositories[repo]!
-      if (entry.retirement?.routesRemoved) continue
-      for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
-        await waitForDisabledRoute(files.routes, repo, entry, profile, dependencies)
-      }
+    for (const [index, check] of routeChecks.entries()) {
+      options.progress?.(`Rechecking disabled route ${index + 1}/${routeChecks.length}`)
+      await waitForDisabledRoute(files.routes, check.repo, check.entry, check.profile, dependencies)
     }
   }
 
-  let manifest = await recordHookPlans(files.manifest, pending, dependencies)
+  let manifest = await recordHookPlans(files.manifest, pending, dependencies, options.progress)
   await saveManifest(resolved.manifest, manifest, dependencies)
-  const hookDeletion = await deletePlannedHooks(manifest, pending, resolved.manifest, dependencies)
+  const hookDeletion = await deletePlannedHooks(manifest, pending, resolved.manifest, dependencies, options.progress)
   manifest = hookDeletion.manifest
   const routeRemoval = await removeLocalRoutes(
     files,
@@ -637,7 +676,7 @@ export async function applyGitHubFleetRetirement(
     dependencies,
   )
   manifest = routeRemoval.manifest
-  manifest = await deleteRemoteRoutes(manifest, pending, resolved.manifest, dependencies)
+  manifest = await deleteRemoteRoutes(manifest, pending, resolved.manifest, dependencies, options.progress)
   const secretDeletion = await deleteRepositorySecrets(
     manifest,
     pending,
@@ -666,10 +705,12 @@ export async function verifyGitHubFleetRetirement(
   projectRoot = process.cwd(),
 ): Promise<GitHubFleetRetirementVerifyResult> {
   const selected = selectedRepositories(options)
+  options.progress?.('Reading retired fleet files and remote state')
   const files = await readFiles(options, projectRoot, dependencies)
-  const [remote, secrets] = await Promise.all([dependencies.readKv(), dependencies.listSecrets()])
+  const [remote, secrets] = await Promise.all([dependencies.readKv(options.progress), dependencies.listSecrets()])
   const issues: string[] = []
-  for (const repo of selected) {
+  for (const [index, repo] of selected.entries()) {
+    options.progress?.(`Verifying retired repository ${index + 1}/${selected.length}`)
     const entry = files.manifest.retiredRepositories[repo]
     if (!entry) {
       issues.push(`${repo}: repository is not retired in the manifest`)
@@ -677,7 +718,7 @@ export async function verifyGitHubFleetRetirement(
     }
     const desired = await desiredSubscriptions(repo, entry)
     const hooks = await dependencies.listHooks(repo)
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const name = githubFleetSubscriptionName(repo, profile)
       if (files.routes.subs.some((subscription) => subscription.name === name)) {
         issues.push(`${name}: local route still exists`)

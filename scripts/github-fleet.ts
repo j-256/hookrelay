@@ -1,10 +1,12 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, parse as parseJsonc, type FormattingOptions, type ParseError } from 'jsonc-parser'
+import { subscriptionKvKey } from '../src/lib/subscription'
 import type { GitHubFleetDiscovery, GitHubFleetDiscoveryOptions } from './github-fleet-discovery'
 import { discoverGitHubFleet } from './github-fleet-discovery'
 import {
   generateGitHubFleetManifestRepository,
+  githubFleetManifestProfiles,
   githubFleetManifestValues,
   parseGitHubFleetManifest,
   serializeGitHubFleetManifest,
@@ -19,7 +21,9 @@ import {
   buildGitHubFleetSubscription,
   githubFleetHmacName,
   githubFleetSubscriptionName,
+  parseGitHubFleetProfiles,
   type GitHubFleetProfileName,
+  type GitHubFleetProgress,
   type GitHubFleetSubscription,
 } from './github-fleet-model'
 import {
@@ -59,6 +63,8 @@ export interface GitHubFleetOptions {
   secretLimit: number
   yes: boolean
   retire?: boolean
+  profiles?: readonly GitHubFleetProfileName[]
+  progress?: GitHubFleetProgress
 }
 
 export interface GitHubFleetCapacity {
@@ -97,7 +103,7 @@ export interface GitHubFleetDependencies {
   discover(root: string, options?: GitHubFleetDiscoveryOptions): Promise<GitHubFleetDiscovery>
   listHooks(repo: string): Promise<GitHubRepositoryHook[]>
   listSecrets(): Promise<Set<string>>
-  readKv(): Promise<RemoteKvSnapshot>
+  readKv(progress?: GitHubFleetProgress): Promise<RemoteKvSnapshot>
   randomValues?: GitHubFleetRandomValues
   fileSystem?: AtomicFileSystem
 }
@@ -106,7 +112,7 @@ const DEFAULT_DEPENDENCIES: GitHubFleetDependencies = {
   discover: discoverGitHubFleet,
   listHooks: listGitHubRepositoryHooks,
   listSecrets: listWranglerSecrets,
-  readKv: readRemoteKvSnapshot,
+  readKv: (progress) => readRemoteKvSnapshot(undefined, progress),
 }
 
 interface FleetLocalState {
@@ -138,6 +144,7 @@ function usage(): string {
     '',
     'options:',
     '  --repo <owner/repo>    select a new repository, repeatable',
+    '  --profiles <names>     save a comma-separated profile subset for selected new repositories',
     '  --include-private       admit private repositories selected with --repo',
     '  --retire               operate on selected managed repositories as retirements',
     `  --secret-limit <count> Worker variable and secret limit (default: ${DEFAULT_SECRET_LIMIT})`,
@@ -163,6 +170,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   let secretLimit = DEFAULT_SECRET_LIMIT
   let yes = false
   let retire = false
+  let profiles: GitHubFleetProfileName[] | undefined
 
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index]!
@@ -181,6 +189,10 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       index += 1
     } else if (arg === '--include-private') {
       includePrivate = true
+    } else if (arg === '--profiles') {
+      if (profiles !== undefined) throw new Error('--profiles may only be supplied once')
+      profiles = parseGitHubFleetProfiles(optionValue(argv, index, arg))
+      index += 1
     } else if (arg === '--retire') {
       retire = true
     } else if (arg === '--secret-limit') {
@@ -199,14 +211,17 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   if (!root) throw new Error('--root is required')
   if (!manifest) throw new Error('--manifest is required')
   if (includePrivate && repositories.length === 0) throw new Error('--include-private requires at least one --repo')
+  if (profiles && repositories.length === 0) throw new Error('--profiles requires at least one --repo')
   if (retire && repositories.length === 0) throw new Error('--retire requires at least one --repo')
+  if (retire && profiles) throw new Error('--profiles cannot be combined with --retire')
   if (yes && phase !== 'apply') throw new Error('-y is only valid with apply')
-  return { phase: phase as GitHubFleetPhase, root, manifest, repositories, includePrivate, secretLimit, yes, retire }
+  return { phase: phase as GitHubFleetPhase, root, manifest, repositories, includePrivate, secretLimit, yes, retire, profiles }
 }
 
 function fleetDiscoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscoveryOptions {
   return {
     privateRepositories: new Set(options.includePrivate ? options.repositories : []),
+    progress: options.progress,
   }
 }
 
@@ -303,9 +318,11 @@ async function readHooks(
   discovery: GitHubFleetDiscovery,
   dependencies: GitHubFleetDependencies,
   blockers: string[],
+  progress?: GitHubFleetProgress,
 ): Promise<Map<string, GitHubRepositoryHook[]>> {
   const hooks = new Map<string, GitHubRepositoryHook[]>()
-  for (const repository of discovery.repositories) {
+  for (const [index, repository] of discovery.repositories.entries()) {
+    progress?.(`Reading repository hooks ${index + 1}/${discovery.repositories.length}`)
     try {
       hooks.set(repository.nameWithOwner, await dependencies.listHooks(repository.nameWithOwner))
     } catch (err) {
@@ -323,6 +340,7 @@ async function loadLocalState(
   generateSelected: boolean,
 ): Promise<FleetLocalState> {
   const paths = fleetPaths(options, projectRoot)
+  options.progress?.('Discovering repository checkouts')
   const discovery = await dependencies.discover(paths.root, fleetDiscoveryOptions(options))
   const blockers = [...discovery.blockers]
   const manifestIssue = await privateFileIssue(paths.manifest, dependencies.fileSystem)
@@ -355,6 +373,10 @@ async function loadLocalState(
     if (options.repositories.length > 0 && manifest.retiredRepositories[repo]) {
       blockers.push(`${repo}: repository is retired`)
     }
+    const entry = manifest.repositories[repo]
+    if (options.profiles && entry && !sameStrings(githubFleetManifestProfiles(entry), options.profiles)) {
+      blockers.push(`${repo}: saved fleet profiles differ; ordinary fleet enrollment cannot change profiles`)
+    }
   }
   const selected = new Set([...requested].filter((repo) => (
     manifest.repositories[repo]?.state !== 'retiring' && !manifest.retiredRepositories[repo]
@@ -370,18 +392,27 @@ async function loadLocalState(
     ...discovery,
     repositories: discovery.repositories.filter((repository) => !lifecycleRepositories.has(repository.nameWithOwner)),
   }
-  const hooks = await readHooks(activeDiscovery, dependencies, blockers)
+  const hooks = await readHooks(activeDiscovery, dependencies, blockers, options.progress)
   const manifestAdditions: string[] = []
   const managed = new Set(Object.keys(manifest.repositories).filter((repo) => (
     discoveredNames.has(repo) && manifest.repositories[repo]?.state !== 'retiring'
   )))
   for (const repo of discoveredNames) {
     const existingRoutes = profileRoutes(routes, repo)
-    const routeCount = Object.keys(existingRoutes).length
+    const existingProfiles = GITHUB_FLEET_PROFILE_NAMES.filter((profile) => existingRoutes[profile] !== undefined)
+    const routeCount = existingProfiles.length
+    const entry = manifest.repositories[repo]
     const lifecycleManaged = manifest.repositories[repo]?.state === 'retiring' || manifest.retiredRepositories[repo] !== undefined
     if (routeCount > 0 && !lifecycleManaged) managed.add(repo)
     if (lifecycleManaged) continue
-    if (routeCount !== 0 && routeCount !== GITHUB_FLEET_PROFILE_NAMES.length) {
+    const unexpectedProfiles = entry
+      ? existingProfiles.filter((profile) => !githubFleetManifestProfiles(entry).includes(profile))
+      : []
+    if (unexpectedProfiles.length > 0) {
+      blockers.push(`${repo}: routes exist outside the saved fleet profiles: ${unexpectedProfiles.join(', ')}`)
+      continue
+    }
+    if (!entry && routeCount !== 0 && routeCount !== GITHUB_FLEET_PROFILE_NAMES.length) {
       blockers.push(`${repo}: only ${routeCount} of the three fleet subscriptions exist`)
       continue
     }
@@ -398,7 +429,11 @@ async function loadLocalState(
       }
     } else if (!manifest.repositories[repo] && routeCount === 0 && selected.has(repo) && generateSelected) {
       try {
-        const generated = generateGitHubFleetManifestRepository(repo, dependencies.randomValues)
+        const generated = generateGitHubFleetManifestRepository(
+          repo,
+          dependencies.randomValues,
+          options.profiles ?? GITHUB_FLEET_PROFILE_NAMES,
+        )
         manifest = withGitHubFleetManifestRepository(manifest, repo, generated)
         manifestAdditions.push(repo)
         managed.add(repo)
@@ -447,6 +482,24 @@ function plannedRepositoryNames(state: FleetLocalState): string[] {
     .sort()
 }
 
+function plannedRepositoryProfiles(
+  state: FleetLocalState,
+  options: GitHubFleetOptions,
+  repo: string,
+): readonly GitHubFleetProfileName[] {
+  const entry = state.manifest.repositories[repo]
+  return entry ? githubFleetManifestProfiles(entry) : options.profiles ?? GITHUB_FLEET_PROFILE_NAMES
+}
+
+function inactiveRepositoryProfiles(entry: GitHubFleetManifestRepository): GitHubFleetProfileName[] {
+  const activeProfiles = githubFleetManifestProfiles(entry)
+  return GITHUB_FLEET_PROFILE_NAMES.filter((profile) => !activeProfiles.includes(profile))
+}
+
+function plannedProfileNames(state: FleetLocalState, options: GitHubFleetOptions): Set<GitHubFleetProfileName> {
+  return new Set(plannedRepositoryNames(state).flatMap((repo) => plannedRepositoryProfiles(state, options, repo)))
+}
+
 export async function planGitHubFleet(
   options: GitHubFleetOptions,
   dependencies: GitHubFleetDependencies = DEFAULT_DEPENDENCIES,
@@ -492,8 +545,9 @@ export async function planGitHubFleet(
   const routeDrift: string[] = []
   const selectedNames = [...state.selected].sort()
   const manifestAdditions = [...state.manifestAdditions]
+  const plannedProfiles = plannedProfileNames(state, options)
 
-  for (const sink of Object.values(GITHUB_FLEET_PROFILES).map((profile) => profile.sink)) {
+  for (const sink of [...plannedProfiles].map((profile) => GITHUB_FLEET_PROFILES[profile].sink)) {
     if (!state.routes.sinks.some((candidate) => candidate.name === sink)) blockers.push(`required sink is missing: ${sink}`)
   }
 
@@ -504,7 +558,7 @@ export async function planGitHubFleet(
   for (const repo of plannedRepositoryNames(state)) {
     const entry = state.manifest.repositories[repo]
     const existingRoutes = profileRoutes(state.routes, repo)
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of plannedRepositoryProfiles(state, options, repo)) {
       const name = githubFleetSubscriptionName(repo, profile)
       const sub = existingRoutes[profile]
       if (!sub) {
@@ -523,16 +577,29 @@ export async function planGitHubFleet(
         else if (matches.length > 1) blockers.push(`${name}: multiple matching GitHub hooks in ${repo}`)
       }
     }
+    if (entry) {
+      const repoHooks = state.hooks.get(repo)
+      if (repoHooks) {
+        for (const profile of inactiveRepositoryProfiles(entry)) {
+          const desired = await buildGitHubFleetSubscription(repo, profile, githubFleetManifestValues(entry))
+          const matches = await matchingGitHubRepositoryHooks(repoHooks, desired.slugHash)
+          if (matches.length > 0) {
+            blockers.push(`${desired.name}: inactive profile still has ${matches.length} matching GitHub hook(s)`)
+          }
+        }
+      }
+    }
   }
   blockers.push(...routeDrift.map((issue) => `route drift: ${issue}`))
 
+  options.progress?.('Reading Worker configuration, secrets, and remote routes')
   const [wranglerText, existingSecrets, remoteKv] = await Promise.all([
     readFile(paths.wrangler, 'utf8'),
     dependencies.listSecrets(),
-    dependencies.readKv(),
+    dependencies.readKv(options.progress),
   ])
   const vars = countWranglerTextVars(wranglerText)
-  const requiredSinkNames = new Set<string>(Object.values(GITHUB_FLEET_PROFILES).map((profile) => profile.sink))
+  const requiredSinkNames = new Set<string>([...plannedProfiles].map((profile) => GITHUB_FLEET_PROFILES[profile].sink))
   for (const sink of state.routes.sinks.filter((candidate) => requiredSinkNames.has(candidate.name))) {
     for (const [field, value] of Object.entries(sink)) {
       if (field.endsWith('Env') && typeof value === 'string' && !existingSecrets.has(value)) {
@@ -555,6 +622,17 @@ export async function planGitHubFleet(
     limit: options.secretLimit,
   }
   if (projected > options.secretLimit) blockers.push(`projected Worker variables and secrets ${projected} exceed limit ${options.secretLimit}`)
+
+  for (const repo of plannedRepositoryNames(state)) {
+    const entry = state.manifest.repositories[repo]
+    if (!entry) continue
+    for (const profile of inactiveRepositoryProfiles(entry)) {
+      const desired = await buildGitHubFleetSubscription(repo, profile, githubFleetManifestValues(entry))
+      if (remoteKv.subs[subscriptionKvKey(desired.slugHash)] !== undefined) {
+        blockers.push(`${desired.name}: inactive profile still has a production KV route`)
+      }
+    }
+  }
 
   const kvPlan = computePlan(state.routes, remoteKv)
   return {
@@ -604,7 +682,7 @@ export async function prepareGitHubFleet(
   let devVarAdditions = 0
   let subscriptionAdditions = 0
 
-  for (const sink of Object.values(GITHUB_FLEET_PROFILES).map((profile) => profile.sink)) {
+  for (const sink of [...plannedProfileNames(state, options)].map((profile) => GITHUB_FLEET_PROFILES[profile].sink)) {
     if (!routes.sinks.some((candidate) => candidate.name === sink)) blockers.push(`required sink is missing: ${sink}`)
   }
 
@@ -615,7 +693,7 @@ export async function prepareGitHubFleet(
       continue
     }
     const existingRoutes = profileRoutes(routes, repo)
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const existing = existingRoutes[profile]
       if (existing) {
         const issues = await fleetRouteIssues(repo, profile, existing, entry)
@@ -641,7 +719,7 @@ export async function prepareGitHubFleet(
   for (const repo of plannedRepositoryNames(state)) {
     const entry = state.manifest.repositories[repo]!
     const existingNames = new Set(routes.subs.map((sub) => sub.name))
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const name = githubFleetSubscriptionName(repo, profile)
       if (existingNames.has(name)) continue
       const subscription = await buildGitHubFleetSubscription(repo, profile, githubFleetManifestValues(entry))
@@ -693,7 +771,10 @@ async function main(): Promise<void> {
     console.log(usage())
     return
   }
-  const options = parseGitHubFleetArgs(argv)
+  const options: GitHubFleetOptions = {
+    ...parseGitHubFleetArgs(argv),
+    progress: (message) => console.error(`PROGRESS ${message}`),
+  }
   if (options.retire) {
     const {
       applyGitHubFleetRetirement,

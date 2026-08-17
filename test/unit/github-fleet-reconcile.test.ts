@@ -4,6 +4,7 @@ import { chmod, lstat, mkdtemp, open, readFile, rename, rm, unlink, writeFile } 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
+import { subscriptionKvKey } from '../../src/lib/subscription'
 import type { GitHubFleetDependencies, GitHubFleetOptions } from '../../scripts/github-fleet'
 import {
   applyGitHubFleet,
@@ -13,6 +14,7 @@ import {
   type GitHubFleetReconcileDependencies,
 } from '../../scripts/github-fleet-reconcile'
 import {
+  githubFleetManifestProfiles,
   serializeGitHubFleetManifest,
   type GitHubFleetManifest,
   type GitHubFleetManifestRepository,
@@ -81,7 +83,7 @@ function manifestEntry(repo: string, seed: string): GitHubFleetManifestRepositor
 async function subscriptionsFor(manifest: GitHubFleetManifest): Promise<ReturnType<typeof parseRoutes>['subs']> {
   const subscriptions = []
   for (const [repo, entry] of Object.entries(manifest.repositories)) {
-    for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+    for (const profile of githubFleetManifestProfiles(entry)) {
       const sub = await buildGitHubFleetSubscription(repo, profile, {
         hmacName: entry.hmac.name,
         slugs: entry.slugs,
@@ -223,6 +225,74 @@ describe('GitHub fleet apply and verify', () => {
       expect(putSecrets).not.toHaveBeenCalled()
       expect(putKv).not.toHaveBeenCalled()
       expect(createHook).not.toHaveBeenCalled()
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('applies and verifies only the profiles saved for a repository', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const entry: GitHubFleetManifestRepository = { ...manifestEntry(REPO, 'alerts-only'), profiles: ['alerts'] }
+    const manifest: GitHubFleetManifest = { version: 3, repositories: { [REPO]: entry }, retiredRepositories: {} }
+    const directory = await writeProject(manifest, fileSystem)
+    try {
+      const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
+      const secrets = new Set(['SINK_ACTIVITY', 'SINK_STARS', 'SINK_ALERTS'])
+      const hooks: GitHubRepositoryHook[] = []
+      const readKv = async () => cloneKv(remote)
+      const listSecrets = async () => new Set(secrets)
+      const planDependencies: GitHubFleetDependencies = {
+        discover: async () => ({ repositories: [{ nameWithOwner: REPO, path: `/repo/${REPO}`, isFork: false }], exclusions: [], blockers: [] }),
+        listHooks: async () => [...hooks],
+        listSecrets,
+        readKv,
+        fileSystem,
+      }
+      const dependencies: GitHubFleetReconcileDependencies = {
+        planDependencies,
+        listHooks: async () => [...hooks],
+        createHook: async (_repo, url, _secret, selection) => {
+          hooks.push({
+            id: 1,
+            active: true,
+            events: [...selection.events!],
+            config: { url, content_type: 'json', insecure_ssl: '0' },
+          })
+          return 1
+        },
+        pingHook: async () => ({ id: 'ping-guid', event: 'ping', statusCode: 200, deliveredAt: null }),
+        listSecrets,
+        putSecrets: async (values) => {
+          for (const value of values) secrets.add(value.name)
+          return new Set(secrets)
+        },
+        readKv,
+        putKv: async (binding, key, value) => { remote[binding === 'SUBS' ? 'subs' : 'sinks'][key] = value },
+        fetch: async () => new Response('', { status: 401 }),
+        sleep: async () => undefined,
+      }
+
+      await expect(applyGitHubFleet(fleetOptions('apply', [REPO]), directory, dependencies)).resolves.toMatchObject({
+        reconciledHooks: 1,
+      })
+      expect(Object.keys(remote.subs)).toHaveLength(1)
+      expect(remote.sinks['sink:discord:repo-activity']).toBeUndefined()
+      expect(remote.sinks['sink:discord:github-stars']).toBeUndefined()
+      expect(hooks).toHaveLength(1)
+      await expect(verifyGitHubFleet(fleetOptions('verify', [REPO]), directory, dependencies)).resolves.toMatchObject({
+        verifiedHooks: 1,
+        issues: [],
+      })
+
+      const inactive = await buildGitHubFleetSubscription(REPO, 'activity', {
+        hmacName: entry.hmac.name,
+        slugs: entry.slugs,
+      })
+      remote.subs[subscriptionKvKey(inactive.slugHash)] = '{}'
+      hooks.push(hookFor(entry, REPO, 'activity', 3))
+      const drifted = await verifyGitHubFleet(fleetOptions('verify', [REPO]), directory, dependencies)
+      expect(drifted.issues.join('\n')).toMatch(/inactive profile still has.*GitHub hook/)
+      expect(drifted.issues.join('\n')).toMatch(/inactive profile still has a production KV route/)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

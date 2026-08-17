@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import {
   emptyGitHubFleetManifest,
   generateGitHubFleetManifestRepository,
+  githubFleetManifestProfiles,
   parseGitHubFleetManifest,
   serializeGitHubFleetManifest,
   withGitHubFleetManifestRepository,
@@ -79,6 +80,29 @@ describe('GitHub fleet manifest', () => {
     const saved = withGitHubFleetManifestRepository(emptyGitHubFleetManifest(), 'example-owner/example-repo', generated)
     const reparsed = parseGitHubFleetManifest(serializeGitHubFleetManifest(saved))
     expect(reparsed.repositories['example-owner/example-repo']).toEqual(generated)
+  })
+
+  it('persists a selected profile subset while omitted profiles retain the default topology', () => {
+    const slugs = [FIRST_SLUG, SECOND_SLUG, THIRD_SLUG]
+    const generated = generateGitHubFleetManifestRepository('example-owner/example-repo', {
+      hmac: () => 'generated-secret',
+      slug: () => slugs.shift()!,
+    }, ['alerts'])
+    const saved = withGitHubFleetManifestRepository(emptyGitHubFleetManifest(), 'example-owner/example-repo', generated)
+    const reparsed = parseGitHubFleetManifest(serializeGitHubFleetManifest(saved))
+    expect(reparsed.repositories['example-owner/example-repo']?.profiles).toEqual(['alerts'])
+    expect(githubFleetManifestProfiles(reparsed.repositories['example-owner/example-repo']!)).toEqual(['alerts'])
+    expect(githubFleetManifestProfiles(entry('example-owner/default-repo'))).toEqual(['activity', 'stars', 'alerts'])
+  })
+
+  it('rejects duplicate or noncanonical saved profiles', () => {
+    expect(() => serializeGitHubFleetManifest({
+      version: 3,
+      repositories: {
+        'example-owner/example-repo': { ...entry('example-owner/example-repo'), profiles: ['alerts', 'activity'] },
+      },
+      retiredRepositories: {},
+    })).toThrow(/canonical order/)
   })
 
   it('rejects recovered values that disagree without exposing either value', () => {

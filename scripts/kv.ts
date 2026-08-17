@@ -1,4 +1,5 @@
 import { SUBSCRIPTION_KEY_PREFIX } from '../src/lib/subscription'
+import type { GitHubFleetProgress } from './github-fleet-model'
 import { runProcess } from './setup'
 
 type ProcessRunner = typeof runProcess
@@ -18,7 +19,9 @@ export function printableKvKey(key: string): string {
 export async function listRemoteKv(
   binding: string,
   runner: ProcessRunner = runProcess,
+  progress?: GitHubFleetProgress,
 ): Promise<Record<string, string>> {
+  progress?.(`Listing remote ${binding} keys`)
   const keysOut = await runner(
     'npx',
     ['wrangler', 'kv', 'key', 'list', '--binding', binding, '--remote'],
@@ -26,7 +29,8 @@ export async function listRemoteKv(
   )
   const keys = JSON.parse(keysOut) as Array<{ name: string }>
   const out: Record<string, string> = {}
-  for (const { name } of keys) {
+  for (const [index, { name }] of keys.entries()) {
+    progress?.(`Reading remote ${binding} value ${index + 1}/${keys.length}`)
     if (binding === 'SUBS' && name.startsWith('sub:') && !name.startsWith(SUBSCRIPTION_KEY_PREFIX)) {
       out[name] = ''
       continue
@@ -40,10 +44,13 @@ export async function listRemoteKv(
   return out
 }
 
-export async function readRemoteKvSnapshot(runner: ProcessRunner = runProcess): Promise<RemoteKvSnapshot> {
+export async function readRemoteKvSnapshot(
+  runner: ProcessRunner = runProcess,
+  progress?: GitHubFleetProgress,
+): Promise<RemoteKvSnapshot> {
   return {
-    subs: await listRemoteKv('SUBS', runner),
-    sinks: await listRemoteKv('SINKS', runner),
+    subs: await listRemoteKv('SUBS', runner, progress),
+    sinks: await listRemoteKv('SINKS', runner, progress),
   }
 }
 

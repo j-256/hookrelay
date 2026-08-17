@@ -139,6 +139,18 @@ describe('GitHub fleet arguments', () => {
     ])).toMatchObject({ repositories: [REPO, OTHER_REPO], secretLimit: 80, yes: true })
   })
 
+  it('accepts a profile subset only with explicit repository selectors', () => {
+    expect(parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--profiles', 'alerts',
+    ])).toMatchObject({ repositories: [REPO], profiles: ['alerts'] })
+    expect(() => parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--profiles', 'alerts',
+    ])).toThrow(/requires at least one --repo/)
+    expect(() => parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--profiles', 'alerts', '--retire',
+    ])).toThrow(/cannot be combined/)
+  })
+
   it('requires repository selectors when private discovery is enabled', () => {
     expect(parseGitHubFleetArgs([
       'plan', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--include-private',
@@ -197,7 +209,8 @@ describe('GitHub fleet planning and preparation', () => {
   it('plans selected additions read-only with capacity accounting and secret-free output', async () => {
     const directory = await project()
     try {
-      const planOptions = { ...options([REPO]), phase: 'plan' as const }
+      const progress: string[] = []
+      const planOptions = { ...options([REPO]), phase: 'plan' as const, progress: (message: string) => progress.push(message) }
       const plan = await planGitHubFleet(planOptions, dependencies([OTHER_REPO, REPO]), directory)
       expect(plan.selected).toEqual([REPO])
       expect(plan.manifestAdditions).toEqual([REPO])
@@ -207,6 +220,15 @@ describe('GitHub fleet planning and preparation', () => {
       const output = formatGitHubFleetPlan(plan)
       expect(output).not.toContain(HMAC_VALUE)
       expect(output).not.toContain(SLUGS.activity)
+      expect(progress).toEqual(expect.arrayContaining([
+        'Discovering repository checkouts',
+        'Reading repository hooks 1/2',
+        'Reading repository hooks 2/2',
+        'Reading Worker configuration, secrets, and remote routes',
+      ]))
+      expect(progress.join('\n')).not.toContain(REPO)
+      expect(progress.join('\n')).not.toContain(HMAC_VALUE)
+      expect(progress.join('\n')).not.toContain(SLUGS.activity)
       await expect(readFile(join(directory, 'fleet.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await rm(directory, { recursive: true, force: true })
@@ -231,6 +253,46 @@ describe('GitHub fleet planning and preparation', () => {
       const second = await prepareGitHubFleet(options(), dependencies(), directory)
       expect(second).toMatchObject({ manifestAdditions: 0, devVarAdditions: 0, subscriptionAdditions: 0 })
       expect(await readFile(join(directory, 'fleet.json'), 'utf8')).toBe(manifestText)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('prepares and preserves an alerts-only repository selection', async () => {
+    const directory = await project()
+    try {
+      const selectedOptions = { ...options([REPO]), profiles: ['alerts'] as const }
+      const plan = await planGitHubFleet({ ...selectedOptions, phase: 'plan' }, dependencies(), directory)
+      expect(plan.subscriptionAdditions).toEqual([`github:${REPO}:alerts`])
+      expect(plan.hookAdditions).toEqual([`github:${REPO}:alerts`])
+
+      const prepared = await prepareGitHubFleet(selectedOptions, dependencies(), directory)
+      expect(prepared).toMatchObject({ manifestAdditions: 1, subscriptionAdditions: 1 })
+      const manifest = parseGitHubFleetManifest(await readFile(join(directory, 'fleet.json'), 'utf8'))
+      expect(manifest.repositories[REPO]?.profiles).toEqual(['alerts'])
+      const routes = JSON.parse(await readFile(join(directory, 'routes.jsonc'), 'utf8')) as { subs: Array<{ name: string }> }
+      expect(routes.subs.map((subscription) => subscription.name)).toEqual([`github:${REPO}:alerts`])
+
+      const audit = await planGitHubFleet({ ...options(), phase: 'plan' }, dependencies(), directory)
+      expect(audit).toMatchObject({
+        subscriptionAdditions: [],
+        hookAdditions: [`github:${REPO}:alerts`],
+        blockers: [],
+      })
+      const conflict = await planGitHubFleet(
+        { ...options([REPO]), phase: 'plan', profiles: ['activity'] },
+        dependencies(),
+        directory,
+      )
+      expect(conflict.blockers.join('\n')).toMatch(/saved fleet profiles differ/)
+
+      const entry = manifest.repositories[REPO]!
+      const activity = await buildGitHubFleetSubscription(REPO, 'activity', githubFleetManifestValues(entry))
+      const staleRoutes = JSON.parse(await readFile(join(directory, 'routes.jsonc'), 'utf8')) as { subs: unknown[] }
+      staleRoutes.subs.push(activity)
+      await writeFile(join(directory, 'routes.jsonc'), `${JSON.stringify(staleRoutes, null, 2)}\n`)
+      const stale = await planGitHubFleet({ ...options(), phase: 'plan' }, dependencies(), directory)
+      expect(stale.blockers.join('\n')).toMatch(/routes exist outside the saved fleet profiles: activity/)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

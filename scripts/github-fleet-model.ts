@@ -26,6 +26,24 @@ export const GITHUB_FLEET_PROFILE_NAMES = Object.freeze(
 )
 
 export type GitHubFleetProfileName = keyof typeof GITHUB_FLEET_PROFILES
+export type GitHubFleetProgress = (message: string) => void
+
+export function parseGitHubFleetProfiles(value: string): GitHubFleetProfileName[] {
+  const requested = value.split(',')
+  if (requested.some((profile) => profile === '')) {
+    throw new Error('GitHub fleet profiles contain an empty name')
+  }
+  const selected = new Set<GitHubFleetProfileName>()
+  for (const profile of requested) {
+    if (!GITHUB_FLEET_PROFILE_NAMES.includes(profile as GitHubFleetProfileName)) {
+      throw new Error(`unknown GitHub fleet profile: ${profile}; valid values: ${GITHUB_FLEET_PROFILE_NAMES.join(', ')}`)
+    }
+    const name = profile as GitHubFleetProfileName
+    if (selected.has(name)) throw new Error(`GitHub fleet profile selected more than once: ${name}`)
+    selected.add(name)
+  }
+  return GITHUB_FLEET_PROFILE_NAMES.filter((profile) => selected.has(profile))
+}
 
 export interface GitHubFleetValues {
   hmacName: string

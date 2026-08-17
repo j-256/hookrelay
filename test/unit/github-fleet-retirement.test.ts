@@ -13,6 +13,7 @@ import {
 } from '../../scripts/github-fleet-retirement'
 import type { GitHubFleetOptions } from '../../scripts/github-fleet'
 import {
+  githubFleetManifestProfiles,
   parseGitHubFleetManifest,
   type GitHubFleetManifestRepository,
 } from '../../scripts/github-fleet-manifest'
@@ -52,13 +53,16 @@ function options(phase: GitHubFleetOptions['phase']): GitHubFleetOptions {
   }
 }
 
-async function fixture(fileSystem: AtomicFileSystem): Promise<{ directory: string; routesText: string }> {
+async function fixture(
+  fileSystem: AtomicFileSystem,
+  entry: GitHubFleetManifestRepository = ENTRY,
+): Promise<{ directory: string; routesText: string }> {
   const directory = await mkdtemp(join(tmpdir(), 'hookrelay-fleet-retire-'))
   const subscriptions = []
-  for (const profile of GITHUB_FLEET_PROFILE_NAMES) {
+  for (const profile of githubFleetManifestProfiles(entry)) {
     subscriptions.push(await buildGitHubFleetSubscription(REPO, profile, {
-      hmacName: ENTRY.hmac.name,
-      slugs: ENTRY.slugs,
+      hmacName: entry.hmac.name,
+      slugs: entry.slugs,
     }))
   }
   const routesText = `${JSON.stringify({
@@ -71,22 +75,26 @@ async function fixture(fileSystem: AtomicFileSystem): Promise<{ directory: strin
     ],
   }, null, 2)}\n`
   await writeFile(join(directory, 'routes.jsonc'), routesText)
-  await writePrivateText(join(directory, '.dev.vars'), `${ENTRY.hmac.name}=${ENTRY.hmac.value}\n`, fileSystem)
+  await writePrivateText(join(directory, '.dev.vars'), `${entry.hmac.name}=${entry.hmac.value}\n`, fileSystem)
   await writePrivateText(join(directory, 'fleet.json'), `${JSON.stringify({
-    version: 2,
-    repositories: { [REPO]: ENTRY },
+    version: entry.profiles ? 3 : 2,
+    repositories: { [REPO]: entry },
     retiredRepositories: {},
   }, null, 2)}\n`, fileSystem)
   return { directory, routesText }
 }
 
-function hook(profile: keyof typeof GITHUB_FLEET_PROFILES, id: number): GitHubRepositoryHook {
+function hook(
+  profile: keyof typeof GITHUB_FLEET_PROFILES,
+  id: number,
+  entry: GitHubFleetManifestRepository = ENTRY,
+): GitHubRepositoryHook {
   return {
     id,
     active: true,
     events: [...parseGitHubEventSelection(GITHUB_FLEET_PROFILES[profile].eventProfiles.join(',')).events!],
     config: {
-      url: `https://hooks.example.com/hook/github/${ENTRY.slugs[profile]}`,
+      url: `https://hooks.example.com/hook/github/${entry.slugs[profile]}`,
       content_type: 'json',
       insecure_ssl: '0',
     },
@@ -176,6 +184,36 @@ function harness(
 }
 
 describe('GitHub fleet retirement', () => {
+  it('retires only the profiles saved for a repository', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const entry: GitHubFleetManifestRepository = { ...ENTRY, profiles: ['alerts'] }
+    const { directory, routesText } = await fixture(fileSystem, entry)
+    const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
+    applyPlan(routesText, remote)
+    const hooks = [hook('alerts', 1, entry)]
+    const secrets = new Set([entry.hmac.name])
+    const test = harness(directory, remote, hooks, secrets, fileSystem)
+    try {
+      await expect(planGitHubFleetRetirement(options('plan'), test.dependencies, directory)).resolves.toMatchObject({
+        blockers: [],
+        routesToDisable: [`github:${REPO}:alerts`],
+      })
+      await expect(prepareGitHubFleetRetirement(options('prepare'), test.dependencies, directory)).resolves.toMatchObject({
+        disabledSubscriptions: 1,
+      })
+      await expect(applyGitHubFleetRetirement(options('apply'), test.dependencies, directory)).resolves.toMatchObject({
+        deletedHooks: 1,
+        deletedRoutes: 1,
+        deletedSecrets: 1,
+      })
+      await expect(verifyGitHubFleetRetirement(options('verify'), test.dependencies, directory)).resolves.toMatchObject({
+        issues: [],
+      })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
   it('upgrades, disables, deletes exact owned state, and verifies without pinging', async () => {
     const fileSystem = modeAwareFileSystem()
     const { directory, routesText } = await fixture(fileSystem)

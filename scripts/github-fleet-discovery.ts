@@ -2,7 +2,10 @@ import { execFile } from 'node:child_process'
 import { opendir, realpath, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { promisify } from 'node:util'
-import { assertGitHubFleetRepositoryCollisions } from './github-fleet-model'
+import {
+  assertGitHubFleetRepositoryCollisions,
+  type GitHubFleetProgress,
+} from './github-fleet-model'
 
 const execFileP = promisify(execFile)
 
@@ -28,6 +31,7 @@ export interface GitHubFleetDiscovery {
 
 export interface GitHubFleetDiscoveryOptions {
   privateRepositories?: ReadonlySet<string>
+  progress?: GitHubFleetProgress
 }
 
 export type GitHubFleetCommandRunner = (command: string, args: string[]) => Promise<string>
@@ -119,7 +123,9 @@ export async function discoverGitHubFleet(
   const blockers: string[] = []
   const canonicalOwners = new Map<string, string>()
 
-  for (const child of await childNames(resolvedRoot)) {
+  const children = await childNames(resolvedRoot)
+  for (const [index, child] of children.entries()) {
+    options.progress?.(`Inspecting repository checkout ${index + 1}/${children.length}`)
     const childPath = join(resolvedRoot, child)
     let info
     try {

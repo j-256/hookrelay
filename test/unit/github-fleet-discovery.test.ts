@@ -70,7 +70,11 @@ describe('GitHub fleet discovery', () => {
         return JSON.stringify({ nameWithOwner: repo, ...value })
       }
 
-      const result = await discoverGitHubFleet(root, {}, runner)
+      const progress: string[] = []
+      const result = await discoverGitHubFleet(root, { progress: (message) => progress.push(message) }, runner)
+      expect(progress[0]).toBe('Inspecting repository checkout 1/10')
+      expect(progress.at(-1)).toBe('Inspecting repository checkout 10/10')
+      expect(progress.join('\n')).not.toContain('private')
       expect(result.repositories.map((repo) => repo.nameWithOwner)).toEqual([
         'example-org/example-site',
         'example-owner/example-repo',
