@@ -87,6 +87,7 @@ export interface GitHubFleetPlan {
   subscriptionAdditions: string[]
   hookAdditions: string[]
   routeDrift: string[]
+  remoteRouteDrift: string[]
   remoteKvPuts: number
   remoteKvDeletes: number
   capacity: GitHubFleetCapacity
@@ -527,6 +528,7 @@ export async function planGitHubFleet(
       subscriptionAdditions: [],
       hookAdditions: [],
       routeDrift: [],
+      remoteRouteDrift: [],
       remoteKvPuts: 0,
       remoteKvDeletes: 0,
       capacity: {
@@ -635,6 +637,22 @@ export async function planGitHubFleet(
   }
 
   const kvPlan = computePlan(state.routes, remoteKv)
+  const subscriptionNamesByKey = new Map<string, string>()
+  const subscriptionsByName = routeMap(state.routes)
+  for (const repo of plannedRepositoryNames(state)) {
+    for (const profile of plannedRepositoryProfiles(state, options, repo)) {
+      const name = githubFleetSubscriptionName(repo, profile)
+      const subscription = subscriptionsByName.get(name)
+      if (subscription) subscriptionNamesByKey.set(subscriptionKvKey(subscription.slugHash), name)
+    }
+  }
+  const sinkKeys = new Set([...plannedProfiles].map((profile) => `sink:${GITHUB_FLEET_PROFILES[profile].sink}`))
+  const remoteRouteDrift = kvPlan.subPuts.flatMap((put) => {
+    const name = subscriptionNamesByKey.get(put.key)
+    return name ? [`production KV differs for ${name}`] : []
+  }).concat(kvPlan.sinkPuts
+    .filter((put) => sinkKeys.has(put.key))
+    .map((put) => `production KV differs for ${put.key}`))
   return {
     discovered: state.discovery.repositories.map((repo) => repo.nameWithOwner),
     selected: selectedNames,
@@ -650,6 +668,7 @@ export async function planGitHubFleet(
     subscriptionAdditions: subscriptionAdditions.sort(),
     hookAdditions: hookAdditions.sort(),
     routeDrift: routeDrift.sort(),
+    remoteRouteDrift: remoteRouteDrift.sort(),
     remoteKvPuts: kvPlan.subPuts.length + kvPlan.sinkPuts.length,
     remoteKvDeletes: kvPlan.subDeletes.length + kvPlan.sinkDeletes.length,
     capacity,
@@ -761,6 +780,7 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
   for (const repo of plan.manifestAdditions) lines.push(`ADD manifest ${repo}`)
   for (const name of plan.subscriptionAdditions) lines.push(`ADD subscription ${name}`)
   for (const name of plan.hookAdditions) lines.push(`ADD hook ${name}`)
+  for (const drift of plan.remoteRouteDrift) lines.push(`DRIFT ${drift}`)
   for (const blocker of plan.blockers) lines.push(`BLOCK ${blocker}`)
   return lines.join('\n')
 }
@@ -826,8 +846,6 @@ async function main(): Promise<void> {
   }
   const { applyGitHubFleet, verifyGitHubFleet } = await import('./github-fleet-reconcile')
   if (options.phase === 'apply') {
-    const preview = await planGitHubFleet(options)
-    console.log(formatGitHubFleetPlan(preview))
     const result = await applyGitHubFleet(options)
     console.log(`Installed repository HMACs: ${result.installedSecrets}`)
     console.log(`Reconciled GitHub hooks: ${result.reconciledHooks}`)

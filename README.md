@@ -408,7 +408,7 @@ pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/private
 
 The ordinary fleet workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST.
 
-Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Long discovery, hook, KV, propagation, and reconciliation phases emit count-based progress on stderr without printing repository names, keys, values, secret values, or raw slugs. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
+Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply computes its review plan once, verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Remote KV inventories use Wrangler bulk reads instead of launching one process per key. Long discovery, hook, KV, propagation, and reconciliation phases emit count-based progress on stderr without printing repository names, keys, values, secret values, or raw slugs. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
 
 Fleet retirement is a separate, explicit use of the same phases and selection arguments:
 

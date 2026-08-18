@@ -466,27 +466,6 @@ export async function applyGitHubFleet(
   return { selected, installedSecrets: missingSecrets.length, reconciledHooks }
 }
 
-async function remoteRouteIssues(
-  routes: Routes,
-  manifest: GitHubFleetManifest,
-  repositories: readonly string[],
-  dependencies: ResolvedDependencies,
-  progress?: GitHubFleetProgress,
-): Promise<string[]> {
-  const names = repositories.flatMap((repo) => (
-    repositoryProfiles(manifest, repo).map((profile) => githubFleetSubscriptionName(repo, profile))
-  ))
-  const keys = targetSubscriptionKeys(routes, names)
-  const sinkKeys = new Set(repositories.flatMap((repo) => (
-    repositoryProfiles(manifest, repo).map((profile) => `sink:${GITHUB_FLEET_PROFILES[profile].sink}`)
-  )))
-  const plan = computePlan(routes, await dependencies.readKv(progress))
-  return plan.subPuts
-    .filter((put) => keys.has(put.key))
-    .map((put) => `production KV differs for ${names.find((name) => subscriptionKvKey(namedSubscription(routes, name).slugHash) === put.key)}`)
-    .concat(plan.sinkPuts.filter((put) => sinkKeys.has(put.key)).map((put) => `production KV differs for ${put.key}`))
-}
-
 export async function verifyGitHubFleet(
   options: GitHubFleetOptions,
   projectRoot = process.cwd(),
@@ -501,8 +480,7 @@ export async function verifyGitHubFleet(
   options.progress?.('Reading prepared fleet files and Worker secrets')
   const files = await readFleetFiles(options, projectRoot, dependencies)
   const secretNames = await dependencies.listSecrets()
-  options.progress?.('Checking remote routes')
-  issues.push(...await remoteRouteIssues(files.routes, files.manifest, repositories, dependencies, options.progress))
+  issues.push(...plan.remoteRouteDrift)
 
   for (const repo of repositories) {
     const entry = files.manifest.repositories[repo]

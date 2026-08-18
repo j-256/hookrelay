@@ -239,7 +239,7 @@ describe('GitHub fleet apply and verify', () => {
       const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
       const secrets = new Set(['SINK_ACTIVITY', 'SINK_STARS', 'SINK_ALERTS'])
       const hooks: GitHubRepositoryHook[] = []
-      const readKv = async () => cloneKv(remote)
+      const readKv = vi.fn(async () => cloneKv(remote))
       const listSecrets = async () => new Set(secrets)
       const planDependencies: GitHubFleetDependencies = {
         discover: async () => ({ repositories: [{ nameWithOwner: REPO, path: `/repo/${REPO}`, isFork: false }], exclusions: [], blockers: [] }),
@@ -279,10 +279,12 @@ describe('GitHub fleet apply and verify', () => {
       expect(remote.sinks['sink:discord:repo-activity']).toBeUndefined()
       expect(remote.sinks['sink:discord:github-stars']).toBeUndefined()
       expect(hooks).toHaveLength(1)
+      readKv.mockClear()
       await expect(verifyGitHubFleet(fleetOptions('verify', [REPO]), directory, dependencies)).resolves.toMatchObject({
         verifiedHooks: 1,
         issues: [],
       })
+      expect(readKv).toHaveBeenCalledTimes(1)
 
       const inactive = await buildGitHubFleetSubscription(REPO, 'activity', {
         hmacName: entry.hmac.name,
