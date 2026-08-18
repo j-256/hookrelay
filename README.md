@@ -183,6 +183,8 @@ If every prompt is approved, no later sync is needed. Declining a production pro
 
 `pnpm sink:add <name> discord` is the guided Discord path. It reads the webhook URL from concealed input, validates that it is a Discord webhook, derives `SINK_<NAME>_URL`, appends a sink containing only that secret reference to `routes.jsonc`, and mirrors the URL into the gitignored `.dev.vars`. It then offers to install the same value as a Wrangler secret, preview the KV plan, and apply it.
 
+Discord descriptions preserve supported Markdown while turning embedded HTML structure into readable text. Long descriptions end at a readable boundary with an explicit continuation notice, and selecting a linked embed title opens the complete source event.
+
 `pnpm sink:add <name> webhook` adds a generic signed destination. It reads a public HTTPS endpoint without echoing it, generates a separate HMAC key, writes both values only to `.dev.vars`, stores their secret names in `routes.jsonc`, and offers one bulk Wrangler installation before KV sync. Save the endpoint under `SINK_<NAME>_URL` and the generated signing key under `SINK_<NAME>_SIGNING_SECRET` when the command prints the password-manager handoff.
 
 The sink name is a stable routing label, not a description of what feeds it. `discord` is a sensible first name. If several Discord destinations exist, names such as `discord-personal` and `discord-builds` produce independent `SINK_DISCORD_PERSONAL_URL` and `SINK_DISCORD_BUILDS_URL` secrets. Subscriptions refer to these names and remain independent of the sink implementation.

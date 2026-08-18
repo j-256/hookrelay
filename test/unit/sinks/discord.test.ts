@@ -27,6 +27,20 @@ const deliveryContext = {
   attempt: 1,
 }
 
+async function renderedDescription(
+  body: string,
+  options: { url?: string } = { url: baseEvent.url },
+): Promise<string> {
+  let description = ''
+  const fetchMock = vi.fn(async (_input: Request | string, init?: RequestInit) => {
+    const parsed = JSON.parse(typeof init?.body === 'string' ? init.body : '{}')
+    description = parsed.embeds[0].description
+    return new Response(null, { status: 204 })
+  }) as unknown as typeof fetch
+  await discord.send({ ...baseEvent, body, url: options.url }, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)
+  return description
+}
+
 describe('discord sink', () => {
   it('config schema accepts {urlEnv} and rejects extras', () => {
     expect(() => discord.configSchema.parse({ urlEnv: 'X' })).not.toThrow()
@@ -67,14 +81,53 @@ describe('discord sink', () => {
     }
   })
 
-  it('truncates description to 4096 chars (Discord embed limit)', async () => {
-    const long = 'x'.repeat(5000)
-    const fetchMock = vi.fn(async (_input: Request | string, init?: RequestInit) => {
-      const parsed = JSON.parse(typeof init?.body === 'string' ? init.body : '{}')
-      expect(parsed.embeds[0].description.length).toBe(4096)
-      return new Response(null, { status: 204 })
-    }) as unknown as typeof fetch
-    await discord.send({ ...baseEvent, body: long }, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)
+  it('converts embedded HTML to Discord-friendly text', async () => {
+    const description = await renderedDescription([
+      '<details>',
+      '<summary>Release notes</summary>',
+      '<ul>',
+      '<li>Fix buffer over-read</li>',
+      '<li>Support <code>Z_SYNC_FLUSH</code></li>',
+      '</ul>',
+      '<p>See <a href="https://example.com/release">the release</a>.</p>',
+      '<p><code>@dependabot ignore <dependency name></code></p>',
+      '</details>',
+    ].join('\n'))
+
+    expect(description).toBe([
+      'Release notes',
+      '',
+      '- Fix buffer over-read',
+      '- Support Z_SYNC_FLUSH',
+      '',
+      'See the release.',
+      '',
+      '@dependabot ignore <dependency name>',
+    ].join('\n'))
+  })
+
+  it('truncates descriptions at a clean boundary with a continuation notice', async () => {
+    const visibleBody = 'x'.repeat(4000)
+    const compatibilityBadge = `[![Dependabot compatibility score](https://example.com/${'y'.repeat(500)})]`
+    const description = await renderedDescription(`${visibleBody}\n${compatibilityBadge}`)
+
+    expect(description.length).toBeLessThanOrEqual(4096)
+    expect(description).toBe(`${visibleBody}\n\n*Content truncated; open the title for the full event*`)
+    expect(description).not.toContain('https://example.com')
+  })
+
+  it('uses a standalone truncation notice when the event has no URL', async () => {
+    const description = await renderedDescription('x'.repeat(5000), {})
+
+    expect(description.length).toBeLessThanOrEqual(4096)
+    expect(description).toMatch(/\*Content truncated\*$/)
+  })
+
+  it('does not split Unicode characters at the truncation boundary', async () => {
+    const description = await renderedDescription('\u{1F680}'.repeat(5000))
+
+    expect(description.length).toBeLessThanOrEqual(4096)
+    expect(description).not.toMatch(/[\uD800-\uDBFF]\n\n\*Content truncated/)
   })
 
   it('throws when urlEnv is unset', async () => {
