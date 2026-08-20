@@ -76,6 +76,7 @@ export interface GitHubFleetReconcileDependencies {
 export interface GitHubFleetApplyResult {
   selected: string[]
   installedSecrets: number
+  rotatedSecrets: number
   reconciledHooks: number
 }
 
@@ -434,12 +435,17 @@ export async function applyGitHubFleet(
   options.progress?.('Reading prepared fleet files and Worker secrets')
   const files = await readFleetFiles(options, projectRoot, dependencies)
   let secretNames = await dependencies.listSecrets()
-  const missingSecrets = selected
+  const selectedSecrets = selected
     .map((repo) => files.manifest.repositories[repo]?.hmac)
-    .filter((secret): secret is SecretValue => secret !== undefined && !secretNames.has(secret.name))
-  if (missingSecrets.length > 0) {
-    options.progress?.(`Installing ${missingSecrets.length} repository HMAC(s)`)
-    secretNames = await dependencies.putSecrets(missingSecrets)
+    .filter((secret): secret is SecretValue => secret !== undefined)
+  const missingSecrets = selectedSecrets.filter((secret) => !secretNames.has(secret.name))
+  const rotatedSecrets = options.rotateHmac
+    ? selectedSecrets.filter((secret) => secretNames.has(secret.name))
+    : []
+  const secretsToWrite = options.rotateHmac ? selectedSecrets : missingSecrets
+  if (secretsToWrite.length > 0) {
+    options.progress?.(`Writing ${secretsToWrite.length} repository HMAC(s)`)
+    secretNames = await dependencies.putSecrets(secretsToWrite)
   }
   for (const repo of selected) {
     const entry = files.manifest.repositories[repo]
@@ -476,7 +482,12 @@ export async function applyGitHubFleet(
     await reconcileManagedHook(hook, dependencies)
     reconciledHooks += 1
   }
-  return { selected, installedSecrets: missingSecrets.length, reconciledHooks }
+  return {
+    selected,
+    installedSecrets: missingSecrets.length,
+    rotatedSecrets: rotatedSecrets.length,
+    reconciledHooks,
+  }
 }
 
 export async function verifyGitHubFleet(

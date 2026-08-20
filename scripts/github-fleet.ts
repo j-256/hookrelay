@@ -35,10 +35,12 @@ import {
 } from './github-repository'
 import { readRemoteKvSnapshot, type RemoteKvSnapshot } from './kv'
 import {
+  addDevVar,
   getDevVar,
   listWranglerSecrets,
   privateFileIssue,
   readPrivateOptionalText,
+  removeDevVar,
   setDevVar,
   writePrivateText,
   writeText,
@@ -63,6 +65,7 @@ export interface GitHubFleetOptions {
   secretLimit: number
   yes: boolean
   retire?: boolean
+  rotateHmac?: boolean
   profiles?: readonly GitHubFleetProfileName[]
   progress?: GitHubFleetProgress
 }
@@ -90,6 +93,7 @@ export interface GitHubFleetPlan {
   remoteRouteDrift: string[]
   remoteKvPuts: number
   remoteKvDeletes: number
+  hmacRotations: string[]
   capacity: GitHubFleetCapacity
 }
 
@@ -97,6 +101,7 @@ export interface GitHubFleetPrepareResult {
   repositories: string[]
   manifestAdditions: number
   devVarAdditions: number
+  devVarRotations: number
   subscriptionAdditions: number
 }
 
@@ -148,6 +153,7 @@ function usage(): string {
     '  --profiles <names>     save a comma-separated profile subset for selected new repositories',
     '  --include-private       admit private repositories selected with --repo',
     '  --retire               operate on selected managed repositories as retirements',
+    '  --rotate-hmac          replace selected repository HMACs through every fleet phase',
     `  --secret-limit <count> Worker variable and secret limit (default: ${DEFAULT_SECRET_LIMIT})`,
     '  -y, --yes              apply production changes without prompts',
     '  -h, --help             show this help',
@@ -171,6 +177,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   let secretLimit = DEFAULT_SECRET_LIMIT
   let yes = false
   let retire = false
+  let rotateHmac = false
   let profiles: GitHubFleetProfileName[] | undefined
 
   for (let index = 1; index < argv.length; index += 1) {
@@ -196,6 +203,8 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       index += 1
     } else if (arg === '--retire') {
       retire = true
+    } else if (arg === '--rotate-hmac') {
+      rotateHmac = true
     } else if (arg === '--secret-limit') {
       const raw = optionValue(argv, index, arg)
       secretLimit = Number(raw)
@@ -214,9 +223,22 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   if (includePrivate && repositories.length === 0) throw new Error('--include-private requires at least one --repo')
   if (profiles && repositories.length === 0) throw new Error('--profiles requires at least one --repo')
   if (retire && repositories.length === 0) throw new Error('--retire requires at least one --repo')
+  if (rotateHmac && repositories.length === 0) throw new Error('--rotate-hmac requires at least one --repo')
   if (retire && profiles) throw new Error('--profiles cannot be combined with --retire')
+  if (retire && rotateHmac) throw new Error('--rotate-hmac cannot be combined with --retire')
   if (yes && phase !== 'apply') throw new Error('-y is only valid with apply')
-  return { phase: phase as GitHubFleetPhase, root, manifest, repositories, includePrivate, secretLimit, yes, retire, profiles }
+  return {
+    phase: phase as GitHubFleetPhase,
+    root,
+    manifest,
+    repositories,
+    includePrivate,
+    secretLimit,
+    yes,
+    retire,
+    rotateHmac,
+    profiles,
+  }
 }
 
 function fleetDiscoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscoveryOptions {
@@ -375,6 +397,9 @@ async function loadLocalState(
       blockers.push(`${repo}: repository is retired`)
     }
     const entry = manifest.repositories[repo]
+    if (options.rotateHmac && !entry) {
+      blockers.push(`${repo}: HMAC rotation requires an existing active manifest entry`)
+    }
     if (options.profiles && entry && !sameStrings(githubFleetManifestProfiles(entry), options.profiles)) {
       blockers.push(`${repo}: saved fleet profiles differ; ordinary fleet enrollment cannot change profiles`)
     }
@@ -531,6 +556,7 @@ export async function planGitHubFleet(
       remoteRouteDrift: [],
       remoteKvPuts: 0,
       remoteKvDeletes: 0,
+      hmacRotations: options.rotateHmac ? selected : [],
       capacity: {
         vars: 0,
         existingSecrets: 0,
@@ -671,6 +697,7 @@ export async function planGitHubFleet(
     remoteRouteDrift: remoteRouteDrift.sort(),
     remoteKvPuts: kvPlan.subPuts.length + kvPlan.sinkPuts.length,
     remoteKvDeletes: kvPlan.subDeletes.length + kvPlan.sinkDeletes.length,
+    hmacRotations: options.rotateHmac ? selectedNames : [],
     capacity,
   }
 }
@@ -699,6 +726,7 @@ export async function prepareGitHubFleet(
   let routes = state.routes
   let devVarsText = state.devVarsText
   let devVarAdditions = 0
+  let devVarRotations = 0
   let subscriptionAdditions = 0
 
   for (const sink of [...plannedProfileNames(state, options)].map((profile) => GITHUB_FLEET_PROFILES[profile].sink)) {
@@ -728,10 +756,17 @@ export async function prepareGitHubFleet(
 
   await writePrivateText(paths.manifest, serializeGitHubFleetManifest(state.manifest), dependencies.fileSystem)
 
-  for (const entry of Object.values(state.manifest.repositories).filter((candidate) => candidate.state !== 'retiring')) {
+  const rotationRepositories = new Set(options.rotateHmac ? options.repositories : [])
+  for (const [repo, entry] of Object.entries(state.manifest.repositories)
+    .filter(([, candidate]) => candidate.state !== 'retiring')) {
     const beforeCanonical = getDevVar(devVarsText, entry.hmac.name)
-    devVarsText = setDevVar(devVarsText, entry.hmac.name, entry.hmac.value)
-    if (beforeCanonical === null) devVarAdditions += 1
+    if (beforeCanonical !== null && beforeCanonical !== entry.hmac.value && rotationRepositories.has(repo)) {
+      devVarsText = addDevVar(removeDevVar(devVarsText, entry.hmac.name), entry.hmac.name, entry.hmac.value)
+      devVarRotations += 1
+    } else {
+      devVarsText = setDevVar(devVarsText, entry.hmac.name, entry.hmac.value)
+      if (beforeCanonical === null) devVarAdditions += 1
+    }
   }
   await writePrivateText(paths.devVars, devVarsText, dependencies.fileSystem)
 
@@ -756,6 +791,7 @@ export async function prepareGitHubFleet(
     repositories: plannedRepositoryNames(state),
     manifestAdditions: state.manifestAdditions.length,
     devVarAdditions,
+    devVarRotations,
     subscriptionAdditions,
   }
 }
@@ -770,6 +806,7 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
     `Manifest additions: ${plan.manifestAdditions.length}`,
     `Subscription additions: ${plan.subscriptionAdditions.length}`,
     `GitHub hook additions: ${plan.hookAdditions.length}`,
+    `HMAC rotations: ${plan.hmacRotations.length}`,
     `Production KV puts: ${plan.remoteKvPuts}`,
     `Production KV deletes: ${plan.remoteKvDeletes}`,
     `Worker capacity: ${plan.capacity.projected}/${plan.capacity.limit}`,
@@ -841,6 +878,7 @@ async function main(): Promise<void> {
     console.log(`Prepared ${result.repositories.length} repositories`)
     console.log(`Manifest additions: ${result.manifestAdditions}`)
     console.log(`Local secret additions: ${result.devVarAdditions}`)
+    console.log(`Local secret rotations: ${result.devVarRotations}`)
     console.log(`Subscription additions: ${result.subscriptionAdditions}`)
     return
   }
@@ -848,6 +886,7 @@ async function main(): Promise<void> {
   if (options.phase === 'apply') {
     const result = await applyGitHubFleet(options)
     console.log(`Installed repository HMACs: ${result.installedSecrets}`)
+    console.log(`Rotated repository HMACs: ${result.rotatedSecrets}`)
     console.log(`Reconciled GitHub hooks: ${result.reconciledHooks}`)
     return
   }

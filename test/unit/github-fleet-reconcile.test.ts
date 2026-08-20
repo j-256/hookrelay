@@ -469,4 +469,65 @@ describe('GitHub fleet apply and verify', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+
+  it('rewrites selected Worker secrets and repairs hooks during HMAC rotation', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const entry = manifestEntry(REPO, 'rotate')
+    const manifest: GitHubFleetManifest = { version: 2, repositories: { [REPO]: entry }, retiredRepositories: {} }
+    const directory = await writeProject(manifest, fileSystem)
+    try {
+      const routes = parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8'))
+      const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
+      const initialPlan = computePlan(routes, remote)
+      for (const put of initialPlan.subPuts) remote.subs[put.key] = put.value
+      for (const put of initialPlan.sinkPuts) remote.sinks[put.key] = put.value
+      const secrets = new Set([entry.hmac.name, 'SINK_ACTIVITY', 'SINK_STARS', 'SINK_ALERTS'])
+      const hooks = GITHUB_FLEET_PROFILE_NAMES.map((profile, index) => hookFor(entry, REPO, profile, index + 1))
+      const putSecrets = vi.fn(async (values: readonly SecretValue[]) => {
+        for (const value of values) secrets.add(value.name)
+        return new Set(secrets)
+      })
+      const updateHook = vi.fn(async () => undefined)
+      const pingAttempts = new Map<number, number>()
+      const pingHook = vi.fn(async (_repo: string, hookId: number) => {
+        const attempt = (pingAttempts.get(hookId) ?? 0) + 1
+        pingAttempts.set(hookId, attempt)
+        if (attempt === 1) throw new Error(`GitHub webhook ${hookId} returned status 401 for ping`)
+        return { id: `ping-guid-${attempt}`, event: 'ping', statusCode: 200, deliveredAt: null }
+      })
+      const readKv = async () => cloneKv(remote)
+      const planDependencies: GitHubFleetDependencies = {
+        discover: async () => ({ repositories: [{ nameWithOwner: REPO, path: `/repo/${REPO}`, isFork: false }], exclusions: [], blockers: [] }),
+        listHooks: async () => [...hooks],
+        listSecrets: async () => new Set(secrets),
+        readKv,
+        fileSystem,
+      }
+      const dependencies: GitHubFleetReconcileDependencies = {
+        planDependencies,
+        listHooks: async () => [...hooks],
+        createHook: async () => { throw new Error('must not create') },
+        updateHook,
+        pingHook,
+        listSecrets: async () => new Set(secrets),
+        putSecrets,
+        readKv,
+        putKv: async () => undefined,
+        fetch: acceptSignedRoute,
+        sleep: async () => undefined,
+      }
+
+      const result = await applyGitHubFleet(
+        { ...fleetOptions('apply', [REPO]), rotateHmac: true },
+        directory,
+        dependencies,
+      )
+      expect(result).toMatchObject({ installedSecrets: 0, rotatedSecrets: 1, reconciledHooks: 3 })
+      expect(putSecrets).toHaveBeenCalledWith([entry.hmac])
+      expect(updateHook).toHaveBeenCalledTimes(3)
+      expect([...pingAttempts.values()]).toEqual([2, 2, 2])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
 })

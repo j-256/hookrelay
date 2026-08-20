@@ -28,6 +28,7 @@ import type { AtomicFileSystem } from '../../scripts/setup'
 const REPO = 'example-owner/example-plugin'
 const OTHER_REPO = 'example-owner/example-repo'
 const HMAC_VALUE = 'fixture-hmac-value-that-must-stay-private'
+const ROTATED_HMAC_VALUE = 'replacement-hmac-value-that-must-stay-private'
 const SLUGS = {
   activity: 'abcdefghijklmnopqrstuv',
   stars: 'zyxwvutsrqponmlkjihgfe',
@@ -168,6 +169,18 @@ describe('GitHub fleet arguments', () => {
       'plan', '--root', '/repo', '--manifest', 'fleet.json', '--retire',
     ])).toThrow(/requires at least one --repo/)
   })
+
+  it('requires explicit repository selectors for HMAC rotation', () => {
+    expect(parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--rotate-hmac',
+    ])).toMatchObject({ repositories: [REPO], rotateHmac: true })
+    expect(() => parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--rotate-hmac',
+    ])).toThrow(/requires at least one --repo/)
+    expect(() => parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--retire', '--rotate-hmac',
+    ])).toThrow(/cannot be combined/)
+  })
 })
 
 describe('GitHub fleet planning and preparation', () => {
@@ -253,6 +266,61 @@ describe('GitHub fleet planning and preparation', () => {
       const second = await prepareGitHubFleet(options(), dependencies(), directory)
       expect(second).toMatchObject({ manifestAdditions: 0, devVarAdditions: 0, subscriptionAdditions: 0 })
       expect(await readFile(join(directory, 'fleet.json'), 'utf8')).toBe(manifestText)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('replaces only selected private HMAC values during an explicit rotation', async () => {
+    const directory = await project()
+    try {
+      await prepareGitHubFleet(options(), dependencies(), directory)
+      const manifest = parseGitHubFleetManifest(await readFile(join(directory, 'fleet.json'), 'utf8'))
+      manifest.repositories[REPO]!.hmac.value = ROTATED_HMAC_VALUE
+      await writePrivateText(
+        join(directory, 'fleet.json'),
+        serializeGitHubFleetManifest(manifest),
+        TEST_FILE_SYSTEM,
+      )
+
+      const preview = await planGitHubFleet(
+        { ...options([REPO]), phase: 'plan', rotateHmac: true },
+        dependencies(),
+        directory,
+      )
+      expect(preview.hmacRotations).toEqual([REPO])
+      expect(formatGitHubFleetPlan(preview)).toContain('HMAC rotations: 1')
+      expect(formatGitHubFleetPlan(preview)).not.toContain(ROTATED_HMAC_VALUE)
+
+      await expect(prepareGitHubFleet(options([REPO]), dependencies(), directory))
+        .rejects.toThrow(/different value/)
+      const rotated = await prepareGitHubFleet(
+        { ...options([REPO]), rotateHmac: true },
+        dependencies(),
+        directory,
+      )
+      expect(rotated).toMatchObject({ devVarAdditions: 0, devVarRotations: 1, subscriptionAdditions: 0 })
+      expect(JSON.stringify(rotated)).not.toContain(ROTATED_HMAC_VALUE)
+      const devVars = await readFile(join(directory, '.dev.vars'), 'utf8')
+      expect(devVars).toContain(`HMAC_GITHUB_EXAMPLE_OWNER_EXAMPLE_PLUGIN=${ROTATED_HMAC_VALUE}`)
+      expect(devVars).not.toContain(HMAC_VALUE)
+
+      const stable = await prepareGitHubFleet(options([REPO]), dependencies(), directory)
+      expect(stable).toMatchObject({ devVarAdditions: 0, devVarRotations: 0, subscriptionAdditions: 0 })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks rotation when the selected repository has no active manifest entry', async () => {
+    const directory = await project()
+    try {
+      const plan = await planGitHubFleet(
+        { ...options([REPO]), phase: 'plan', rotateHmac: true },
+        dependencies(),
+        directory,
+      )
+      expect(plan.blockers.join('\n')).toMatch(/rotation requires an existing active manifest entry/)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
