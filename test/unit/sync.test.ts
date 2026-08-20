@@ -98,6 +98,11 @@ const ACTIVITY_ROUTES = ROUTES.replace(
   '"eventProfiles": ["activity"]',
 )
 
+const PUSH_ROUTES = ROUTES.replace(
+  '"eventProfiles": ["recommended", "stars"]',
+  '"eventProfiles": ["push"]',
+)
+
 const EMAIL_ROUTES = `
 {
   "emailBaseAddress": "relay@mail.example.com",
@@ -685,13 +690,22 @@ describe('computePlan', () => {
     expect(JSON.parse(githubPut!.value).filter).toEqual({
       eventTypes: {
         include: [
-          'push.*',
+          'push.created',
+          'push.updated',
+          'push.deleted',
           'workflow_run.*',
           'pull_request.opened',
           'pull_request.closed',
         ],
       },
     })
+  })
+
+  it('keeps the standalone GitHub push profile unrestricted at runtime', () => {
+    const cfg = parseRoutes(PUSH_ROUTES)
+    const plan = computePlan(cfg, { subs: {}, sinks: {} })
+    const githubPut = plan.subPuts.find((entry) => entry.key === `sub:sha256:${GITHUB_HASH}`)
+    expect(JSON.parse(githubPut!.value)).not.toHaveProperty('filter')
   })
 
   it('serializes email sender rules into runtime subscription configuration', () => {

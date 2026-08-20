@@ -25,7 +25,7 @@ GitHub recommends subscribing only to events an integration handles. The curated
 | Profile | GitHub events | Use it for |
 | --- | --- | --- |
 | `access` | `deploy_key`, `member`, `team_add` | Repository access and deploy-key changes. |
-| `activity` | `push`, `workflow_run`, `pull_request` | Source changes, completed workflow outcomes, and pull request lifecycle activity. Hookrelay records requested and in-progress workflow runs without delivering them to sinks. |
+| `activity` | `push`, `workflow_run`, `pull_request` | Source changes except force-pushes, completed workflow outcomes, and pull request lifecycle activity. Hookrelay records force-pushes plus requested and in-progress workflow runs without delivering them to sinks. |
 | `alerts` | `code_scanning_alert`, `dependabot_alert`, `secret_scanning_alert` | Actionable code, dependency, and leaked-secret findings. Resolution events remain visible at informational severity. |
 | `branches` | `create`, `delete` | Branch and tag creation or deletion. |
 | `checks` | `check_run`, `check_suite`, `status` | Check and commit-status transitions. This can be noisy in active repositories. |
@@ -37,7 +37,7 @@ GitHub recommends subscribing only to events an integration handles. The curated
 | `packages` | `package`, `registry_package` | GitHub Packages publication and lifecycle activity. |
 | `projects` | `project`, `project_card`, `project_column` | Classic project activity. |
 | `pull-requests` | `pull_request`, `pull_request_review`, `pull_request_review_comment`, `pull_request_review_thread` | Pull requests and all review surfaces. Issue-style PR conversation remains in `issues` through `issue_comment`. |
-| `push` | `push` | Branch and tag pushes. This is the CLI default. |
+| `push` | `push` | All branch and tag pushes, including force-pushes. This unrestricted profile is the CLI default. |
 | `releases` | `release` | Release publication and lifecycle changes. |
 | `repository` | `custom_property_values`, `public`, `repository`, `repository_import` | Repository lifecycle, visibility, imports, and custom properties. |
 | `rules` | `branch_protection_configuration`, `branch_protection_rule`, `repository_ruleset` | Branch protection and repository rulesets. |
@@ -50,7 +50,7 @@ GitHub recommends subscribing only to events an integration handles. The curated
 
 `stars` and `watchers` are intentionally separate. GitHub uses `star` for starring activity and `watch` for repository notification subscriptions.
 
-GitHub repository hooks select `pull_request` as a whole rather than individual actions. The `activity` profile therefore defines one shared normalized event-type rule that every activity subscription inherits: deliver `pull_request.opened` and `pull_request.closed` while retaining other pull request actions as record-only events. Combining `activity` with an unrestricted profile such as `pull-requests` broadens the overlapping event and delivers every pull request action. The standalone `pull-requests` profile remains unfiltered so it can represent every pull request and review surface.
+GitHub repository hooks select `push` and `pull_request` as whole event families rather than individual payload variants. The `activity` profile therefore defines one shared normalized event-type rule that every activity subscription inherits: deliver ordinary push creation, update, and deletion events plus `pull_request.opened` and `pull_request.closed`, while retaining force-pushes and other pull request actions as record-only events. Combining `activity` with the unrestricted `push` or `pull-requests` profile broadens that overlapping event and delivers every variant. The standalone `push` and `pull-requests` profiles remain unfiltered.
 
 `repository_vulnerability_alert` is omitted because GitHub is closing it down in favor of `dependabot_alert`. `secret_scanning_scan` is also omitted because it reports scan completion rather than a finding. Hooks created with `all` or `manual` can still send either event; Hookrelay records secret-scanning completion without delivering it to sinks.
 

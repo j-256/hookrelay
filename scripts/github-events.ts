@@ -4,6 +4,12 @@ const events = <T extends readonly string[]>(...values: T): Readonly<T> => Objec
 
 export const GITHUB_ACTIVITY_EVENTS = events('push', 'workflow_run', 'pull_request')
 
+const GITHUB_ACTIVITY_PUSH_DELIVERY_TYPES = events(
+  'push.created',
+  'push.updated',
+  'push.deleted',
+)
+
 export const GITHUB_ALERT_EVENTS = events(
   'code_scanning_alert',
   'dependabot_alert',
@@ -52,6 +58,7 @@ export const GITHUB_EVENT_PROFILE_DELIVERY_TYPES: Readonly<
   Partial<Record<GitHubEventProfileName, Readonly<Record<string, readonly string[]>>>>
 > = Object.freeze({
   activity: Object.freeze({
+    push: GITHUB_ACTIVITY_PUSH_DELIVERY_TYPES,
     pull_request: events('pull_request.opened', 'pull_request.closed'),
   }),
 })

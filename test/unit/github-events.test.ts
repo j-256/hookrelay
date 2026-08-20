@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest'
+import { eventTypePassesFilter } from '../../src/lib/event-filter'
 import {
   GITHUB_ACTIVITY_EVENTS,
   GITHUB_ALERT_EVENTS,
@@ -87,11 +88,13 @@ describe('GitHub event profiles', () => {
     ])
   })
 
-  it('derives one shared activity delivery rule from event profiles', () => {
+  it('derives a shared activity delivery rule that excludes force-pushes', () => {
     expect(githubEventTypeFilter(parseGitHubEventSelection('activity'))).toEqual({
       eventTypes: {
         include: [
-          'push.*',
+          'push.created',
+          'push.updated',
+          'push.deleted',
           'workflow_run.*',
           'pull_request.opened',
           'pull_request.closed',
@@ -101,7 +104,9 @@ describe('GitHub event profiles', () => {
     expect(githubEventTypeFilter(parseGitHubEventSelection('activity,alerts'))).toEqual({
       eventTypes: {
         include: [
-          'push.*',
+          'push.created',
+          'push.updated',
+          'push.deleted',
           'workflow_run.*',
           'pull_request.opened',
           'pull_request.closed',
@@ -114,9 +119,22 @@ describe('GitHub event profiles', () => {
   })
 
   it('lets an unrestricted profile broaden an overlapping event', () => {
-    expect(githubEventTypeFilter(parseGitHubEventSelection('activity,pull-requests'))).toBeUndefined()
-    expect(githubEventTypeFilter(parseGitHubEventSelection('recommended,activity'))).toBeUndefined()
+    const pullRequests = githubEventTypeFilter(parseGitHubEventSelection('activity,pull-requests'))
+    const recommended = githubEventTypeFilter(parseGitHubEventSelection('recommended,activity'))
+
+    expect(eventTypePassesFilter('pull_request.synchronize', pullRequests!.eventTypes!)).toBe(true)
+    expect(eventTypePassesFilter('push.forced', pullRequests!.eventTypes!)).toBe(false)
+    expect(eventTypePassesFilter('pull_request.synchronize', recommended!.eventTypes!)).toBe(true)
+    expect(eventTypePassesFilter('push.forced', recommended!.eventTypes!)).toBe(false)
     expect(githubEventTypeFilter(parseGitHubEventSelection('pull-requests'))).toBeUndefined()
+  })
+
+  it('keeps the standalone push profile unrestricted', () => {
+    expect(githubEventTypeFilter(parseGitHubEventSelection('push'))).toBeUndefined()
+
+    const combined = githubEventTypeFilter(parseGitHubEventSelection('activity,push'))
+    expect(eventTypePassesFilter('push.forced', combined!.eventTypes!)).toBe(true)
+    expect(eventTypePassesFilter('pull_request.synchronize', combined!.eventTypes!)).toBe(false)
   })
 
   it('composes profiles in order and expands stars and watchers separately', () => {
