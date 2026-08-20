@@ -4,12 +4,13 @@ import { chmod, lstat, mkdtemp, open, readFile, rename, rm, unlink, writeFile } 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
+import { hmacSha256Hex } from '../../src/lib/hmac'
 import { subscriptionKvKey } from '../../src/lib/subscription'
 import type { GitHubFleetDependencies, GitHubFleetOptions } from '../../scripts/github-fleet'
 import {
   applyGitHubFleet,
   verifyGitHubFleet,
-  waitForUnsignedGitHubRoute,
+  waitForAuthenticatedGitHubRoute,
   type DesiredHook,
   type GitHubFleetReconcileDependencies,
 } from '../../scripts/github-fleet-reconcile'
@@ -134,6 +135,14 @@ function cloneKv(value: { subs: Record<string, string>; sinks: Record<string, st
   return { subs: { ...value.subs }, sinks: { ...value.sinks } }
 }
 
+async function acceptSignedRoute(
+  _input: string | URL | Request,
+  init?: RequestInit,
+): Promise<Response> {
+  const signature = new Headers(init?.headers).get('x-hub-signature-256')
+  return new Response('', { status: /^sha256=[0-9a-f]{64}$/.test(signature ?? '') ? 200 : 401 })
+}
+
 function hookFor(entry: GitHubFleetManifestRepository, repo: string, profile: keyof typeof GITHUB_FLEET_PROFILES, id: number): GitHubRepositoryHook {
   const events = parseGitHubEventSelection(GITHUB_FLEET_PROFILES[profile].eventProfiles.join(',')).events!
   return {
@@ -149,8 +158,8 @@ function hookFor(entry: GitHubFleetManifestRepository, repo: string, profile: ke
 }
 
 describe('route propagation probes', () => {
-  it('waits through 404 until an unsigned route reaches GitHub authentication', async () => {
-    const statuses = [404, 404, 401]
+  it('signs the probe and waits through propagation until the route authenticates it', async () => {
+    const statuses = [404, 401, 200]
     let now = 0
     const hook: DesiredHook = {
       repo: REPO,
@@ -161,8 +170,17 @@ describe('route propagation probes', () => {
       secret: 'private-secret',
       events: ['push'],
     }
-    await expect(waitForUnsignedGitHubRoute(hook, {
-      fetch: async () => new Response('', { status: statuses.shift()! }),
+    let expectedSignature: string | undefined
+    await expect(waitForAuthenticatedGitHubRoute(hook, {
+      fetch: async (_input, init) => {
+        const body = String(init?.body)
+        expectedSignature ??= `sha256=${await hmacSha256Hex(
+          hook.secret,
+          new TextEncoder().encode(body),
+        )}`
+        expect(new Headers(init?.headers).get('x-hub-signature-256')).toBe(expectedSignature)
+        return new Response('', { status: statuses.shift()! })
+      },
       now: () => now,
       sleep: async (milliseconds) => { now += milliseconds },
       routeTimeoutMs: 10,
@@ -170,7 +188,7 @@ describe('route propagation probes', () => {
     })).resolves.toBeUndefined()
   })
 
-  it('blocks an unexpected unsigned success without exposing the URL or secret', async () => {
+  it('blocks an unexpected signed response without exposing the URL or secret', async () => {
     const hook: DesiredHook = {
       repo: REPO,
       profile: 'activity',
@@ -182,11 +200,13 @@ describe('route propagation probes', () => {
     }
     let error: Error | undefined
     try {
-      await waitForUnsignedGitHubRoute(hook, { fetch: async () => new Response('', { status: 200 }) })
+      await waitForAuthenticatedGitHubRoute(hook, {
+        fetch: async () => new Response('', { status: 403 }),
+      })
     } catch (err) {
       error = err as Error
     }
-    expect(error?.message).toMatch(/unexpected status 200/)
+    expect(error?.message).toMatch(/unexpected status 403/)
     expect(error?.message).not.toContain('private-slug-value-00')
     expect(error?.message).not.toContain('private-secret')
   })
@@ -268,7 +288,7 @@ describe('GitHub fleet apply and verify', () => {
         },
         readKv,
         putKv: async (binding, key, value) => { remote[binding === 'SUBS' ? 'subs' : 'sinks'][key] = value },
-        fetch: async () => new Response('', { status: 401 }),
+        fetch: acceptSignedRoute,
         sleep: async () => undefined,
       }
 
@@ -355,7 +375,7 @@ describe('GitHub fleet apply and verify', () => {
         },
         readKv,
         putKv: async (binding, key, value) => { remote[binding === 'SUBS' ? 'subs' : 'sinks'][key] = value },
-        fetch: async () => new Response('', { status: 401 }),
+        fetch: acceptSignedRoute,
         sleep: async () => undefined,
       }
 
@@ -438,7 +458,7 @@ describe('GitHub fleet apply and verify', () => {
         listSecrets: async () => new Set(secrets),
         readKv,
         putKv: async () => undefined,
-        fetch: async () => new Response('', { status: 401 }),
+        fetch: acceptSignedRoute,
         sleep: async () => undefined,
       }
 

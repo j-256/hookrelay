@@ -48,6 +48,7 @@ export const GITHUB_MUTATION_ATTEMPTS = 3
 export const GITHUB_MUTATION_RETRY_MS = 2_000
 
 const ROUTES_FILE = 'routes.jsonc'
+const AUTHENTICATED_ROUTE_STATUS = 200
 
 type Fetcher = (input: string | URL | Request, init?: RequestInit) => Promise<Response>
 
@@ -292,11 +293,23 @@ async function waitForRouteStatus(
   throw new Error(`${hook.subscriptionName}: timed out waiting for route status ${expectedStatus}`)
 }
 
-export async function waitForUnsignedGitHubRoute(
+async function waitForAuthenticatedRoute(
+  hook: DesiredHook,
+  dependencies: ResolvedDependencies,
+): Promise<void> {
+  await waitForRouteStatus(
+    hook,
+    AUTHENTICATED_ROUTE_STATUS,
+    dependencies,
+    hook.secret,
+  )
+}
+
+export async function waitForAuthenticatedGitHubRoute(
   hook: DesiredHook,
   dependenciesInput: GitHubFleetReconcileDependencies = {},
 ): Promise<void> {
-  await waitForRouteStatus(hook, 401, resolvedDependencies(dependenciesInput))
+  await waitForAuthenticatedRoute(hook, resolvedDependencies(dependenciesInput))
 }
 
 async function retryMutation<T>(
@@ -446,14 +459,14 @@ export async function applyGitHubFleet(
   ))
   for (const [index, hook] of hooks.entries()) {
     options.progress?.(`Probing authenticated route ${index + 1}/${hooks.length}`)
-    await waitForRouteStatus(hook, 401, dependencies)
+    await waitForAuthenticatedRoute(hook, dependencies)
   }
   if (dependencies.routeGraceMs > 0) {
     options.progress?.(`Waiting ${dependencies.routeGraceMs / 1_000} seconds for route propagation`)
     await dependencies.sleep(dependencies.routeGraceMs)
     for (const [index, hook] of hooks.entries()) {
       options.progress?.(`Rechecking authenticated route ${index + 1}/${hooks.length}`)
-      await waitForRouteStatus(hook, 401, dependencies)
+      await waitForAuthenticatedRoute(hook, dependencies)
     }
   }
 
@@ -499,7 +512,7 @@ export async function verifyGitHubFleet(
   for (const [index, hook] of hooks.entries()) {
     options.progress?.(`Verifying repository hook ${index + 1}/${hooks.length}`)
     try {
-      await waitForRouteStatus(hook, 401, dependencies)
+      await waitForAuthenticatedRoute(hook, dependencies)
       const existing = await requireOneManagedHook(hook, dependencies)
       if (!gitHubRepositoryHookMatches(existing, hook.url, hook.events)) {
         issues.push(`${hook.subscriptionName}: GitHub hook metadata differs`)
