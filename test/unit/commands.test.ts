@@ -21,6 +21,8 @@ describe('commandReference', () => {
     expect(reference).toContain('pnpm sync\n')
     expect(reference).toContain('pnpm sync -y                         [production write]')
     expect(reference).toContain('npm version <major|minor|patch>')
+    expect(reference).toContain('trigger a draft GitHub Release')
+    expect(reference).toContain('GitHub Actions verifies the tag')
     expect(reference).toContain('pnpm retag --allow-published')
     expect(reference).toContain('pnpm deploy                          Deploy Worker code [production write]')
     expect(reference).toContain('Setup commands write local files before asking about production')

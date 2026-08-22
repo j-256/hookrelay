@@ -1,0 +1,71 @@
+name: release draft
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing v-prefixed version tag to prepare
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-draft-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    name: verify ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    runs-on: ubuntu-latest
+    env:
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ env.RELEASE_TAG }}
+      - uses: pnpm/setup@v2
+        with:
+          version: 11
+          runtime: node@22
+          cache: true
+          install: false
+      - name: Verify tag matches package version
+        run: |
+          package_version="$(node -p "require('./package.json').version")"
+          expected_tag="v${package_version}"
+          if [ "$RELEASE_TAG" != "$expected_tag" ]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not match package version ${package_version}"
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm test
+
+  draft:
+    name: create draft ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    needs: verify
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+    steps:
+      - name: Create draft GitHub Release
+        run: |
+          if release_state="$(gh release view "$RELEASE_TAG" --json isDraft,url --jq 'if .isDraft then "draft \(.url)" else "published \(.url)" end' 2>/dev/null)"; then
+            echo "Release already exists: ${release_state}"
+            exit 0
+          fi
+          gh release create "$RELEASE_TAG" \
+            --draft \
+            --fail-on-no-commits \
+            --generate-notes \
+            --title "hookrelay ${RELEASE_TAG}" \
+            --verify-tag

@@ -549,9 +549,19 @@ To support a new destination ("Slack"):
 
 ## Versioning and releases
 
-Run `npm version <major|minor|patch>` from clean `main` to prepare a semantic version. npm checks that the worktree is clean, Hookrelay's `preversion` guard requires `main` and runs typechecking and tests, and npm creates the version commit and annotated `v<version>` tag. The `postversion` hook atomically pushes `main` and that tag to `origin`, so GitHub updates both refs or neither. The pushed tag is the source snapshot for the matching GitHub Release.
+Run `npm version <major|minor|patch>` from clean `main` to prepare a semantic version. npm checks that the worktree is clean, Hookrelay's `preversion` guard requires `main` and runs typechecking and tests, and npm creates the version commit and annotated `v<version>` tag. The `postversion` hook atomically pushes `main` and that tag to `origin`, so GitHub updates both refs or neither.
 
-If the intended release commit changes after a tag is created, run `pnpm retag` from clean `main`. The command moves the current package version tag to `HEAD`, preserves an existing annotated tag message, and force-pushes only that tag. It queries GitHub before changing the local tag and refuses to move a tag attached to a published Release. For an intentional repair of an already published release, use `pnpm retag --allow-published`; this rewrites a public version tag and should remain exceptional.
+The pushed tag triggers the [`release draft`](.github/workflows/release.yml) GitHub Actions workflow. It checks out the exact tag, requires the tag to equal `v` plus the package version, installs from the lockfile, repeats typechecking and tests, and creates a draft GitHub Release with generated starter notes. The write-capable token is available only to the dependent release-creation job, not to dependency installation or project scripts. Rerunning the workflow is safe when a draft or published release already exists.
+
+For an existing tag whose automatic run was missed or failed, run the workflow manually from GitHub Actions or use:
+
+```sh
+gh workflow run release.yml --field tag=vX.Y.Z
+```
+
+Review and refine the draft's highlights, compatibility notes, upgrade instructions, and full-changelog link before publishing it through GitHub. Draft creation is automatic; publication remains an explicit human decision.
+
+If the intended release commit changes after a tag is created, run `pnpm retag` from clean `main`. The command moves the current package version tag to `HEAD`, preserves an existing annotated tag message, and force-pushes only that tag. Draft GitHub Releases preserve this repair window; review their generated notes against the repaired tag before publication. The command queries GitHub before changing the local tag and refuses to move a tag attached to a published Release. For an intentional repair of an already published release, use `pnpm retag --allow-published`; this rewrites a public version tag and should remain exceptional.
 
 ## Project layout
 
