@@ -6,7 +6,7 @@
 pnpm sub:add github:example-owner/example-repo github --repo example-owner/example-repo --events activity,alerts
 ```
 
-Existing subscriptions accept the same selection through `pnpm sub:events <subscription> --events <profiles>`. Omit `--events` to reconcile profile names that were edited directly in `routes.jsonc`.
+Existing subscriptions accept the same selection through `pnpm github:events <subscription> --events <profiles>`. Omit `--events` to reconcile profile names that were edited directly in `routes.jsonc`.
 
 Composable names expand in the order supplied, and duplicate raw events are removed. Profiles can intentionally overlap, so `activity,workflows` still creates only one `workflow_run` subscription. `push` is the default. `recommended` can be combined with profiles, for example `recommended,stars`. The `all` and `manual` presets are exclusive and cannot be combined with another name.
 
@@ -56,4 +56,4 @@ GitHub repository hooks select `push` and `pull_request` as whole event families
 
 Security summaries never copy the raw secret value from a `secret_scanning_alert`. The original authenticated payload remains subject to Hookrelay's normal restricted persistence model.
 
-The selected profile names and repository are saved under `subs[].setup.github` in local `routes.jsonc`. They are setup metadata and are not copied into Worker KV. `pnpm sync` compiles shared profile rules, or an explicit subscription override, into runtime filter configuration in Worker KV. The expanded raw events are stored on the GitHub webhook itself. `pnpm sub:events` requires the sender secret mirrored in `.dev.vars` because GitHub's general webhook update clears an omitted secret; it resends that secret and the unchanged hook config through stdin while replacing the event array. Run `pnpm sync` after changing profile metadata so its runtime delivery rule stays aligned. `manual` leaves the remote selection unchanged.
+The selected profile names and repository are saved under `subs[].setup.github` in local `routes.jsonc`. They are setup metadata and are not copied into Worker KV. `pnpm sync` compiles shared profile rules, or an explicit subscription override, into runtime filter configuration in Worker KV. The expanded raw events are stored on the GitHub webhook itself. `pnpm github:events` requires the sender secret mirrored in `.dev.vars` because GitHub's general webhook update clears an omitted secret; it resends that secret and the unchanged hook config through stdin while replacing the event array. Run `pnpm sync` after changing profile metadata so its runtime delivery rule stays aligned. `manual` leaves the remote selection unchanged.

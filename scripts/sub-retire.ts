@@ -6,7 +6,7 @@ import {
   listGitHubRepositoryHooks,
   matchingGitHubRepositoryHooks,
   type GitHubRepositoryHook,
-} from './github-repository'
+} from './providers/github/repository-hooks'
 import { readRemoteKvSnapshot, type RemoteKvSnapshot } from './kv'
 import {
   archiveSubscription,

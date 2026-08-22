@@ -22,7 +22,7 @@ import {
 } from '../src/lib/runtime-config'
 import { SEVERITIES } from '../src/types'
 import { getSourceProfile, KNOWN_SOURCE_TYPES } from './subscription-sources'
-import { githubEventTypeFilter, parseGitHubEventSelection } from './github-events'
+import { githubEventTypeFilter, parseGitHubEventSelection } from './providers/github/event-profiles'
 import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
 import { listWranglerSecrets } from './setup'
 

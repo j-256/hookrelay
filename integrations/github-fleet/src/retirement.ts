@@ -1,8 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { subscriptionKvKey } from '../src/lib/subscription'
-import { discoverGitHubFleet, type GitHubFleetDiscoveryOptions } from './github-fleet-discovery'
+import { subscriptionKvKey } from '../../../src/lib/subscription'
+import { discoverGitHubFleet, type GitHubFleetDiscoveryOptions } from './discovery'
 import {
   beginGitHubFleetRepositoryRetirement,
   completeGitHubFleetRepositoryRetirement,
@@ -14,7 +14,7 @@ import {
   type GitHubFleetManifest,
   type GitHubFleetManifestRepository,
   type GitHubFleetRetiredRepository,
-} from './github-fleet-manifest'
+} from './manifest'
 import {
   GITHUB_FLEET_PROFILE_NAMES,
   buildGitHubFleetSubscription,
@@ -22,17 +22,17 @@ import {
   type GitHubFleetProfileName,
   type GitHubFleetProgress,
   type GitHubFleetSubscription,
-} from './github-fleet-model'
-import type { GitHubFleetOptions } from './github-fleet'
+} from './model'
+import type { GitHubFleetOptions } from './fleet'
 import {
   deleteGitHubRepositoryHook,
   listGitHubRepositoryHooks,
   matchingGitHubRepositoryHooks,
   type GitHubRepositoryHook,
-} from './github-repository'
-import { deleteRemoteKv, putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from './kv'
-import { disableSubscription, removeSubscription } from './retirement-routes'
-import { routeReferencesSecret } from './retirement-manifest'
+} from '../../../scripts/providers/github/repository-hooks'
+import { deleteRemoteKv, putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
+import { disableSubscription, removeSubscription } from '../../../scripts/retirement-routes'
+import { routeReferencesSecret } from '../../../scripts/retirement-manifest'
 import {
   confirm,
   deleteWranglerSecretsBulk,
@@ -42,8 +42,8 @@ import {
   removeDevVar,
   writePrivateText,
   writeText,
-} from './setup'
-import { computePlan, parseRoutes, type Routes, type Sub } from './sync'
+} from '../../../scripts/setup'
+import { computePlan, parseRoutes, type Routes, type Sub } from '../../../scripts/sync'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'

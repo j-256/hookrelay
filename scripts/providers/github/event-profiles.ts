@@ -1,4 +1,4 @@
-import type { SubscriptionFilter } from '../src/types'
+import type { SubscriptionFilter } from '../../../src/types'
 
 const events = <T extends readonly string[]>(...values: T): Readonly<T> => Object.freeze(values)
 

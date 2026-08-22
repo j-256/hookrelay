@@ -6,24 +6,23 @@ import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
 import {
   formatGitHubFleetPlan,
-  parseGitHubFleetArgs,
   planGitHubFleet,
   prepareGitHubFleet,
   type GitHubFleetDependencies,
   type GitHubFleetOptions,
-} from '../../scripts/github-fleet'
-import { parseGitHubFleetManifest, serializeGitHubFleetManifest } from '../../scripts/github-fleet-manifest'
+} from '../src/fleet'
+import { parseGitHubFleetManifest, serializeGitHubFleetManifest } from '../src/manifest'
 import {
   GITHUB_FLEET_PROFILE_NAMES,
   buildGitHubFleetSubscription,
-} from '../../scripts/github-fleet-model'
+} from '../src/model'
 import {
   githubFleetManifestValues,
   type GitHubFleetManifestRepository,
-} from '../../scripts/github-fleet-manifest'
-import type { GitHubRepositoryHook } from '../../scripts/github-repository'
-import { writePrivateText } from '../../scripts/setup'
-import type { AtomicFileSystem } from '../../scripts/setup'
+} from '../src/manifest'
+import type { GitHubRepositoryHook } from '../../../scripts/providers/github/repository-hooks'
+import { writePrivateText } from '../../../scripts/setup'
+import type { AtomicFileSystem } from '../../../scripts/setup'
 
 const REPO = 'example-owner/example-plugin'
 const OTHER_REPO = 'example-owner/example-repo'
@@ -119,69 +118,6 @@ function dependencies(repositories = [REPO]): GitHubFleetDependencies {
     fileSystem: TEST_FILE_SYSTEM,
   }
 }
-
-describe('GitHub fleet arguments', () => {
-  it('requires an explicit phase, root, and manifest', () => {
-    expect(parseGitHubFleetArgs(['plan', '--root', '/repo', '--manifest', '/secure/fleet.json'])).toMatchObject({
-      phase: 'plan',
-      root: '/repo',
-      manifest: '/secure/fleet.json',
-      includePrivate: false,
-      secretLimit: 64,
-    })
-    expect(() => parseGitHubFleetArgs(['plan', '--root', '/repo'])).toThrow(/manifest/)
-    expect(() => parseGitHubFleetArgs(['prepare', '--root', '/repo', '--manifest', 'fleet.json', '-y'])).toThrow(/only valid/)
-  })
-
-  it('accepts repeatable repository filters and a capacity override', () => {
-    expect(parseGitHubFleetArgs([
-      'apply', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--repo', OTHER_REPO,
-      '--secret-limit', '80', '-y',
-    ])).toMatchObject({ repositories: [REPO, OTHER_REPO], secretLimit: 80, yes: true })
-  })
-
-  it('accepts a profile subset only with explicit repository selectors', () => {
-    expect(parseGitHubFleetArgs([
-      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--profiles', 'alerts',
-    ])).toMatchObject({ repositories: [REPO], profiles: ['alerts'] })
-    expect(() => parseGitHubFleetArgs([
-      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--profiles', 'alerts',
-    ])).toThrow(/requires at least one --repo/)
-    expect(() => parseGitHubFleetArgs([
-      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--profiles', 'alerts', '--retire',
-    ])).toThrow(/cannot be combined/)
-  })
-
-  it('requires repository selectors when private discovery is enabled', () => {
-    expect(parseGitHubFleetArgs([
-      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--include-private',
-    ])).toMatchObject({ repositories: [REPO], includePrivate: true })
-    expect(() => parseGitHubFleetArgs([
-      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--include-private',
-    ])).toThrow(/requires at least one --repo/)
-  })
-
-  it('requires explicit repository selectors for retirement', () => {
-    expect(parseGitHubFleetArgs([
-      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--retire',
-    ])).toMatchObject({ repositories: [REPO], retire: true })
-    expect(() => parseGitHubFleetArgs([
-      'plan', '--root', '/repo', '--manifest', 'fleet.json', '--retire',
-    ])).toThrow(/requires at least one --repo/)
-  })
-
-  it('requires explicit repository selectors for HMAC rotation', () => {
-    expect(parseGitHubFleetArgs([
-      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--rotate-hmac',
-    ])).toMatchObject({ repositories: [REPO], rotateHmac: true })
-    expect(() => parseGitHubFleetArgs([
-      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--rotate-hmac',
-    ])).toThrow(/requires at least one --repo/)
-    expect(() => parseGitHubFleetArgs([
-      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--retire', '--rotate-hmac',
-    ])).toThrow(/cannot be combined/)
-  })
-})
 
 describe('GitHub fleet planning and preparation', () => {
   it('explains the opt-in when a selected private repository is excluded', async () => {

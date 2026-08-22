@@ -1,5 +1,5 @@
-import { hashSubscriptionSlug } from '../src/lib/subscription'
-import { envSegment } from './setup'
+import { hashSubscriptionSlug } from '../../../src/lib/subscription'
+import { envSegment } from '../../../scripts/setup'
 
 export const GITHUB_FLEET_AUTH_SCHEME = 'github-sha256'
 

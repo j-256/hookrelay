@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { parseGitHubEventSelection } from '../../scripts/github-events'
-import { githubHookPayload } from '../../scripts/github-repository'
+import { parseGitHubEventSelection } from '../../scripts/providers/github/event-profiles'
+import { githubHookPayload } from '../../scripts/providers/github/repository-hooks'
 import {
   normalizeBaseUrl,
   parseSubAddArgs,

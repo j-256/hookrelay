@@ -2,10 +2,10 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SUBSCRIPTION_KEY_PREFIX } from '../src/lib/subscription'
-import type { GitHubFleetProgress } from './github-fleet-model'
 import { runProcess } from './setup'
 
 type ProcessRunner = typeof runProcess
+type ProgressReporter = (message: string) => void
 
 export interface RemoteKvSnapshot {
   subs: Record<string, string>
@@ -95,7 +95,7 @@ export function printableKvKey(key: string): string {
 export async function listRemoteKv(
   binding: string,
   runner: ProcessRunner = runProcess,
-  progress?: GitHubFleetProgress,
+  progress?: ProgressReporter,
 ): Promise<Record<string, string>> {
   progress?.(`Listing remote ${binding} keys`)
   const keysOut = await runner(
@@ -121,7 +121,7 @@ export async function listRemoteKv(
 
 export async function readRemoteKvSnapshot(
   runner: ProcessRunner = runProcess,
-  progress?: GitHubFleetProgress,
+  progress?: ProgressReporter,
 ): Promise<RemoteKvSnapshot> {
   return {
     subs: await listRemoteKv('SUBS', runner, progress),

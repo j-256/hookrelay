@@ -2,7 +2,7 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it } from 'vitest'
-import { discoverGitHubFleet, parseGitHubOrigin } from '../../scripts/github-fleet-discovery'
+import { discoverGitHubFleet, parseGitHubOrigin } from '../src/discovery'
 
 describe('GitHub origin parsing', () => {
   it('accepts HTTPS, SCP-style SSH, and ssh URLs', () => {

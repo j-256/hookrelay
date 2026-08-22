@@ -5,7 +5,7 @@ import { promisify } from 'node:util'
 import {
   assertGitHubFleetRepositoryCollisions,
   type GitHubFleetProgress,
-} from './github-fleet-model'
+} from './model'
 
 const execFileP = promisify(execFile)
 

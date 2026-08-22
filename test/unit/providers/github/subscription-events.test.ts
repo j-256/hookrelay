@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
-import { parseGitHubEventSelection } from '../../scripts/github-events'
+import { parseGitHubEventSelection } from '../../../../scripts/providers/github/event-profiles'
 import {
-  parseSubEventsArgs,
-  prepareSubEvents,
-  subEventsUsage,
-} from '../../scripts/sub-events'
-import { parseRoutes } from '../../scripts/sync'
+  githubSubscriptionEventsUsage,
+  parseGitHubSubscriptionEventsArgs,
+  prepareGitHubSubscriptionEvents,
+} from '../../../../scripts/providers/github/subscription-events'
+import { parseRoutes } from '../../../../scripts/sync'
 
 const FIRST_HASH = 'a'.repeat(64)
 const SECOND_HASH = 'b'.repeat(64)
@@ -53,14 +53,14 @@ const ROUTES = `
 }
 `
 
-describe('parseSubEventsArgs', () => {
+describe('parseGitHubSubscriptionEventsArgs', () => {
   it('accepts a replacement selection or saved-route reconciliation', () => {
-    expect(parseSubEventsArgs(['github:example-owner/example-repo'])).toEqual({
+    expect(parseGitHubSubscriptionEventsArgs(['github:example-owner/example-repo'])).toEqual({
       name: 'github:example-owner/example-repo',
       githubEvents: undefined,
       yes: false,
     })
-    expect(parseSubEventsArgs([
+    expect(parseGitHubSubscriptionEventsArgs([
       'github:example-owner/example-repo',
       '-e',
       'recommended,stars',
@@ -73,17 +73,17 @@ describe('parseSubEventsArgs', () => {
   })
 
   it('rejects missing, duplicate, and unknown options', () => {
-    expect(() => parseSubEventsArgs([])).toThrow(/usage: pnpm sub:events/)
-    expect(() => parseSubEventsArgs(['site', '-e', 'push', '--events', 'stars'])).toThrow(/only be supplied once/)
-    expect(() => parseSubEventsArgs(['site', '-e'])).toThrow(/requires a value/)
-    expect(() => parseSubEventsArgs(['site', '-x'])).toThrow(/unknown option/)
-    expect(subEventsUsage()).toContain('routes.jsonc')
+    expect(() => parseGitHubSubscriptionEventsArgs([])).toThrow(/usage: pnpm github:events/)
+    expect(() => parseGitHubSubscriptionEventsArgs(['site', '-e', 'push', '--events', 'stars'])).toThrow(/only be supplied once/)
+    expect(() => parseGitHubSubscriptionEventsArgs(['site', '-e'])).toThrow(/requires a value/)
+    expect(() => parseGitHubSubscriptionEventsArgs(['site', '-x'])).toThrow(/unknown option/)
+    expect(githubSubscriptionEventsUsage()).toContain('routes.jsonc')
   })
 })
 
-describe('prepareSubEvents', () => {
+describe('prepareGitHubSubscriptionEvents', () => {
   it('replaces only the selected profile metadata and preserves JSONC comments', () => {
-    const prepared = prepareSubEvents(
+    const prepared = prepareGitHubSubscriptionEvents(
       ROUTES,
       'github:example-owner/example-repo',
       parseGitHubEventSelection('recommended,stars'),
@@ -101,7 +101,7 @@ describe('prepareSubEvents', () => {
   })
 
   it('uses saved profiles without rewriting the file', () => {
-    const prepared = prepareSubEvents(ROUTES, 'github:example-owner/example-repo')
+    const prepared = prepareGitHubSubscriptionEvents(ROUTES, 'github:example-owner/example-repo')
 
     expect(prepared.routesChanged).toBe(false)
     expect(prepared.routesText).toBe(ROUTES)
@@ -109,12 +109,12 @@ describe('prepareSubEvents', () => {
   })
 
   it('supports wildcard and local-only manual selections', () => {
-    expect(prepareSubEvents(
+    expect(prepareGitHubSubscriptionEvents(
       ROUTES,
       'github:example-owner/example-repo',
       parseGitHubEventSelection('all'),
     ).githubEvents).toMatchObject({ kind: 'all', events: ['*'] })
-    expect(prepareSubEvents(
+    expect(prepareGitHubSubscriptionEvents(
       ROUTES,
       'github:example-owner/example-repo',
       parseGitHubEventSelection('manual'),
@@ -122,17 +122,17 @@ describe('prepareSubEvents', () => {
   })
 
   it('requires one configured GitHub subscription', () => {
-    expect(() => prepareSubEvents(ROUTES, 'missing')).toThrow(/does not exist/)
-    expect(() => prepareSubEvents(ROUTES, 'status')).toThrow(/not a GitHub subscription/)
-    expect(() => prepareSubEvents(
+    expect(() => prepareGitHubSubscriptionEvents(ROUTES, 'missing')).toThrow(/does not exist/)
+    expect(() => prepareGitHubSubscriptionEvents(ROUTES, 'status')).toThrow(/not a GitHub subscription/)
+    expect(() => prepareGitHubSubscriptionEvents(
       ROUTES.replace('"setup": {', '"setupOther": {'),
       'github:example-owner/example-repo',
     )).toThrow()
-    expect(() => prepareSubEvents(
+    expect(() => prepareGitHubSubscriptionEvents(
       ROUTES.replace('"repo": "example-owner/example-repo"', '"repo": "not-a-repository"'),
       'github:example-owner/example-repo',
     )).toThrow(/invalid GitHub repository/)
-    expect(() => prepareSubEvents(
+    expect(() => prepareGitHubSubscriptionEvents(
       ROUTES.replace('"auth": { "scheme": "github-sha256", "secretEnv": "HMAC_SITE" },', ''),
       'github:example-owner/example-repo',
     )).toThrow(/sender secret/)

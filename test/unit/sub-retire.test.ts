@@ -11,7 +11,7 @@ import {
   type SubscriptionRetirementDependencies,
   type SubscriptionRetirementOptions,
 } from '../../scripts/sub-retire'
-import type { GitHubRepositoryHook } from '../../scripts/github-repository'
+import type { GitHubRepositoryHook } from '../../scripts/providers/github/repository-hooks'
 import { parseRetirementManifest } from '../../scripts/retirement-manifest'
 import {
   readPrivateOptionalText,

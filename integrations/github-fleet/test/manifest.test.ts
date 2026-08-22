@@ -6,7 +6,7 @@ import {
   parseGitHubFleetManifest,
   serializeGitHubFleetManifest,
   withGitHubFleetManifestRepository,
-} from '../../scripts/github-fleet-manifest'
+} from '../src/manifest'
 
 const FIRST_SLUG = 'abcdefghijklmnopqrstuv'
 const SECOND_SLUG = 'zyxwvutsrqponmlkjihgfe'

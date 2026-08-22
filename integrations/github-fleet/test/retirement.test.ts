@@ -10,24 +10,24 @@ import {
   prepareGitHubFleetRetirement,
   verifyGitHubFleetRetirement,
   type GitHubFleetRetirementDependencies,
-} from '../../scripts/github-fleet-retirement'
-import type { GitHubFleetOptions } from '../../scripts/github-fleet'
+} from '../src/retirement'
+import type { GitHubFleetOptions } from '../src/fleet'
 import {
   githubFleetManifestProfiles,
   parseGitHubFleetManifest,
   type GitHubFleetManifestRepository,
-} from '../../scripts/github-fleet-manifest'
+} from '../src/manifest'
 import {
   GITHUB_FLEET_PROFILE_NAMES,
   GITHUB_FLEET_PROFILES,
   buildGitHubFleetSubscription,
-} from '../../scripts/github-fleet-model'
-import { parseGitHubEventSelection } from '../../scripts/github-events'
-import type { GitHubRepositoryHook } from '../../scripts/github-repository'
-import { readPrivateOptionalText, writePrivateText, writeText } from '../../scripts/setup'
-import { computePlan, parseRoutes } from '../../scripts/sync'
-import { modeAwareFileSystem } from '../helpers/atomic-file-system'
-import type { AtomicFileSystem } from '../../scripts/setup'
+} from '../src/model'
+import { parseGitHubEventSelection } from '../../../scripts/providers/github/event-profiles'
+import type { GitHubRepositoryHook } from '../../../scripts/providers/github/repository-hooks'
+import { readPrivateOptionalText, writePrivateText, writeText } from '../../../scripts/setup'
+import { computePlan, parseRoutes } from '../../../scripts/sync'
+import { modeAwareFileSystem } from '../../../test/helpers/atomic-file-system'
+import type { AtomicFileSystem } from '../../../scripts/setup'
 
 const REPO = 'example-owner/example-repo'
 const ENTRY: GitHubFleetManifestRepository = {

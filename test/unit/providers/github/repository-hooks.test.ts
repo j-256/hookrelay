@@ -16,9 +16,9 @@ import {
   updateGitHubRepositoryHook,
   updateGitHubRepositoryHookEvents,
   type GitHubRepositoryHook,
-} from '../../scripts/github-repository'
-import { parseGitHubEventSelection } from '../../scripts/github-events'
-import { hashSubscriptionSlug } from '../../src/lib/subscription'
+} from '../../../../scripts/providers/github/repository-hooks'
+import { parseGitHubEventSelection } from '../../../../scripts/providers/github/event-profiles'
+import { hashSubscriptionSlug } from '../../../../src/lib/subscription'
 
 const FIRST_SLUG = 'abcdefghijklmnopqrstuv'
 const SECOND_SLUG = 'zyxwvutsrqponmlkjihgfe'

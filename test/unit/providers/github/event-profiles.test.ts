@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { eventTypePassesFilter } from '../../src/lib/event-filter'
+import { eventTypePassesFilter } from '../../../../src/lib/event-filter'
 import {
   GITHUB_ACTIVITY_EVENTS,
   GITHUB_ALERT_EVENTS,
@@ -7,7 +7,7 @@ import {
   GITHUB_RECOMMENDED_EVENTS,
   githubEventTypeFilter,
   parseGitHubEventSelection,
-} from '../../scripts/github-events'
+} from '../../../../scripts/providers/github/event-profiles'
 
 const REPOSITORY_EVENTS = [
   'branch_protection_configuration',

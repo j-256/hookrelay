@@ -1,27 +1,27 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
-import { hmacSha256Hex } from '../src/lib/hmac'
-import { subscriptionKvKey } from '../src/lib/subscription'
+import { hmacSha256Hex } from '../../../src/lib/hmac'
+import { subscriptionKvKey } from '../../../src/lib/subscription'
 import {
   formatGitHubFleetPlan,
   planGitHubFleet,
   type GitHubFleetDependencies,
   type GitHubFleetOptions,
   type GitHubFleetPlan,
-} from './github-fleet'
+} from './fleet'
 import {
   githubFleetManifestProfiles,
   parseGitHubFleetManifest,
   type GitHubFleetManifest,
-} from './github-fleet-manifest'
+} from './manifest'
 import {
   GITHUB_FLEET_PROFILES,
   githubFleetSubscriptionName,
   type GitHubFleetProfileName,
   type GitHubFleetProgress,
-} from './github-fleet-model'
-import { parseGitHubEventSelection } from './github-events'
+} from './model'
+import { parseGitHubEventSelection } from '../../../scripts/providers/github/event-profiles'
 import {
   createGitHubRepositoryHook,
   gitHubRepositoryHookMatches,
@@ -30,16 +30,16 @@ import {
   pingAndVerifyGitHubRepositoryHook,
   updateGitHubRepositoryHook,
   type GitHubRepositoryHook,
-} from './github-repository'
-import { putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from './kv'
+} from '../../../scripts/providers/github/repository-hooks'
+import { putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
 import {
   confirm,
   listWranglerSecrets,
   putWranglerSecretsBulk,
   readPrivateOptionalText,
   type SecretValue,
-} from './setup'
-import { computePlan, parseRoutes, type Routes, type Sub } from './sync'
+} from '../../../scripts/setup'
+import { computePlan, parseRoutes, type Routes, type Sub } from '../../../scripts/sync'
 
 export const ROUTE_PROPAGATION_TIMEOUT_MS = 90_000
 export const ROUTE_PROBE_INTERVAL_MS = 2_000

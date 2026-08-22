@@ -4,35 +4,35 @@ import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
 import {
   parseGitHubEventSelection,
   type GitHubEventSelection,
-} from './github-events'
+} from './event-profiles'
 import {
   listGitHubRepositoryHooks,
   requireMatchingGitHubRepositoryHook,
   sameGitHubEvents,
   updateGitHubRepositoryHookEvents,
   validateGitHubRepo,
-} from './github-repository'
-import { confirm, getDevVar, readOptionalText, writeText } from './setup'
-import { parseRoutes } from './sync'
+} from './repository-hooks'
+import { confirm, getDevVar, readOptionalText, writeText } from '../../setup'
+import { parseRoutes } from '../../sync'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
 const GITHUB_AUTH_SCHEME = 'github-sha256'
-const GITHUB_PROFILE_REFERENCE = 'docs/github-event-profiles.md'
+const GITHUB_PROFILE_REFERENCE = 'docs/providers/github-event-profiles.md'
 const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true, tabSize: 2, eol: '\n' })
-const SUB_EVENTS_OPTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
+const GITHUB_SUBSCRIPTION_EVENTS_OPTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
   '-e': '--events',
   '-y': '--yes',
   '-h': '--help',
 })
 
-export interface SubEventsOptions {
+export interface GitHubSubscriptionEventsOptions {
   name: string
   githubEvents?: GitHubEventSelection
   yes: boolean
 }
 
-export interface PreparedSubEvents {
+export interface PreparedGitHubSubscriptionEvents {
   routesText: string
   repo: string
   slugHash: string
@@ -42,9 +42,9 @@ export interface PreparedSubEvents {
   routesChanged: boolean
 }
 
-export function subEventsUsage(): string {
+export function githubSubscriptionEventsUsage(): string {
   return [
-    'usage: pnpm sub:events <subscription-name> [-e <profiles>] [-y]',
+    'usage: pnpm github:events <subscription-name> [-e <profiles>] [-y]',
     '',
     'options:',
     '  -e, --events <profiles> replace the saved comma-separated GitHub profiles',
@@ -62,14 +62,14 @@ function optionValue(argv: string[], index: number, option: string): string {
   return value
 }
 
-export function parseSubEventsArgs(argv: string[]): SubEventsOptions {
+export function parseGitHubSubscriptionEventsArgs(argv: string[]): GitHubSubscriptionEventsOptions {
   const positional: string[] = []
   let githubEvents: GitHubEventSelection | undefined
   let yes = false
 
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!
-    const option = SUB_EVENTS_OPTION_ALIASES[arg] ?? arg
+    const option = GITHUB_SUBSCRIPTION_EVENTS_OPTION_ALIASES[arg] ?? arg
     if (option === '--events') {
       if (githubEvents) throw new Error('--events may only be supplied once')
       githubEvents = parseGitHubEventSelection(optionValue(argv, index, arg))
@@ -77,7 +77,7 @@ export function parseSubEventsArgs(argv: string[]): SubEventsOptions {
     } else if (option === '--yes') {
       yes = true
     } else if (option === '--help') {
-      throw new Error(subEventsUsage())
+      throw new Error(githubSubscriptionEventsUsage())
     } else if (arg.startsWith('-')) {
       throw new Error(`unknown option: ${arg}`)
     } else {
@@ -85,7 +85,7 @@ export function parseSubEventsArgs(argv: string[]): SubEventsOptions {
     }
   }
 
-  if (positional.length !== 1) throw new Error(subEventsUsage())
+  if (positional.length !== 1) throw new Error(githubSubscriptionEventsUsage())
   return { name: positional[0]!, githubEvents, yes }
 }
 
@@ -97,11 +97,11 @@ function withTrailingNewline(text: string): string {
   return text.endsWith('\n') ? text : `${text}\n`
 }
 
-export function prepareSubEvents(
+export function prepareGitHubSubscriptionEvents(
   routesText: string,
   name: string,
   requestedEvents?: GitHubEventSelection,
-): PreparedSubEvents {
+): PreparedGitHubSubscriptionEvents {
   const routes = parseRoutes(routesText)
   const matches = routes.subs
     .map((sub, index) => ({ sub, index }))
@@ -150,14 +150,14 @@ function profileLabel(names: readonly string[]): string {
 async function main(): Promise<void> {
   const argv = process.argv.slice(2)
   if (argv.includes('--help') || argv.includes('-h')) {
-    console.log(subEventsUsage())
+    console.log(githubSubscriptionEventsUsage())
     return
   }
-  const options = parseSubEventsArgs(argv)
+  const options = parseGitHubSubscriptionEventsArgs(argv)
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')
-  const prepared = prepareSubEvents(routesText, options.name, options.githubEvents)
+  const prepared = prepareGitHubSubscriptionEvents(routesText, options.name, options.githubEvents)
 
   if (prepared.routesChanged) {
     await writeText(routesPath, prepared.routesText)

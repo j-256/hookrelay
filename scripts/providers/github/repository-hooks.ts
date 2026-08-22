@@ -1,6 +1,6 @@
-import { SUBSCRIPTION_SLUG_RE, hashSubscriptionSlug } from '../src/lib/subscription'
-import type { GitHubEventSelection } from './github-events'
-import { runProcess } from './setup'
+import { SUBSCRIPTION_SLUG_RE, hashSubscriptionSlug } from '../../../src/lib/subscription'
+import type { GitHubEventSelection } from './event-profiles'
+import { runProcess } from '../../setup'
 
 const GITHUB_API_VERSION = '2022-11-28'
 const GITHUB_REPOSITORY_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/

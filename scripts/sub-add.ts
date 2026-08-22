@@ -16,12 +16,12 @@ import { discoverWorkerBaseUrl } from './cloudflare-domains'
 import {
   parseGitHubEventSelection,
   type GitHubEventSelection,
-} from './github-events'
+} from './providers/github/event-profiles'
 import {
   createGitHubRepositoryHook,
   githubHookPayload,
   validateGitHubRepo,
-} from './github-repository'
+} from './providers/github/repository-hooks'
 import { getSourceProfile } from './subscription-sources'
 import {
   addDevVar,
@@ -35,12 +35,12 @@ import {
 } from './setup'
 import { parseRoutes } from './sync'
 
-export { validateGitHubRepo } from './github-repository'
+export { validateGitHubRepo } from './providers/github/repository-hooks'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
 const DEFAULT_GITHUB_EVENT_SELECTION = 'push'
-const GITHUB_PROFILE_REFERENCE = 'docs/github-event-profiles.md'
+const GITHUB_PROFILE_REFERENCE = 'docs/providers/github-event-profiles.md'
 const SUBSCRIPTION_SECRET_BYTES = 16
 const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true, tabSize: 2, eol: '\n' })
 const SUB_ADD_OPTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({

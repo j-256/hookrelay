@@ -4,32 +4,32 @@ import { chmod, lstat, mkdtemp, open, readFile, rename, rm, unlink, writeFile } 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
-import { hmacSha256Hex } from '../../src/lib/hmac'
-import { subscriptionKvKey } from '../../src/lib/subscription'
-import type { GitHubFleetDependencies, GitHubFleetOptions } from '../../scripts/github-fleet'
+import { hmacSha256Hex } from '../../../src/lib/hmac'
+import { subscriptionKvKey } from '../../../src/lib/subscription'
+import type { GitHubFleetDependencies, GitHubFleetOptions } from '../src/fleet'
 import {
   applyGitHubFleet,
   verifyGitHubFleet,
   waitForAuthenticatedGitHubRoute,
   type DesiredHook,
   type GitHubFleetReconcileDependencies,
-} from '../../scripts/github-fleet-reconcile'
+} from '../src/reconcile'
 import {
   githubFleetManifestProfiles,
   serializeGitHubFleetManifest,
   type GitHubFleetManifest,
   type GitHubFleetManifestRepository,
-} from '../../scripts/github-fleet-manifest'
+} from '../src/manifest'
 import {
   GITHUB_FLEET_PROFILE_NAMES,
   GITHUB_FLEET_PROFILES,
   buildGitHubFleetSubscription,
   githubFleetSubscriptionName,
-} from '../../scripts/github-fleet-model'
-import { parseGitHubEventSelection } from '../../scripts/github-events'
-import type { GitHubRepositoryHook } from '../../scripts/github-repository'
-import { writePrivateText, type AtomicFileSystem, type SecretValue } from '../../scripts/setup'
-import { computePlan, parseRoutes } from '../../scripts/sync'
+} from '../src/model'
+import { parseGitHubEventSelection } from '../../../scripts/providers/github/event-profiles'
+import type { GitHubRepositoryHook } from '../../../scripts/providers/github/repository-hooks'
+import { writePrivateText, type AtomicFileSystem, type SecretValue } from '../../../scripts/setup'
+import { computePlan, parseRoutes } from '../../../scripts/sync'
 
 const REPO = 'example-owner/example-plugin'
 const BASE_URL = 'https://hooks.example.com'

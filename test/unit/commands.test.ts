@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { commandReference } from '../../scripts/commands'
-import { GITHUB_EVENT_PROFILES } from '../../scripts/github-events'
+import { GITHUB_EVENT_PROFILES } from '../../scripts/providers/github/event-profiles'
 import { KNOWN_SOURCE_TYPES } from '../../scripts/subscription-sources'
 
 describe('commandReference', () => {
@@ -12,15 +12,12 @@ describe('commandReference', () => {
     expect(reference).toContain('pnpm sink:secret:rename <sink> <old-secret> <new-secret>')
     expect(reference).toContain('pnpm sub:add <name> <source> [-s <sink>]')
     expect(reference).toContain('--email-base, --allow-sender')
-    expect(reference).toContain('pnpm sub:events <name> [-e <profiles>]')
+    expect(reference).toContain('pnpm github:events <name> [-e <profiles>]')
+    expect(reference).not.toContain('sub:events')
     expect(reference).toContain('pnpm cloudevents:send')
-    expect(reference).toContain('pnpm github:fleet plan --root <directory> --manifest <file>')
-    expect(reference).toContain('pnpm github:fleet prepare --root <directory> --manifest <file>')
-    expect(reference).toContain('pnpm github:fleet apply --root <directory> --manifest <file> [production write]')
-    expect(reference).toContain('pnpm github:fleet verify --root <directory> --manifest <file>')
-    expect(reference).toContain('--include-private (requires --repo)')
-    expect(reference).toContain('--profiles (requires --repo)')
-    expect(reference).toContain('fresh nondelivering GitHub pings')
+    expect(reference).toContain('Optional integrations')
+    expect(reference).toContain('pnpm github:fleet --help')
+    expect(reference).toContain('integrations/github-fleet/README.md')
     expect(reference).toContain('pnpm sync\n')
     expect(reference).toContain('pnpm sync -y                         [production write]')
     expect(reference).toContain('npm version <major|minor|patch>')

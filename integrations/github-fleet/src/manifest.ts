@@ -1,13 +1,13 @@
 import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
-import { SUBSCRIPTION_SLUG_RE } from '../src/lib/subscription'
+import { SUBSCRIPTION_SLUG_RE } from '../../../src/lib/subscription'
 import {
   GITHUB_FLEET_PROFILE_NAMES,
   assertGitHubFleetRepositoryCollisions,
   githubFleetHmacName,
   type GitHubFleetProfileName,
   type GitHubFleetValues,
-} from './github-fleet-model'
+} from './model'
 
 const LEGACY_MANIFEST_VERSION = 2
 const MANIFEST_VERSION = 3

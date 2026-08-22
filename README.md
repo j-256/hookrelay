@@ -2,7 +2,7 @@
 
 Run `pnpm commands` for a one-screen reference to routine setup, sync, development, and deployment commands.
 
-A small, extensible notification receiver for Cloudflare Workers. Drop in adapters for new webhook senders (Statuspage, GitHub, your own scripts), receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
+Hookrelay is a small, provider-agnostic webhook notification gateway for Cloudflare Workers. Add adapters for new webhook senders, receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
 
 ## What it does
 
@@ -269,11 +269,13 @@ For a GitHub repository, pass the repository separately instead of deriving it f
 pnpm sub:add github:example-owner/example-repo github --repo example-owner/example-repo --events stars,watchers
 ```
 
-The `--events` value accepts comma-separated profiles. Profiles compose by set union, so `activity,alerts` combines concise repository activity with actionable security findings and `recommended,stars` adds star activity to the broad general-purpose set. `push` remains the default, while `all` and `manual` are exclusive presets. The complete profile-to-event table and noise guidance live in [GitHub event profiles](docs/github-event-profiles.md).
+The `--events` value accepts comma-separated profiles. Profiles compose by set union, so `activity,alerts` combines concise repository activity with actionable security findings and `recommended,stars` adds star activity to the broad general-purpose set. `push` remains the default, while `all` and `manual` are exclusive presets. The complete profile-to-event table and noise guidance live in [GitHub event profiles](docs/providers/github-event-profiles.md).
 
 The base URL resolves from an explicit `--base-url`, then the value already saved in `routes.jsonc`, then the single production custom domain attached to the Worker named in `wrangler.jsonc`. Automatic discovery uses `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; an absent or ambiguous domain produces an error asking for `--base-url`.
 
 With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and KV route are live.
+
+## Provider-specific setup
 
 ### Structured CloudEvents and signed webhook delivery
 
@@ -336,7 +338,7 @@ Treat each generated address as a bearer route. Cloudflare preserves the full pl
 Use the saved subscription name to replace an existing webhook's event selection:
 
 ```sh
-pnpm sub:events github:example-owner/example-repo --events recommended,stars
+pnpm github:events github:example-owner/example-repo --events recommended,stars
 ```
 
 The command updates only `setup.github.eventProfiles` in local `routes.jsonc`, preserving its comments, then finds the exact repository hook by hashing each Hookrelay URL slug and comparing it with the subscription's saved `slugHash`. It previews the GitHub change and asks before applying it; pass `-y` or `--yes` to skip that confirmation. Neither the private URL nor its slug is printed.
@@ -344,92 +346,12 @@ The command updates only `setup.github.eventProfiles` in local `routes.jsonc`, p
 If you edit `eventProfiles` in `routes.jsonc` yourself, omit `--events` to reconcile that saved selection:
 
 ```sh
-pnpm sub:events github:example-owner/example-repo
+pnpm github:events github:example-owner/example-repo
 ```
 
 GitHub may return the same events in a different order, so order alone does not trigger an update. GitHub's general webhook update clears an existing secret unless the request supplies it again, so the command requires the subscription's `auth.secretEnv` value in `.dev.vars` and resends it with the unchanged URL, content type, SSL setting, and active state. The secret-bearing request travels through stdin and is never placed in process arguments or output. Selecting `manual` changes local metadata but leaves GitHub's checkboxes under manual control.
 
-### Managing a GitHub repository fleet
-
-`github:fleet` discovers public GitHub repositories checked out as immediate children of a supplied root and can explicitly admit selected private repositories. By default, it manages a standard three-hook topology for each eligible repository. Activity uses the bare `github:<owner>/<repo>` subscription name and the `activity` event profile, whose shared delivery rule admits ordinary pushes, workflow runs, and only opened or closed pull requests without adding filters to individual repository routes. Force-pushes remain recorded but are not sent to sinks. Stars uses the `:stars` suffix and `stars,watchers`, and alerts uses the `:alerts` suffix and `alerts`. Each profile routes to its configured fleet sink. A repository's selected hooks have distinct private URLs but share one HMAC.
-
-The command requires an explicit manifest path so a deployment can choose its own encrypted or otherwise access-controlled secret store without embedding that location in Hookrelay. The JSON manifest is the recovery source for each repository's raw slugs and HMAC. It and `.dev.vars` must be regular, non-symlink files with mode `0600`; `routes.jsonc` stores only slug hashes. Treat the manifest and full GitHub hook URLs as secrets and never commit the manifest unless the repository encrypts it before storage.
-
-The manifest is strict, versioned JSON with this repository shape:
-
-```json
-{
-  "version": 3,
-  "repositories": {
-    "owner/repo": {
-      "hmac": {
-        "name": "HMAC_GITHUB_OWNER_REPO",
-        "value": "<secret>"
-      },
-      "slugs": {
-        "activity": "<private-slug>",
-        "stars": "<private-slug>",
-        "alerts": "<private-slug>"
-      },
-      "profiles": ["alerts"],
-      "state": "active"
-    }
-  },
-  "retiredRepositories": {}
-}
-```
-
-Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. The optional `profiles` array saves a nonempty subset in canonical `activity`, `stars`, `alerts` order; omission preserves the default three-profile topology. Active and retiring repositories carry explicit lifecycle state, and a retiring entry also carries resumable hook, route, KV, and secret phase markers. A completed entry moves to `retiredRepositories` with its recovery values intact.
-
-Use the four phases in order:
-
-```sh
-pnpm github:fleet plan --root <directory> --manifest <file>
-pnpm github:fleet prepare --root <directory> --manifest <file>
-pnpm github:fleet apply --root <directory> --manifest <file>
-pnpm github:fleet verify --root <directory> --manifest <file>
-```
-
-To rotate one or more managed repository HMACs, replace their values in the private manifest first, then repeat `--repo <owner/repo> --rotate-hmac` through all four phases. Preparation replaces only the selected local `.dev.vars` entries. Apply rewrites the selected Worker secrets even when their names already exist, then authenticated pings cause Hookrelay-owned GitHub hooks with the prior secret to be repaired. The flag requires an explicit repository selection and cannot be combined with retirement.
-
-`plan` is read-only. It reports discoveries, exclusions, drift, exact additions, GitHub administration blockers, remote KV differences, and projected Worker variable and secret capacity. `prepare` is local-only: it generates missing manifest values first, then repairs `.dev.vars` and appends missing routes from that manifest. `apply` confirms before production writes, installs missing repository HMACs with Wrangler's [bulk secret command](https://developers.cloudflare.com/workers/wrangler/commands/workers/#secret-bulk), updates only selected subscription and sink KV entries, waits for HMAC-authenticated routes, and creates or repairs only Hookrelay-owned GitHub hooks. `verify` reports drift without repairing it, but it deliberately sends a fresh GitHub ping to every managed hook in the current visibility scope so it can prove the unrecoverable GitHub-side secret agrees with Hookrelay. Direct route probes carry the manifest HMAC and require `200`; the subsequent GitHub-triggered ping independently verifies GitHub's stored secret. Ping events are accepted without creating sink deliveries.
-
-Repeat `--repo <owner/repo>` to limit new additions for a canary rollout. Already managed public repositories are still audited. Omit `--repo` to select every eligible discovered public repository. `--secret-limit` sets the capacity guard, and `-y` is accepted only by `apply` to skip its confirmation.
-
-Add `--profiles <comma-separated names>` with one or more explicit `--repo` selectors to save a subset for newly enrolled repositories. Repeat the same repository and profile selectors through all four phases so each preview records the intended scope. The saved selection remains authoritative when the option is omitted, while a conflicting selection is blocked. The ordinary additive workflow treats a saved selection as immutable, preventing a profile change from silently orphaning production state.
-
-```sh
-pnpm github:fleet prepare --root <directory> --manifest <file> --repo owner/repo --profiles alerts
-```
-
-Planning and verification require inactive profile routes, Hookrelay-owned hooks, and production KV entries to be absent. A subset therefore proves that excluded profiles are not forwarding events instead of merely omitting them from reconciliation.
-
-Private repositories require `--include-private` together with one or more `--repo <owner/repo>` selectors. Only those named private repositories become eligible, and future audits must repeat both options; `--include-private` without `--repo` is rejected. Review the configured sinks before opting in because private webhook payloads can contain non-public repository activity and security details.
-
-```sh
-pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/private-repo --include-private
-```
-
-The ordinary fleet workflow is additive-only: it does not prune unmanaged hooks, stale manifest entries, routes, or secrets. Reruns reuse manifest values, recognize hooks by the saved slug hash, and resume after a partial route or hook operation without duplicating a successful POST.
-
-Route changes account for [Workers KV eventual consistency](https://developers.cloudflare.com/kv/concepts/how-kv-works/). Apply computes its review plan once, verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Remote KV inventories use Wrangler bulk reads instead of launching one process per key. Long discovery, hook, KV, propagation, and reconciliation phases emit count-based progress on stderr without printing repository names, keys, values, secret values, or raw slugs. Wrangler bulk input is sent through stdin, secret values and raw slugs are not printed, and omitted secrets remain unchanged.
-
-Fleet retirement is a separate, explicit use of the same phases and selection arguments:
-
-```sh
-pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/repo --retire
-pnpm github:fleet prepare --root <directory> --manifest <file> --repo owner/repo --retire
-pnpm github:fleet plan --root <directory> --manifest <file> --repo owner/repo --retire
-pnpm github:fleet apply --root <directory> --manifest <file> --repo owner/repo --retire
-pnpm github:fleet verify --root <directory> --manifest <file> --repo owner/repo --retire
-pnpm sync
-```
-
-`--retire` requires at least one explicit `--repo`, and private repositories still require `--include-private` on every phase. Prepare writes the lifecycle state to the private manifest before disabling the repository's local routes and does not change its raw slugs or HMAC. Apply confirms before production mutation, syncs only those disabled routes, waits for the public routes to return the disabled response, records exact owned hook IDs in the manifest, deletes only those hooks, removes the routes from local and production KV, and deletes the repository HMAC only when no remaining route references it. Each irreversible step has a manifest marker, so rerunning the same command resumes instead of regenerating values or repeating completed work.
-
-Retirement verification checks that all selected routes, owned hooks, and safely unshared HMACs are absent. It never sends GitHub pings. Ordinary fleet discovery excludes retiring and retired entries from admission or hook reconciliation while reporting their lifecycle state.
-
-### Staged subscription and sink retirement
+## Staged subscription and sink retirement
 
 Individual subscriptions and sinks use a separate strict, versioned retirement manifest. Pass its path explicitly on every command; the file is created as a regular, non-symlink file with mode `0600`, can contain recoverable secret values, and must be stored privately. It is not the GitHub fleet manifest.
 
@@ -450,6 +372,10 @@ Both finalizers write recovery data before provider, KV, or secret deletion and 
 `pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.
+
+## Optional integrations
+
+[`integrations/github-fleet`](integrations/github-fleet/README.md) contains the repository-fleet tooling used to dogfood Hookrelay across many GitHub repositories. It manages repository discovery, hooks, per-repository HMACs, event-profile selections, reconciliation, rotation, retirement, and verification. It is not required by the Hookrelay runtime or by ordinary GitHub subscriptions.
 
 ## Durable delivery
 
@@ -629,7 +555,15 @@ If the intended release commit changes after a tag is created, run `pnpm retag` 
 
 ## Project layout
 
-See `src/` for components and `test/` for unit and integration tests. Key files:
+The repository separates runtime code, operator tooling, and optional integrations:
+
+- `src/` contains the deployed Worker, built-in adapters and sinks, persistence, delivery, and administration
+- `scripts/` contains generic operator commands, with source-specific helpers under `scripts/providers/`
+- `integrations/` contains optional operational integrations that depend on Hookrelay but are not part of its runtime identity
+- `test/` contains core, generic operator, and provider-support tests; integrations keep their dedicated tests beside their code
+
+Key runtime files:
+
 - `src/router.ts` – request pipeline (slug parse, KV lookup, verify, parse, persist, enqueue)
 - `src/email.ts` – MIME parsing, sender filtering, email normalization, and routing
 - `src/ingest.ts` – shared durable persistence and delivery preparation for HTTP and email

@@ -6,7 +6,7 @@ import {
   githubFleetHmacName,
   githubFleetSubscriptionName,
   parseGitHubFleetProfiles,
-} from '../../scripts/github-fleet-model'
+} from '../src/model'
 
 const SLUGS = {
   activity: 'abcdefghijklmnopqrstuv',
