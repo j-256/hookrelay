@@ -18,7 +18,8 @@ const DISCORD_TITLE_LIMIT = 256
 const DESCRIPTION_TRUNCATED = '\n\n*Content truncated*'
 const DESCRIPTION_TRUNCATED_WITH_URL = '\n\n*Content truncated; open the title for the full event*'
 const TRUNCATION_BOUNDARY_MINIMUM_RATIO = 0.75
-const HTML_COMMENT_PATTERN = /<!--[\s\S]*?-->/g
+const HTML_COMMENT_PATTERN = /<!--(?:[\s\S]*?-->|[\s\S]*$)/g
+const HTML_COMMENT_REPLACEMENT = ' '
 const HTML_BREAK_PATTERN = /<br(?:\s[^<>]*?)?\s*\/?>/gi
 const HTML_LIST_ITEM_OPEN_PATTERN = /<li(?:\s[^<>]*?)?\s*>/gi
 const HTML_LIST_ITEM_CLOSE_PATTERN = /<\/li\s*>[ \t]*(?:\r?\n)?/gi
@@ -43,7 +44,7 @@ function truncate(s: string, max: number): string {
 function normalizeDescription(s: string): string {
   return s
     .replace(/\r\n?/g, '\n')
-    .replace(HTML_COMMENT_PATTERN, '')
+    .replace(HTML_COMMENT_PATTERN, HTML_COMMENT_REPLACEMENT)
     .replace(HTML_BREAK_PATTERN, '\n')
     .replace(HTML_LIST_ITEM_OPEN_PATTERN, '- ')
     .replace(HTML_LIST_ITEM_CLOSE_PATTERN, '\n')

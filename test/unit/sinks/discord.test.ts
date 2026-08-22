@@ -106,6 +106,15 @@ describe('discord sink', () => {
     ].join('\n'))
   })
 
+  it('does not let removed HTML comments form another comment delimiter', async () => {
+    const description = await renderedDescription('before <!<!-- hidden -->-- after')
+    const unterminated = await renderedDescription('visible<!-- hidden')
+
+    expect(description).toBe('before <! -- after')
+    expect(description).not.toContain('<!--')
+    expect(unterminated).toBe('visible')
+  })
+
   it('truncates descriptions at a clean boundary with a continuation notice', async () => {
     const visibleBody = 'x'.repeat(4000)
     const compatibilityBadge = `[![Dependabot compatibility score](https://example.com/${'y'.repeat(500)})]`
