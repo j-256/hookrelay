@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { opendir, realpath, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { promisify } from 'node:util'
 import {
   assertGitHubFleetRepositoryCollisions,
@@ -47,6 +47,11 @@ interface GitHubRepositoryMetadata {
   isArchived: boolean
   isFork: boolean
   viewerPermission: string
+}
+
+interface GitHubFleetCandidate {
+  child: string
+  childPath: string
 }
 
 function stripGitSuffix(path: string): string {
@@ -113,20 +118,36 @@ async function childNames(root: string): Promise<string[]> {
 }
 
 export async function discoverGitHubFleet(
-  root: string,
+  roots: readonly string[],
   options: GitHubFleetDiscoveryOptions = {},
   runner: GitHubFleetCommandRunner = defaultRunner,
 ): Promise<GitHubFleetDiscovery> {
-  const resolvedRoot = await realpath(root)
+  if (roots.length === 0) throw new Error('at least one checkout root is required')
+  const rootEntries = await Promise.all(roots.map(async (root) => ({
+    displayRoot: resolve(root),
+    resolvedRoot: await realpath(root),
+  })))
+  const resolvedRoots = rootEntries.map(({ resolvedRoot }) => resolvedRoot)
+  if (new Set(resolvedRoots).size !== resolvedRoots.length) {
+    throw new Error('checkout roots must resolve to distinct directories')
+  }
   const repositories: GitHubFleetRepository[] = []
   const exclusions: GitHubFleetDiscoveryExclusion[] = []
   const blockers: string[] = []
   const canonicalOwners = new Map<string, string>()
+  const candidates: GitHubFleetCandidate[] = []
 
-  const children = await childNames(resolvedRoot)
-  for (const [index, child] of children.entries()) {
-    options.progress?.(`Inspecting repository checkout ${index + 1}/${children.length}`)
-    const childPath = join(resolvedRoot, child)
+  for (const { displayRoot, resolvedRoot } of rootEntries) {
+    for (const name of await childNames(resolvedRoot)) {
+      candidates.push({
+        child: resolvedRoots.length === 1 ? name : join(displayRoot, name),
+        childPath: join(resolvedRoot, name),
+      })
+    }
+  }
+  for (const [index, candidate] of candidates.entries()) {
+    options.progress?.(`Inspecting repository checkout ${index + 1}/${candidates.length}`)
+    const { child, childPath } = candidate
     let info
     try {
       info = await stat(childPath)

@@ -11,9 +11,10 @@ const DEFAULT_SECRET_LIMIT = 64
 
 export function githubFleetUsage(): string {
   return [
-    'usage: pnpm github:fleet <plan|prepare|apply|verify> --root <directory> --manifest <file> [options]',
+    'usage: pnpm github:fleet <plan|prepare|apply|verify> --root <directory> [--root <directory> ...] --manifest <file> [options]',
     '',
     'options:',
+    '  --root <directory>    discover direct-child repositories, repeatable',
     '  --repo <owner/repo>    select a new repository, repeatable',
     '  --profiles <names>     save a comma-separated profile subset for selected new repositories',
     '  --include-private       admit private repositories selected with --repo',
@@ -35,7 +36,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   const phase = argv[0]
   if (phase === '--help' || phase === '-h') throw new Error(githubFleetUsage())
   if (!phase || !['plan', 'prepare', 'apply', 'verify'].includes(phase)) throw new Error(githubFleetUsage())
-  let root: string | undefined
+  const roots: string[] = []
   let manifest: string | undefined
   const repositories: string[] = []
   let includePrivate = false
@@ -48,8 +49,9 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index]!
     if (arg === '--root') {
-      if (root !== undefined) throw new Error('--root may only be supplied once')
-      root = optionValue(argv, index, arg)
+      const root = optionValue(argv, index, arg)
+      if (roots.includes(root)) throw new Error(`--root supplied more than once: ${root}`)
+      roots.push(root)
       index += 1
     } else if (arg === '--manifest') {
       if (manifest !== undefined) throw new Error('--manifest may only be supplied once')
@@ -85,7 +87,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       throw new Error(`unknown option: ${arg}`)
     }
   }
-  if (!root) throw new Error('--root is required')
+  if (roots.length === 0) throw new Error('--root is required')
   if (!manifest) throw new Error('--manifest is required')
   if (includePrivate && repositories.length === 0) throw new Error('--include-private requires at least one --repo')
   if (profiles && repositories.length === 0) throw new Error('--profiles requires at least one --repo')
@@ -96,7 +98,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   if (yes && phase !== 'apply') throw new Error('-y is only valid with apply')
   return {
     phase: phase as GitHubFleetPhase,
-    root,
+    roots,
     manifest,
     repositories,
     includePrivate,

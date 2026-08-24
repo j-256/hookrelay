@@ -122,7 +122,7 @@ async function writeProject(
 function fleetOptions(phase: 'apply' | 'verify', repositories: string[] = []): GitHubFleetOptions {
   return {
     phase,
-    root: '/repo',
+    roots: ['/repo'],
     manifest: 'fleet.json',
     repositories,
     includePrivate: false,

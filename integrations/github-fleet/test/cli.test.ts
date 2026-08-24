@@ -8,13 +8,22 @@ describe('GitHub fleet CLI', () => {
   it('requires an explicit phase, root, and manifest', () => {
     expect(parseGitHubFleetArgs(['plan', '--root', '/repo', '--manifest', '/secure/fleet.json'])).toMatchObject({
       phase: 'plan',
-      root: '/repo',
+      roots: ['/repo'],
       manifest: '/secure/fleet.json',
       includePrivate: false,
       secretLimit: 64,
     })
     expect(() => parseGitHubFleetArgs(['plan', '--root', '/repo'])).toThrow(/manifest/)
     expect(() => parseGitHubFleetArgs(['prepare', '--root', '/repo', '--manifest', 'fleet.json', '-y'])).toThrow(/only valid/)
+  })
+
+  it('accepts distinct repeatable checkout roots', () => {
+    expect(parseGitHubFleetArgs([
+      'plan', '--root', '/repo', '--root', '/repo/3p', '--manifest', 'fleet.json',
+    ])).toMatchObject({ roots: ['/repo', '/repo/3p'] })
+    expect(() => parseGitHubFleetArgs([
+      'plan', '--root', '/repo', '--root', '/repo', '--manifest', 'fleet.json',
+    ])).toThrow(/supplied more than once/)
   })
 
   it('accepts repeatable repository filters and a capacity override', () => {
@@ -69,6 +78,7 @@ describe('GitHub fleet CLI', () => {
   it('documents every phase and option', () => {
     const usage = githubFleetUsage()
     expect(usage).toContain('<plan|prepare|apply|verify>')
+    expect(usage).toContain('--root')
     expect(usage).toContain('--profiles')
     expect(usage).toContain('--include-private')
     expect(usage).toContain('--retire')

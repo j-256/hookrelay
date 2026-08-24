@@ -8,14 +8,14 @@ The implementation lives in `integrations/github-fleet/src/`, its dedicated test
 
 ## Fleet workflow
 
-Run every phase from the Hookrelay repository root and pass an operator-supplied checkout root and private manifest path:
+Run every phase from the Hookrelay repository root and pass one or more operator-supplied checkout roots plus a private manifest path. Each root is explicit, and only its direct-child Git worktrees are discoverable:
 
 ```sh
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> [selection]
+pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet prepare --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet apply --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet verify --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
 pnpm sync
 ```
 

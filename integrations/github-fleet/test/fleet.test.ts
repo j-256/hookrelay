@@ -91,7 +91,7 @@ async function project(subs: unknown[] = [], devVars = ''): Promise<string> {
 function options(repositories: string[] = []): GitHubFleetOptions {
   return {
     phase: 'prepare',
-    root: '/ignored',
+    roots: ['/ignored'],
     manifest: 'fleet.json',
     repositories,
     includePrivate: false,

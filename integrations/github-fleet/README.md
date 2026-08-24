@@ -12,7 +12,7 @@ Run every command from the Hookrelay repository root. Before managing a fleet, p
 - `routes.jsonc` and `.dev.vars` for that deployment
 - Wrangler access through `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
 - An authenticated `gh` CLI identity with repository administration access for every managed repository
-- A checkout root whose immediate children are the repositories to discover
+- One or more checkout roots whose immediate children are the repositories to discover
 - An explicit private manifest path for recoverable repository HMACs and raw subscription slugs
 - The sinks required by each selected profile: `discord:repo-activity`, `discord:github-stars`, and `discord:repo-alerts`
 
@@ -64,14 +64,14 @@ Preparation writes missing entries and refuses unknown fields, malformed values,
 
 ## Enrollment and reconciliation
 
-Use the phases in order with identical root, manifest, repository, visibility, and profile arguments:
+Use the phases in order with identical roots, manifest, repository, visibility, and profile arguments. Repeat `--root` for each explicit checkout root; discovery does not recurse beyond their direct children:
 
 ```sh
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> [selection]
-pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> [selection]
+pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet prepare --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet apply --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet verify --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
 pnpm sync
 ```
 

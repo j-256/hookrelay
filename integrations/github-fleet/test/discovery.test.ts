@@ -71,7 +71,7 @@ describe('GitHub fleet discovery', () => {
       }
 
       const progress: string[] = []
-      const result = await discoverGitHubFleet(root, { progress: (message) => progress.push(message) }, runner)
+      const result = await discoverGitHubFleet([root], { progress: (message) => progress.push(message) }, runner)
       expect(progress[0]).toBe('Inspecting repository checkout 1/10')
       expect(progress.at(-1)).toBe('Inspecting repository checkout 10/10')
       expect(progress.join('\n')).not.toContain('private')
@@ -89,7 +89,7 @@ describe('GitHub fleet discovery', () => {
       expect(result.blockers.join('\n')).toMatch(/archived/)
       expect(result.blockers.join('\n')).toMatch(/admin permission/)
 
-      const optedIn = await discoverGitHubFleet(root, {
+      const optedIn = await discoverGitHubFleet([root], {
         privateRepositories: new Set(['example-owner/private']),
       }, runner)
       expect(optedIn.repositories.map((repo) => repo.nameWithOwner)).toEqual([
@@ -129,11 +129,96 @@ describe('GitHub fleet discovery', () => {
           viewerPermission: 'ADMIN',
         })
       }
-      const result = await discoverGitHubFleet(root, {}, runner)
+      const result = await discoverGitHubFleet([root], {}, runner)
       expect(result.blockers.join('\n')).toMatch(/malformed GitHub origin/)
       expect(result.blockers.join('\n')).toMatch(/same HMAC name/)
     } finally {
       await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('discovers direct-child repositories across multiple explicit roots', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'hookrelay-discovery-'))
+    const thirdPartyRoot = join(root, '3p')
+    try {
+      await mkdir(join(root, 'owned'))
+      await mkdir(join(thirdPartyRoot, 'external'), { recursive: true })
+      const remotes: Record<string, string> = {
+        owned: 'https://github.com/example-owner/owned.git',
+        external: 'https://github.com/example-org/external.git',
+      }
+      const runner = async (command: string, args: string[]) => {
+        const childPath = args[1]!
+        const child = childPath.split('/').at(-1)!
+        if (command === 'git') {
+          if (child === '3p') throw new Error('not a Git worktree')
+          return args[3] === '--show-toplevel' ? childPath : remotes[child]!
+        }
+        const repo = args[2]!
+        return JSON.stringify({
+          nameWithOwner: repo,
+          visibility: 'PUBLIC',
+          isArchived: false,
+          isFork: false,
+          viewerPermission: 'ADMIN',
+        })
+      }
+
+      const progress: string[] = []
+      const result = await discoverGitHubFleet(
+        [root, thirdPartyRoot],
+        { progress: (message) => progress.push(message) },
+        runner,
+      )
+      expect(progress).toEqual([
+        'Inspecting repository checkout 1/3',
+        'Inspecting repository checkout 2/3',
+        'Inspecting repository checkout 3/3',
+      ])
+      expect(result.repositories).toEqual([
+        { nameWithOwner: 'example-org/external', path: join(thirdPartyRoot, 'external'), isFork: false },
+        { nameWithOwner: 'example-owner/owned', path: join(root, 'owned'), isFork: false },
+      ])
+      expect(result.exclusions).toContainEqual({
+        child: thirdPartyRoot,
+        reason: 'not a Git worktree',
+      })
+      expect(result.blockers).toEqual([])
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
+  it('blocks one GitHub identity discovered from multiple roots', async () => {
+    const firstRoot = await mkdtemp(join(tmpdir(), 'hookrelay-discovery-first-'))
+    const secondRoot = await mkdtemp(join(tmpdir(), 'hookrelay-discovery-second-'))
+    try {
+      await mkdir(join(firstRoot, 'first'))
+      await mkdir(join(secondRoot, 'second'))
+      const runner = async (command: string, args: string[]) => {
+        const childPath = args[1]!
+        if (command === 'git') {
+          return args[3] === '--show-toplevel'
+            ? childPath
+            : 'https://github.com/example-owner/duplicate.git'
+        }
+        return JSON.stringify({
+          nameWithOwner: 'example-owner/duplicate',
+          visibility: 'PUBLIC',
+          isArchived: false,
+          isFork: false,
+          viewerPermission: 'ADMIN',
+        })
+      }
+
+      const result = await discoverGitHubFleet([firstRoot, secondRoot], {}, runner)
+      expect(result.repositories.map((repository) => repository.nameWithOwner)).toEqual([
+        'example-owner/duplicate',
+      ])
+      expect(result.blockers.join('\n')).toMatch(/discovered from both/)
+    } finally {
+      await rm(firstRoot, { recursive: true, force: true })
+      await rm(secondRoot, { recursive: true, force: true })
     }
   })
 })

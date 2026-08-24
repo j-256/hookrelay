@@ -83,7 +83,7 @@ export interface GitHubFleetRetirementVerifyResult {
 }
 
 export interface GitHubFleetRetirementDependencies {
-  discover(root: string, options?: GitHubFleetDiscoveryOptions): ReturnType<typeof discoverGitHubFleet>
+  discover(roots: readonly string[], options?: GitHubFleetDiscoveryOptions): ReturnType<typeof discoverGitHubFleet>
   readText(path: string): Promise<string>
   readPrivateText(path: string): Promise<string>
   writeText(path: string, text: string): Promise<void>
@@ -139,7 +139,7 @@ interface FleetRetirementFiles {
 
 function paths(options: GitHubFleetOptions, projectRoot: string) {
   return {
-    root: resolve(projectRoot, options.root),
+    roots: options.roots.map((root) => resolve(projectRoot, root)),
     routes: resolve(projectRoot, ROUTES_FILE),
     devVars: resolve(projectRoot, DEV_VARS_FILE),
     manifest: resolve(projectRoot, options.manifest),
@@ -269,7 +269,7 @@ export async function planGitHubFleetRetirement(
   const files = await readFiles(options, projectRoot, dependencies)
   const resolved = paths(options, projectRoot)
   options.progress?.('Discovering repository checkouts')
-  const discovery = await dependencies.discover(resolved.root, discoveryOptions(options))
+  const discovery = await dependencies.discover(resolved.roots, discoveryOptions(options))
   const discovered = new Set(discovery.repositories.map((repository) => repository.nameWithOwner))
   const blockers = [...discovery.blockers]
   const active: string[] = []

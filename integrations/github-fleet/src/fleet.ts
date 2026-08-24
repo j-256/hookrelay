@@ -56,7 +56,7 @@ export type GitHubFleetPhase = 'plan' | 'prepare' | 'apply' | 'verify'
 
 export interface GitHubFleetOptions {
   phase: GitHubFleetPhase
-  root: string
+  roots: readonly string[]
   manifest: string
   repositories: string[]
   includePrivate: boolean
@@ -104,7 +104,7 @@ export interface GitHubFleetPrepareResult {
 }
 
 export interface GitHubFleetDependencies {
-  discover(root: string, options?: GitHubFleetDiscoveryOptions): Promise<GitHubFleetDiscovery>
+  discover(roots: readonly string[], options?: GitHubFleetDiscoveryOptions): Promise<GitHubFleetDiscovery>
   listHooks(repo: string): Promise<GitHubRepositoryHook[]>
   listSecrets(): Promise<Set<string>>
   readKv(progress?: GitHubFleetProgress): Promise<RemoteKvSnapshot>
@@ -135,7 +135,7 @@ interface FleetLocalState {
 }
 
 interface FleetPaths {
-  root: string
+  roots: string[]
   manifest: string
   routes: string
   devVars: string
@@ -151,7 +151,7 @@ function fleetDiscoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscover
 
 function fleetPaths(options: GitHubFleetOptions, projectRoot: string): FleetPaths {
   return {
-    root: resolve(projectRoot, options.root),
+    roots: options.roots.map((root) => resolve(projectRoot, root)),
     manifest: resolve(projectRoot, options.manifest),
     routes: resolve(projectRoot, ROUTES_FILE),
     devVars: resolve(projectRoot, DEV_VARS_FILE),
@@ -265,7 +265,7 @@ async function loadLocalState(
 ): Promise<FleetLocalState> {
   const paths = fleetPaths(options, projectRoot)
   options.progress?.('Discovering repository checkouts')
-  const discovery = await dependencies.discover(paths.root, fleetDiscoveryOptions(options))
+  const discovery = await dependencies.discover(paths.roots, fleetDiscoveryOptions(options))
   const blockers = [...discovery.blockers]
   const manifestIssue = await privateFileIssue(paths.manifest, dependencies.fileSystem)
   const devVarsIssue = await privateFileIssue(paths.devVars, dependencies.fileSystem)
@@ -438,7 +438,7 @@ export async function planGitHubFleet(
     privateFileIssue(paths.devVars, dependencies.fileSystem),
   ])).filter((issue): issue is string => issue !== null)
   if (fileIssues.length > 0) {
-    const discovery = await dependencies.discover(paths.root, fleetDiscoveryOptions(options))
+    const discovery = await dependencies.discover(paths.roots, fleetDiscoveryOptions(options))
     const selected = options.repositories.length > 0
       ? [...options.repositories].sort()
       : discovery.repositories.map((repo) => repo.nameWithOwner)

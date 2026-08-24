@@ -43,7 +43,7 @@ const ENTRY: GitHubFleetManifestRepository = {
 function options(phase: GitHubFleetOptions['phase']): GitHubFleetOptions {
   return {
     phase,
-    root: '/checkouts',
+    roots: ['/checkouts'],
     manifest: 'fleet.json',
     repositories: [REPO],
     includePrivate: false,
