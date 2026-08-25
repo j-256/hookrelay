@@ -4,6 +4,8 @@ Run `pnpm commands` for a one-screen reference to routine setup, sync, developme
 
 Hookrelay is a small, provider-agnostic webhook notification gateway for Cloudflare Workers. Add adapters for new webhook senders, receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
 
+![The Hookrelay admin events dashboard showing normalized webhook events and independent sink-delivery states](docs/screenshots/cover.png)
+
 ## What it does
 
 Receives webhooks at `/hook/<source>/<slug>` or MIME email through Cloudflare Email Routing, normalizes the payload, persists every event to D1+R2, then records one durable decision per configured sink. Allowed deliveries are queued independently, policy-filtered destinations remain visible with their decision reason, and exhausted deliveries remain manually retryable in the admin page.
