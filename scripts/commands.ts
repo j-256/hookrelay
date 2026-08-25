@@ -48,6 +48,8 @@ export function commandReference(): string {
     'Optional integrations',
     '  pnpm github:fleet --help',
     '      Manage the dogfooded GitHub repository fleet; see integrations/github-fleet/README.md',
+    '  pnpm subscription:fleet --help',
+    '      Reconcile externally managed CloudEvents subscriptions; see integrations/subscription-fleet/README.md',
     '',
     'Develop and verify',
     '  pnpm dev                             Start the local Worker',

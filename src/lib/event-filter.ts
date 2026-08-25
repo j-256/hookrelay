@@ -8,9 +8,9 @@ import type {
   SubscriptionFilter,
 } from '../types'
 
-const EVENT_TYPE_SEGMENT_PATTERN = '[a-z0-9_-]+'
+const EVENT_TYPE_PATTERN = '[a-z0-9_-](?:[a-z0-9_.:/-]*[a-z0-9_-])?'
 export const EVENT_TYPE_FILTER_PATTERN_RE = new RegExp(
-  `^(?:\\*|${EVENT_TYPE_SEGMENT_PATTERN}(?:\\.${EVENT_TYPE_SEGMENT_PATTERN})*(?:\\.\\*)?)$`,
+  `^(?:\\*|${EVENT_TYPE_PATTERN}(?:\\.\\*)?)$`,
 )
 
 export function eventTypeMatchesPattern(eventType: string, pattern: string): boolean {

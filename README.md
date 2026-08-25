@@ -156,7 +156,7 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 | `subs[].fallbackUrl` | Optional public HTTPS URL used only when a source event has no more specific target. Credentials, query strings, and fragments are rejected so the value remains safe to publish. |
 | `subs[].email.allowedSenders` | Optional email noise filter containing exact mailboxes or exact domains written as `@example.com`. Both the SMTP envelope sender and parsed `From`/`Sender` identities must match when the list is nonempty. |
 | `subs[].email.primaryLinkLabels` | Exact, case-insensitive visible labels allowed to select one email deep link, such as `View incident`. Every email URL is removed from sink-visible text, and zero or multiple distinct matching targets fail closed to `fallbackUrl`. |
-| `subs[].filter` | Optional subscription-wide delivery filter over normalized event types and severities. Event-type `include` and `exclude` accept exact values, `*`, or trailing wildcards such as `pull_request.*`; severity values are `debug`, `info`, `warning`, `error`, and `critical`. Exclusion wins within each dimension and every configured dimension must pass. |
+| `subs[].filter` | Optional subscription-wide delivery filter over normalized event types and severities. Event-type `include` and `exclude` accept lowercase exact values, including URI-shaped CloudEvent types such as `urn:service:problem:v1`, plus `*` or trailing wildcards such as `pull_request.*`; severity values are `debug`, `info`, `warning`, `error`, and `critical`. Exclusion wins within each dimension and every configured dimension must pass. |
 | `subs[].sinkFilters` | Optional per-sink filters keyed by names present in `subs[].sinks`. The subscription filter runs first, then each selected sink's filter, so one event can be delivered to one destination and deliberately filtered from another. |
 | `subs[].setup` | Local-only provider setup metadata, including a GitHub repository and event profile names. `pnpm sync` validates it but does not write it to KV. |
 | `sinks[].type: ntfy` -> `topic` | **Bearer secret for unreserved topics.** Anyone who knows an unreserved topic can read its notifications. Use a long random topic and treat it like a password. |
@@ -378,6 +378,8 @@ Statuspage incident and scheduled-maintenance updates use the same `statuspage` 
 ## Optional integrations
 
 [`integrations/github-fleet`](integrations/github-fleet/README.md) contains the repository-fleet tooling used to dogfood Hookrelay across many GitHub repositories. It manages repository discovery, hooks, per-repository HMACs, event-profile selections, reconciliation, rotation, retirement, and verification. It is not required by the Hookrelay runtime or by ordinary GitHub subscriptions.
+
+[`integrations/subscription-fleet`](integrations/subscription-fleet/README.md) reconciles externally managed, non-repository signed CloudEvents subscriptions. A private manifest supplies recovery values and optional Cloudflare Worker sender-secret targets; the integration prepares hash-only routes, applies selected Worker secrets and KV entries, and verifies authentication with a sink-filtered event. It is not required by ordinary CloudEvents subscriptions.
 
 ## Durable delivery
 

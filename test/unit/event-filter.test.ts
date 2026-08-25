@@ -32,6 +32,8 @@ describe('event type delivery filters', () => {
 
   it('accepts normalized exact and trailing wildcard patterns', () => {
     expect(EVENT_TYPE_FILTER_PATTERN_RE.test('incident.resolved')).toBe(true)
+    expect(EVENT_TYPE_FILTER_PATTERN_RE.test('urn:cloudflare-fleet:endpoint:problem:v1')).toBe(true)
+    expect(EVENT_TYPE_FILTER_PATTERN_RE.test('https://events.example.com/problem')).toBe(true)
     expect(EVENT_TYPE_FILTER_PATTERN_RE.test('workflow_run.*')).toBe(true)
     expect(EVENT_TYPE_FILTER_PATTERN_RE.test('*')).toBe(true)
     expect(EVENT_TYPE_FILTER_PATTERN_RE.test('pull_*_opened')).toBe(false)

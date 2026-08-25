@@ -18,6 +18,7 @@ describe('commandReference', () => {
     expect(reference).toContain('Optional integrations')
     expect(reference).toContain('pnpm github:fleet --help')
     expect(reference).toContain('integrations/github-fleet/README.md')
+    expect(reference).toContain('integrations/subscription-fleet/README.md')
     expect(reference).toContain('pnpm sync\n')
     expect(reference).toContain('pnpm sync -y                         [production write]')
     expect(reference).toContain('npm version <major|minor|patch>')

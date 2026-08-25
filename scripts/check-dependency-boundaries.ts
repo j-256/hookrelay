@@ -30,6 +30,7 @@ export async function dependencyBoundaryViolations(projectRoot: string): Promise
   const scriptsRoot = resolve(projectRoot, 'scripts')
   const integrationsRoot = resolve(projectRoot, 'integrations')
   const githubFleetRoot = resolve(integrationsRoot, 'github-fleet')
+  const subscriptionFleetRoot = resolve(integrationsRoot, 'subscription-fleet')
   const scannedRoots = [runtimeRoot, scriptsRoot, integrationsRoot, resolve(projectRoot, 'test')]
   const files = (await Promise.all(scannedRoots.map(typescriptFiles))).flat()
   const violations: string[] = []
@@ -46,6 +47,9 @@ export async function dependencyBoundaryViolations(projectRoot: string): Promise
         violations.push(`${importer} imports ${imported}`)
       }
       if (!isWithin(file, githubFleetRoot) && isWithin(target, githubFleetRoot)) {
+        violations.push(`${importer} imports ${imported}`)
+      }
+      if (!isWithin(file, subscriptionFleetRoot) && isWithin(target, subscriptionFleetRoot)) {
         violations.push(`${importer} imports ${imported}`)
       }
     }
