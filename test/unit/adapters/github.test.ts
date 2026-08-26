@@ -250,7 +250,7 @@ describe('github adapter parse', () => {
     const event = await github.parse(req, raw, sub)
     expect(event.type).toBe('workflow_run.in_progress')
     expect(event.shouldDeliver).toBe(false)
-    expect(event.title).toBe('example-owner/example-repo: Deploy in_progress')
+    expect(event.title).toBe('[deployment] example-owner/example-repo: Deploy in_progress')
   })
 
   it('delivers completed workflow runs with a conclusion-derived severity', async () => {
@@ -271,6 +271,61 @@ describe('github adapter parse', () => {
     expect(event.shouldDeliver).toBe(true)
     expect(event.severity).toBe('error')
     expect(event.url).toContain('/actions/runs/123')
+  })
+
+  it.each([
+    ['Dependabot Updates', 'dynamic/dependabot/dependabot-updates', undefined, '[dependencies]'],
+    ['CodeQL', '.github/workflows/codeql.yml', undefined, '[security]'],
+    ['Publish npm package', '.github/workflows/release.yml', undefined, '[release]'],
+    ['Build and deploy', '.github/workflows/deploy.yml', undefined, '[deployment]'],
+    ['CI', '.github/workflows/ci.yml', 'dependabot[bot]', '[dependencies]'],
+  ])('distinguishes the %s workflow run', async (name, path, actor, titlePrefix) => {
+    const payload = {
+      action: 'completed',
+      repository: { full_name: 'example-owner/example-repo' },
+      workflow_run: {
+        name,
+        path,
+        display_title: 'Automated repository work',
+        head_branch: 'main',
+        event: 'schedule',
+        conclusion: 'success',
+        html_url: 'https://github.com/example-owner/example-repo/actions/runs/123',
+        ...(actor ? { triggering_actor: { login: actor } } : {}),
+      },
+    }
+    const { req, raw } = await makeReq(payload, 'workflow_run')
+    const event = await github.parse(req, raw, sub)
+
+    expect(event).toMatchObject({
+      title: `${titlePrefix} example-owner/example-repo: ${name} success`,
+      severity: 'info',
+      shouldDeliver: true,
+    })
+    expect(event.body).toContain('Run: Automated repository work')
+    expect(event.body).toContain('Branch: main')
+    expect(event.body).toContain('Trigger: schedule')
+    if (actor) expect(event.body).toContain(`Actor: ${actor}`)
+  })
+
+  it('keeps ordinary workflow runs on the generic presentation', async () => {
+    const payload = {
+      action: 'completed',
+      repository: { full_name: 'example-owner/example-repo' },
+      workflow_run: {
+        name: 'CI',
+        path: '.github/workflows/ci.yml',
+        display_title: 'Test the change',
+        head_branch: 'main',
+        event: 'push',
+        conclusion: 'success',
+      },
+    }
+    const { req, raw } = await makeReq(payload, 'workflow_run')
+    const event = await github.parse(req, raw, sub)
+
+    expect(event.title).toBe('example-owner/example-repo: CI success')
+    expect(event.body).toBe('Test the change\nBranch: main')
   })
 
   it('records workflow jobs until completion and delivers failed jobs as errors', async () => {

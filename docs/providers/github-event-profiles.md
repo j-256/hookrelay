@@ -50,6 +50,8 @@ GitHub recommends subscribing only to events an integration handles. The curated
 
 `stars` and `watchers` are intentionally separate. GitHub uses `star` for starring activity and `watch` for repository notification subscriptions.
 
+Workflow-run summaries recognize dependency automation such as Dependabot and Renovate, security analysis such as CodeQL and Scorecard, release and publishing workflows, and deployment and Pages workflows. Recognized runs receive a category-prefixed title plus trigger and actor context, while ordinary workflows retain the generic summary. Classification changes presentation only: conclusion severity, normalized event type, delivery filtering, and persistence remain unchanged.
+
 GitHub repository hooks select `push` and `pull_request` as whole event families rather than individual payload variants. The `activity` profile therefore defines one shared normalized event-type rule that every activity subscription inherits: deliver ordinary push creation, update, and deletion events plus `pull_request.opened` and `pull_request.closed`, while retaining force-pushes and other pull request actions as record-only events. Combining `activity` with the unrestricted `push` or `pull-requests` profile broadens that overlapping event and delivers every variant. The standalone `push` and `pull-requests` profiles remain unfiltered.
 
 `repository_vulnerability_alert` is omitted because GitHub is closing it down in favor of `dependabot_alert`. `secret_scanning_scan` is also omitted because it reports scan completion rather than a finding. Hooks created with `all` or `manual` can still send either event; Hookrelay records secret-scanning completion without delivering it to sinks.

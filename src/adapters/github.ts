@@ -48,6 +48,17 @@ const CRITICAL_SECRET_SCANNING_ACTIONS = new Set(['created', 'publicly_leaked', 
 const GITHUB_PING_EVENT = 'ping'
 const BRANCH_REF_PREFIX = 'refs/heads/'
 const TAG_REF_PREFIX = 'refs/tags/'
+const DEPENDENCY_WORKFLOW_PATTERN = /(?:^|[^a-z0-9])(?:dependabot|dependencies|dependency|renovate)(?:[^a-z0-9]|$)/i
+const SECURITY_WORKFLOW_PATTERN = /(?:^|[^a-z0-9])(?:codeql|code[ _-]?scanning|scorecards?|secret[ _-]?scanning|security)(?:[^a-z0-9]|$)/i
+const RELEASE_WORKFLOW_PATTERN = /(?:^|[^a-z0-9])(?:publish|publishing|release)(?:[^a-z0-9]|$)/i
+const DEPLOYMENT_WORKFLOW_PATTERN = /(?:^|[^a-z0-9])(?:deploy|deployment|pages)(?:[^a-z0-9]|$)/i
+
+const WORKFLOW_PRESENTATION_RULES = Object.freeze([
+  Object.freeze({ pattern: DEPENDENCY_WORKFLOW_PATTERN, titlePrefix: '[dependencies]' }),
+  Object.freeze({ pattern: SECURITY_WORKFLOW_PATTERN, titlePrefix: '[security]' }),
+  Object.freeze({ pattern: RELEASE_WORKFLOW_PATTERN, titlePrefix: '[release]' }),
+  Object.freeze({ pattern: DEPLOYMENT_WORKFLOW_PATTERN, titlePrefix: '[deployment]' }),
+])
 
 interface GitHubSummary {
   type: string
@@ -111,6 +122,18 @@ function refDescription(value: unknown): { kind: 'branch' | 'tag' | 'ref'; name:
 
 function commitCountText(count: number): string {
   return `${count} ${count === 1 ? 'commit' : 'commits'}`
+}
+
+function workflowRunTitlePrefix(run: any): string | undefined {
+  const definition = bodyLines(
+    nonEmptyString(run?.name),
+    nonEmptyString(run?.path),
+  )
+  const definitionRule = WORKFLOW_PRESENTATION_RULES.find((rule) => rule.pattern.test(definition))
+  if (definitionRule) return definitionRule.titlePrefix
+
+  const actor = nonEmptyString(run?.triggering_actor?.login) ?? nonEmptyString(run?.actor?.login)
+  return actor && DEPENDENCY_WORKFLOW_PATTERN.test(actor) ? '[dependencies]' : undefined
 }
 
 function summarize(eventName: string, payload: any): GitHubSummary {
@@ -389,10 +412,22 @@ function summarize(eventName: string, payload: any): GitHubSummary {
     const workflowName = typeof run.name === 'string' ? run.name : 'workflow'
     const displayTitle = typeof run.display_title === 'string' ? run.display_title : ''
     const branch = typeof run.head_branch === 'string' ? run.head_branch : ''
+    const titlePrefix = workflowRunTitlePrefix(run)
+    const actor = nonEmptyString(run?.triggering_actor?.login) ?? nonEmptyString(run?.actor?.login)
     return {
       type,
-      title: `${repo}: ${workflowName} ${state}`,
-      body: [displayTitle, branch ? `Branch: ${branch}` : ''].filter(Boolean).join('\n'),
+      title: `${titlePrefix ? `${titlePrefix} ` : ''}${repo}: ${workflowName} ${state}`,
+      body: titlePrefix
+        ? bodyLines(
+          labeled('Run', displayTitle),
+          labeled('Branch', branch),
+          labeled('Trigger', run.event),
+          labeled('Actor', actor),
+        )
+        : bodyLines(
+          nonEmptyString(displayTitle),
+          labeled('Branch', branch),
+        ),
       url: typeof run.html_url === 'string' ? run.html_url : undefined,
       severity: WORKFLOW_CONCLUSION_SEVERITY[state] ?? 'info',
       shouldDeliver: !NON_TERMINAL_WORKFLOW_ACTIONS.has(action),
