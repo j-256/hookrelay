@@ -143,27 +143,38 @@ export type Sub = z.infer<typeof subSchema>
 export type SinkRef = z.infer<typeof sinkSchema>
 
 export interface SyncOptions {
+  routes?: string
   yes: boolean
 }
 
 export function syncUsage(): string {
   return [
-    'usage: pnpm sync [-y]',
+    'usage: pnpm sync [--routes <file>] [-y]',
     '',
     'options:',
+    '  --routes <file>  read an explicit hash-only route configuration',
     '  -y, --yes  apply the remote KV plan',
     '  -h, --help show this help',
   ].join('\n')
 }
 
 export function parseSyncArgs(argv: string[]): SyncOptions {
+  let routes: string | undefined
   let yes = false
-  for (const arg of argv) {
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]!
     if (arg === '--yes' || arg === '-y') yes = true
+    else if (arg === '--routes') {
+      if (routes !== undefined) throw new Error('--routes may only be supplied once')
+      const value = argv[index + 1]
+      if (!value || value.startsWith('-')) throw new Error('--routes requires a value')
+      routes = value
+      index += 1
+    }
     else if (arg === '--help' || arg === '-h') throw new Error(syncUsage())
     else throw new Error(`unknown option: ${arg}`)
   }
-  return { yes }
+  return { ...(routes ? { routes } : {}), yes }
 }
 
 export function parseRoutes(text: string): Routes {
@@ -494,9 +505,9 @@ async function main() {
     console.log(syncUsage())
     return
   }
-  const { yes } = parseSyncArgs(argv)
-  const path = resolve('routes.jsonc')
-  const text = await readFile(path, 'utf8')
+  const { routes: routesOption, yes } = parseSyncArgs(argv)
+  const routesPath = resolve(routesOption ?? 'routes.jsonc')
+  const text = await readFile(routesPath, 'utf8')
   const routes = parseRoutes(text)
 
   const knownSources = new Set<string>(KNOWN_SOURCE_TYPES)

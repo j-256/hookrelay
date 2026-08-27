@@ -331,8 +331,13 @@ export async function deleteWranglerSecretsBulk(
   return patchWranglerSecretsBulk(values, runner)
 }
 
-export async function runSync(apply: boolean): Promise<void> {
-  await runProcess('npx', ['tsx', 'scripts/sync.ts', ...(apply ? ['--yes'] : [])])
+export async function runSync(apply: boolean, routesPath?: string): Promise<void> {
+  await runProcess('npx', [
+    'tsx',
+    'scripts/sync.ts',
+    ...(routesPath ? ['--routes', routesPath] : []),
+    ...(apply ? ['--yes'] : []),
+  ])
 }
 
 export async function prepareProduction(secrets: SecretValue | SecretValue[] | null, yes: boolean): Promise<ProductionResult> {

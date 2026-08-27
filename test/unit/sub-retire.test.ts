@@ -1,6 +1,6 @@
 // @vitest-environment node
 
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
@@ -67,8 +67,14 @@ function dependencies(
   secrets: Set<string>,
   fileSystem: AtomicFileSystem,
   failFinalSync = false,
-): { dependencies: SubscriptionRetirementDependencies; deleteHook: ReturnType<typeof vi.fn>; logs: string[] } {
+): {
+  dependencies: SubscriptionRetirementDependencies
+  deleteHook: ReturnType<typeof vi.fn>
+  logs: string[]
+  syncRoutes: string[]
+} {
   const logs: string[] = []
+  const syncRoutes: string[] = []
   let shouldFail = failFinalSync
   const deleteHook = vi.fn(async (_repo: string, id: number) => {
     const index = hooks.findIndex((hook) => hook.id === id)
@@ -77,14 +83,16 @@ function dependencies(
   return {
     deleteHook,
     logs,
+    syncRoutes,
     dependencies: {
       readText: (path) => readFile(path, 'utf8'),
       readPrivateText: (path) => readPrivateOptionalText(path, fileSystem),
       writeText,
       writePrivateText: (path, text) => writePrivateText(path, text, fileSystem),
       readKv: async () => ({ subs: { ...remote.subs }, sinks: { ...remote.sinks } }),
-      runSync: async (apply) => {
-        const text = await readFile(join(directory, 'routes.jsonc'), 'utf8')
+      runSync: async (apply, routesPath = join(directory, 'routes.jsonc')) => {
+        syncRoutes.push(routesPath)
+        const text = await readFile(routesPath, 'utf8')
         if (apply && shouldFail && parseRoutes(text).subs.length === 0) {
           shouldFail = false
           throw new Error('simulated KV interruption')
@@ -116,14 +124,65 @@ function options(finalize = false): SubscriptionRetirementOptions {
 describe('subscription retirement', () => {
   it('requires an explicit private manifest', () => {
     expect(parseSubscriptionRetirementArgs([
-      'github:example/repo', '--manifest', '/secure/retirements.json', '--finalize', '-y',
+      'github:example/repo', '--manifest', '/secure/retirements.json',
+      '--routes', '/secure/routes.jsonc', '--dev-vars', '/secure/dev.vars',
+      '--expected-slug-hash', 'a'.repeat(64), '--finalize', '-y',
     ])).toEqual({
       name: 'github:example/repo',
       manifest: '/secure/retirements.json',
+      routes: '/secure/routes.jsonc',
+      devVars: '/secure/dev.vars',
+      expectedSlugHash: 'a'.repeat(64),
       finalize: true,
       yes: true,
     })
     expect(() => parseSubscriptionRetirementArgs(['github:example/repo'])).toThrow(/manifest/)
+    expect(() => parseSubscriptionRetirementArgs([
+      'github:example/repo', '--manifest', '/secure/retirements.json',
+      '--expected-slug-hash', 'not-a-hash',
+    ])).toThrow(/lowercase SHA-256/)
+  })
+
+  it('refuses a same-named route with another slug hash before writing', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const { directory, routesText } = await fixture(fileSystem)
+    const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
+    applyPlan(routesText, remote)
+    const harness = dependencies(directory, remote, [], new Set(['HMAC_EXAMPLE_REPO']), fileSystem)
+    try {
+      await expect(runSubscriptionRetirement({
+        ...options(),
+        expectedSlugHash: 'f'.repeat(64),
+      }, harness.dependencies, directory)).rejects.toThrow(/does not match the expected slug hash/)
+      expect(await readFile(join(directory, 'routes.jsonc'), 'utf8')).toBe(routesText)
+      await expect(readFile(join(directory, 'retirements.json'), 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('uses explicit operational file paths and forwards the route path to sync', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const { directory, routesText } = await fixture(fileSystem)
+    const routesPath = join(directory, 'authoritative-routes.jsonc')
+    const devVarsPath = join(directory, 'private-dev-vars')
+    await rename(join(directory, 'routes.jsonc'), routesPath)
+    await rename(join(directory, '.dev.vars'), devVarsPath)
+    const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
+    applyPlan(routesText, remote)
+    const harness = dependencies(directory, remote, [], new Set(['HMAC_EXAMPLE_REPO']), fileSystem)
+    try {
+      await expect(runSubscriptionRetirement({
+        ...options(),
+        routes: routesPath,
+        devVars: devVarsPath,
+        expectedSlugHash: await hashSubscriptionSlug(RAW_SLUG),
+      }, harness.dependencies, directory)).resolves.toBe('applied')
+      expect(parseRoutes(await readFile(routesPath, 'utf8')).subs[0]?.enabled).toBe(false)
+      expect(harness.syncRoutes).toEqual([routesPath, routesPath])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
   })
 
   it('disables first, then archives and removes only the exact owned resources', async () => {

@@ -371,6 +371,8 @@ The first sink phase requires no enabled subscription or operations alert to ref
 
 Both finalizers write recovery data before provider, KV, or secret deletion and persist phase markers after each successful boundary. A cancelled or interrupted finalization can leave the local desired state advanced while the disabled production resource remains safe; rerun the identical command to continue. Manifests and logs never print raw slugs or secret values.
 
+Higher-level operators that own Hookrelay's deployment files may pass `--routes <file>` and `--dev-vars <file>` to `sub:retire`; the selected route path is also used by each sync preview and apply. Pass `--expected-slug-hash <hash>` when another control plane owns the raw route slug so a same-named but differently owned route or archive is rejected before mutation. `pnpm sync --routes <file>` provides the corresponding read-only or `-y` reconciliation for an explicit hash-only route file.
+
 `pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.

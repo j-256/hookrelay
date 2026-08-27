@@ -163,11 +163,17 @@ describe('parseSyncArgs', () => {
     expect(parseSyncArgs([])).toEqual({ yes: false })
     expect(parseSyncArgs(['-y'])).toEqual({ yes: true })
     expect(parseSyncArgs(['--yes'])).toEqual({ yes: true })
+    expect(parseSyncArgs(['--routes', '/secure/routes.jsonc'])).toEqual({
+      routes: '/secure/routes.jsonc',
+      yes: false,
+    })
   })
 
   it('rejects unknown options and positional arguments', () => {
     expect(() => parseSyncArgs(['-x'])).toThrow(/unknown option: -x/)
     expect(() => parseSyncArgs(['extra'])).toThrow(/unknown option: extra/)
+    expect(() => parseSyncArgs(['--routes'])).toThrow(/requires a value/)
+    expect(() => parseSyncArgs(['--routes', 'one', '--routes', 'two'])).toThrow(/only be supplied once/)
   })
 })
 

@@ -34,10 +34,14 @@ import { parseRoutes, type Routes, type Sub } from './sync'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
+const SUBSCRIPTION_HASH_RE = /^[a-f0-9]{64}$/
 
 export interface SubscriptionRetirementOptions {
   name: string
   manifest: string
+  routes?: string
+  devVars?: string
+  expectedSlugHash?: string
   finalize: boolean
   yes: boolean
 }
@@ -48,7 +52,7 @@ export interface SubscriptionRetirementDependencies {
   writeText(path: string, text: string): Promise<void>
   writePrivateText(path: string, text: string): Promise<void>
   readKv(): Promise<RemoteKvSnapshot>
-  runSync(apply: boolean): Promise<void>
+  runSync(apply: boolean, routesPath?: string): Promise<void>
   confirm(question: string): Promise<boolean>
   listHooks(repo: string): Promise<GitHubRepositoryHook[]>
   deleteHook(repo: string, id: number): Promise<void>
@@ -74,7 +78,7 @@ const DEFAULT_DEPENDENCIES: SubscriptionRetirementDependencies = {
 
 export function subscriptionRetirementUsage(): string {
   return [
-    'usage: pnpm sub:retire <name> --manifest <file> [--finalize] [-y]',
+    'usage: pnpm sub:retire <name> --manifest <file> [--routes <file>] [--dev-vars <file>] [--expected-slug-hash <hash>] [--finalize] [-y]',
     '',
     'phases:',
     '  default     Disable the local subscription and preview or apply KV',
@@ -82,6 +86,9 @@ export function subscriptionRetirementUsage(): string {
     '',
     'options:',
     '  --manifest <file>  Private versioned recovery manifest',
+    '  --routes <file>  Hash-only route configuration (default: routes.jsonc)',
+    '  --dev-vars <file>  Private local secret file (default: .dev.vars)',
+    '  --expected-slug-hash <hash>  Refuse a route or archive with another identity',
     '  -y, --yes          Apply production changes without prompts',
     '  -h, --help         Show this help',
   ].join('\n')
@@ -96,6 +103,9 @@ function optionValue(argv: string[], index: number, option: string): string {
 export function parseSubscriptionRetirementArgs(argv: string[]): SubscriptionRetirementOptions {
   let name: string | undefined
   let manifest: string | undefined
+  let routes: string | undefined
+  let devVars: string | undefined
+  let expectedSlugHash: string | undefined
   let finalize = false
   let yes = false
   for (let index = 0; index < argv.length; index += 1) {
@@ -103,6 +113,18 @@ export function parseSubscriptionRetirementArgs(argv: string[]): SubscriptionRet
     if (argument === '--manifest') {
       if (manifest !== undefined) throw new Error('--manifest may only be supplied once')
       manifest = optionValue(argv, index, argument)
+      index += 1
+    } else if (argument === '--routes') {
+      if (routes !== undefined) throw new Error('--routes may only be supplied once')
+      routes = optionValue(argv, index, argument)
+      index += 1
+    } else if (argument === '--dev-vars') {
+      if (devVars !== undefined) throw new Error('--dev-vars may only be supplied once')
+      devVars = optionValue(argv, index, argument)
+      index += 1
+    } else if (argument === '--expected-slug-hash') {
+      if (expectedSlugHash !== undefined) throw new Error('--expected-slug-hash may only be supplied once')
+      expectedSlugHash = optionValue(argv, index, argument)
       index += 1
     } else if (argument === '--finalize') finalize = true
     else if (argument === '-y' || argument === '--yes') yes = true
@@ -112,13 +134,33 @@ export function parseSubscriptionRetirementArgs(argv: string[]): SubscriptionRet
     else throw new Error(subscriptionRetirementUsage())
   }
   if (!name || !manifest) throw new Error(subscriptionRetirementUsage())
-  return { name, manifest, finalize, yes }
+  if (expectedSlugHash && !SUBSCRIPTION_HASH_RE.test(expectedSlugHash)) {
+    throw new Error('--expected-slug-hash must be a lowercase SHA-256 hash')
+  }
+  return {
+    name,
+    manifest,
+    ...(routes ? { routes } : {}),
+    ...(devVars ? { devVars } : {}),
+    ...(expectedSlugHash ? { expectedSlugHash } : {}),
+    finalize,
+    yes,
+  }
 }
 
 function localSubscription(routes: Routes, name: string): Sub | undefined {
   const matches = routes.subs.filter((subscription) => subscription.name === name)
   if (matches.length > 1) throw new Error(`subscription is declared more than once: ${name}`)
   return matches[0]
+}
+
+function assertExpectedSlugHash(
+  subscription: Sub,
+  expectedSlugHash: string | undefined,
+): void {
+  if (expectedSlugHash && subscription.slugHash !== expectedSlugHash) {
+    throw new Error(`subscription ${subscription.name} does not match the expected slug hash`)
+  }
 }
 
 function updateArchive(
@@ -182,6 +224,7 @@ async function prepareSubscriptionRetirement(
   if (!local) {
     const archive = manifest.subscriptions[options.name]
     if (archive?.kvRemoved && archive.secretsRemoved && (!archive.hook || archive.hook.deleted)) {
+      assertExpectedSlugHash(archive.subscription, options.expectedSlugHash)
       dependencies.log(`Subscription retirement is already complete: ${options.name}`)
       return 'complete'
     }
@@ -190,16 +233,17 @@ async function prepareSubscriptionRetirement(
     }
     throw new Error(`subscription does not exist: ${options.name}`)
   }
+  assertExpectedSlugHash(local, options.expectedSlugHash)
   const disabled = disableSubscription(routesText, options.name)
   await persistManifest(paths.manifest, manifest, dependencies)
   if (disabled.changed) await dependencies.writeText(paths.routes, disabled.routesText)
   dependencies.log(`${disabled.changed ? 'Disabled' : 'Already disabled'} subscription ${options.name} locally`)
-  await dependencies.runSync(false)
+  await dependencies.runSync(false, paths.routes)
   if (!options.yes && !(await dependencies.confirm(`Apply the disabled subscription ${options.name} to production KV?`))) {
     dependencies.log('Production KV was not changed')
     return 'cancelled'
   }
-  await dependencies.runSync(true)
+  await dependencies.runSync(true, paths.routes)
   dependencies.log(`Applied disabled subscription ${options.name}`)
   return options.yes ? 'applied' : 'prepared'
 }
@@ -295,6 +339,7 @@ async function finalizeSubscriptionRetirement(
   const archived = manifest.subscriptions[options.name]
   const subscription = local ?? archived?.subscription
   if (!subscription) throw new Error(`subscription does not exist and is not archived: ${options.name}`)
+  assertExpectedSlugHash(subscription, options.expectedSlugHash)
   if (local?.enabled) throw new Error(`subscription ${options.name} must be disabled locally before finalization`)
   if (archived?.kvRemoved && archived.secretsRemoved && (!archived.hook || archived.hook.deleted)) {
     dependencies.log(`Subscription retirement is already complete: ${options.name}`)
@@ -327,14 +372,14 @@ async function finalizeSubscriptionRetirement(
     manifest = updateArchive(manifest, options.name, { localRemoved: true })
     await persistManifest(paths.manifest, manifest, dependencies)
   }
-  await dependencies.runSync(false)
+  await dependencies.runSync(false, paths.routes)
   if (!options.yes && !(await dependencies.confirm(`Finalize subscription retirement for ${options.name}?`))) {
     dependencies.log('Finalization cancelled; the disabled production route and recovery archive were retained')
     return 'cancelled'
   }
 
   manifest = await deletePlannedHook(manifest, options.name, subscription, paths.manifest, dependencies)
-  await dependencies.runSync(true)
+  await dependencies.runSync(true, paths.routes)
   const verified = await dependencies.readKv()
   if (verified.subs[subscriptionKvKey(subscription.slugHash)] !== undefined) {
     throw new Error(`subscription ${options.name} still exists in production KV after sync`)
@@ -360,8 +405,8 @@ export async function runSubscriptionRetirement(
   projectRoot = process.cwd(),
 ): Promise<'prepared' | 'applied' | 'finalized' | 'cancelled' | 'complete'> {
   const paths = {
-    routes: resolve(projectRoot, ROUTES_FILE),
-    devVars: resolve(projectRoot, DEV_VARS_FILE),
+    routes: resolve(projectRoot, options.routes ?? ROUTES_FILE),
+    devVars: resolve(projectRoot, options.devVars ?? DEV_VARS_FILE),
     manifest: resolve(projectRoot, options.manifest),
   }
   if (options.finalize) return finalizeSubscriptionRetirement(options, paths, dependencies)
