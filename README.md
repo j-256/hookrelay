@@ -76,7 +76,7 @@ Steps:
    ```
    Then in the Cloudflare dashboard, attach the Worker to a custom domain (`hooks.example.com`). The route is managed in the dashboard rather than in `wrangler.jsonc`, so no hostname is committed to source (`workers_dev` is `false` to keep the Worker off `*.workers.dev`).
 
-   To deploy automatically on every push instead, connect the repo with [Workers Builds](https://developers.cloudflare.com/workers/ci-cd/builds/) (Worker -> Settings -> Build): set the branch to `main`, set the build command to `pnpm typecheck && pnpm test`, and set the deploy command to `npx wrangler deploy`. Workers Builds runs the build command before deploying, so a typecheck or test failure blocks the deployment. No build variables are needed – Builds runs in your account's context and infers the account automatically, so there is no `account_id` to set. Apply new D1 migrations before a build deploys code that depends on them.
+   This repository deploys automatically through GitHub Actions after typechecking and tests pass on a push to `main`. In your fork's **Settings -> Secrets and variables -> Actions**, add `CLOUDFLARE_API_TOKEN` as a repository secret and `CLOUDFLARE_ACCOUNT_ID` as a repository variable. The deployment token needs Workers Scripts Write plus Queues Read and Write access for the target account because Wrangler reads the queue inventory before reconciling the configured consumers. The token is exposed only to the dependent deployment step, not to dependency installation, typechecking, or tests. Keep Cloudflare Workers Builds disconnected to avoid duplicate deployments, and apply new D1 migrations before merging code that depends on them.
 7. Add a sink. The command reads the Discord webhook URL without echoing it, stores it in `.dev.vars`, adds the secret reference to `routes.jsonc`, and offers to install the Wrangler secret and sync KV:
    ```sh
    pnpm sink:add discord discord
@@ -115,14 +115,14 @@ hookrelay separates configuration by sensitivity. The guiding rule: **nothing se
 | `triggers.crons` | Five-minute recovery sweep for delivery rows that could not be published to the queue |
 | `observability` | Stored Workers Logs are disabled on purpose -- webhook URLs contain the slug (a bearer token) and Cloudflare enriches stored logs with the request URL, which would leak it. See the comment in the file; failure visibility comes from D1 (`/admin/events`) and `wrangler tail` instead. |
 
-### 2. Environment variables – your shell, CI, or Workers Builds
+### 2. Environment variables – your shell or CI
 
 Read by Wrangler at deploy time; never committed.
 
 | Variable | What it is |
 | --- | --- |
-| `CLOUDFLARE_ACCOUNT_ID` | Your account id. Kept in the environment (not `wrangler.jsonc`) so the committed config carries no account identifier. |
-| `CLOUDFLARE_API_TOKEN` | Auth for `wrangler` / CI. Needs Workers, KV, D1, R2, Queues, and (for the WAF script) Zone WAF edit scopes. This is the credential everything else depends on – guard it. |
+| `CLOUDFLARE_ACCOUNT_ID` | Your account id. Kept in the local environment or a GitHub Actions repository variable (not `wrangler.jsonc`) so the committed config carries no account identifier. |
+| `CLOUDFLARE_API_TOKEN` | Auth for Wrangler and operator commands. Store the CI value as a GitHub Actions repository secret; deployment needs Workers Scripts Write plus Queues Read and Write, while KV, D1, R2, and Zone WAF operations require their corresponding scopes. Guard each token and grant only the scopes its workflow uses. |
 
 ### 3. Wrangler secrets – recoverable only by Worker code
 
