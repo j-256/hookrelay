@@ -33,6 +33,16 @@ describe('GitHub fleet CLI', () => {
     ])).toMatchObject({ repositories: [REPO, OTHER_REPO], secretLimit: 80, yes: true })
   })
 
+  it('keeps short and long fleet options equivalent', () => {
+    expect(parseGitHubFleetArgs([
+      'apply', '-r', '/repo', '-m', 'fleet.json', '--repo', REPO,
+      '-p', 'alerts', '-i', '-s', '80', '-y',
+    ])).toEqual(parseGitHubFleetArgs([
+      'apply', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO,
+      '--profiles', 'alerts', '--include-private', '--secret-limit', '80', '--yes',
+    ]))
+  })
+
   it('accepts a profile subset only with explicit repository selectors', () => {
     expect(parseGitHubFleetArgs([
       'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO, '--profiles', 'alerts',
@@ -78,9 +88,11 @@ describe('GitHub fleet CLI', () => {
   it('documents every phase and option', () => {
     const usage = githubFleetUsage()
     expect(usage).toContain('<plan|prepare|apply|verify>')
-    expect(usage).toContain('--root')
-    expect(usage).toContain('--profiles')
-    expect(usage).toContain('--include-private')
+    expect(usage).toContain('-r, --root')
+    expect(usage).toContain('-m, --manifest')
+    expect(usage).toContain('-p, --profiles')
+    expect(usage).toContain('-i, --include-private')
+    expect(usage).toContain('-s, --secret-limit')
     expect(usage).toContain('--retire')
     expect(usage).toContain('--rotate-hmac')
   })

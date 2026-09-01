@@ -71,6 +71,8 @@ pnpm subscription:fleet verify --manifest <private-manifest> --subscription <nam
 pnpm sync
 ```
 
+Use `-m, --manifest` and repeatable `-s, --subscription` as equivalent forms. The long names remain canonical in operational runbooks so every phase can be copied with an identical explicit selection.
+
 `plan` is read-only. It validates recovery data, route identity, sink references, private file modes, local and remote secret names, sender secret names, and selected KV differences. Its output contains secret environment names but no raw values or full webhook URLs.
 
 `prepare` writes the selected hash-only routes to `routes.jsonc` and missing matching HMAC values to `.dev.vars`. It refuses a conflicting local HMAC. Inspect and checkpoint those local changes, then rerun the same plan.

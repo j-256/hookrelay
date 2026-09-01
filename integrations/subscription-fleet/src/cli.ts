@@ -13,10 +13,10 @@ export function managedSubscriptionUsage(): string {
     'usage: pnpm subscription:fleet <plan|prepare|apply|verify> --manifest <file> --subscription <name> [--subscription <name> ...] [options]',
     '',
     'options:',
-    '  --manifest <file>       read the private managed-subscription manifest',
-    '  --subscription <name>   select a managed subscription, repeatable',
-    '  -y, --yes               apply production changes without prompting',
-    '  -h, --help              show this help',
+    '  -m, --manifest <file>        read the private managed-subscription manifest',
+    '  -s, --subscription <name>   select a managed subscription, repeatable',
+    '  -y, --yes                    apply production changes without prompting',
+    '  -h, --help                   show this help',
   ].join('\n')
 }
 
@@ -38,11 +38,11 @@ export function parseManagedSubscriptionArgs(argv: string[]): ManagedSubscriptio
 
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index]!
-    if (arg === '--manifest') {
+    if (arg === '--manifest' || arg === '-m') {
       if (manifest !== undefined) throw new Error('--manifest may only be supplied once')
       manifest = optionValue(argv, index, arg)
       index += 1
-    } else if (arg === '--subscription') {
+    } else if (arg === '--subscription' || arg === '-s') {
       const name = optionValue(argv, index, arg)
       if (subscriptions.includes(name)) throw new Error(`--subscription supplied more than once: ${name}`)
       subscriptions.push(name)

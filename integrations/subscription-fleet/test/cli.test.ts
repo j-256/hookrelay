@@ -34,10 +34,18 @@ describe('managed subscription CLI', () => {
     ])).toThrow(/only valid with apply/)
   })
 
+  it('keeps short and long fleet options equivalent', () => {
+    expect(parseManagedSubscriptionArgs([
+      'apply', '-m', '/secure/subscriptions.json', '-s', 'cloudflare-fleet', '-y',
+    ])).toEqual(parseManagedSubscriptionArgs([
+      'apply', '--manifest', '/secure/subscriptions.json', '--subscription', 'cloudflare-fleet', '--yes',
+    ]))
+  })
+
   it('documents each phase and option', () => {
     const usage = managedSubscriptionUsage()
     expect(usage).toContain('<plan|prepare|apply|verify>')
-    expect(usage).toContain('--manifest')
-    expect(usage).toContain('--subscription')
+    expect(usage).toContain('-m, --manifest')
+    expect(usage).toContain('-s, --subscription')
   })
 })

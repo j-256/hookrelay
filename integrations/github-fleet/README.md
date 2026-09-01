@@ -75,6 +75,8 @@ pnpm github:fleet verify --root <checkout-root> [--root <additional-root> ...] -
 pnpm sync
 ```
 
+The common aliases are `-r, --root`, `-m, --manifest`, `-p, --profiles`, `-i, --include-private`, and `-s, --secret-limit`. Repository selection, retirement, and HMAC rotation remain long-only so the repeated root alias stays unambiguous and production mutations remain explicit.
+
 `plan` is read-only. It reports discovery, exclusions, drift, exact additions, GitHub administration blockers, remote KV differences, and projected Worker variable and secret capacity. It must complete without blockers before preparation or production mutation.
 
 `prepare` writes only local recovery and desired-state files. Inspect the encrypted-manifest change, hash-only route change, file modes, and any link reconciler state, then rerun the same plan. Checkpoint the recovery manifest and route configuration before applying production changes.

@@ -14,15 +14,16 @@ export function githubFleetUsage(): string {
     'usage: pnpm github:fleet <plan|prepare|apply|verify> --root <directory> [--root <directory> ...] --manifest <file> [options]',
     '',
     'options:',
-    '  --root <directory>    discover direct-child repositories, repeatable',
-    '  --repo <owner/repo>    select a new repository, repeatable',
-    '  --profiles <names>     save a comma-separated profile subset for selected new repositories',
-    '  --include-private       admit private repositories selected with --repo',
-    '  --retire               operate on selected managed repositories as retirements',
-    '  --rotate-hmac          replace selected repository HMACs through every fleet phase',
-    `  --secret-limit <count> Worker variable and secret limit (default: ${DEFAULT_SECRET_LIMIT})`,
-    '  -y, --yes              apply production changes without prompts',
-    '  -h, --help             show this help',
+    '  -r, --root <directory>        discover direct-child repositories, repeatable',
+    '  -m, --manifest <file>         read the private fleet recovery manifest',
+    '      --repo <owner/repo>       select a new repository, repeatable',
+    '  -p, --profiles <names>        save a comma-separated profile subset for selected new repositories',
+    '  -i, --include-private         admit private repositories selected with --repo',
+    '      --retire                  operate on selected managed repositories as retirements',
+    '      --rotate-hmac             replace selected repository HMACs through every fleet phase',
+    `  -s, --secret-limit <count> Worker variable and secret limit (default: ${DEFAULT_SECRET_LIMIT})`,
+    '  -y, --yes                     apply production changes without prompts',
+    '  -h, --help                    show this help',
   ].join('\n')
 }
 
@@ -48,12 +49,12 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
 
   for (let index = 1; index < argv.length; index += 1) {
     const arg = argv[index]!
-    if (arg === '--root') {
+    if (arg === '--root' || arg === '-r') {
       const root = optionValue(argv, index, arg)
       if (roots.includes(root)) throw new Error(`--root supplied more than once: ${root}`)
       roots.push(root)
       index += 1
-    } else if (arg === '--manifest') {
+    } else if (arg === '--manifest' || arg === '-m') {
       if (manifest !== undefined) throw new Error('--manifest may only be supplied once')
       manifest = optionValue(argv, index, arg)
       index += 1
@@ -62,9 +63,9 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       if (repositories.includes(repo)) throw new Error(`--repo supplied more than once: ${repo}`)
       repositories.push(repo)
       index += 1
-    } else if (arg === '--include-private') {
+    } else if (arg === '--include-private' || arg === '-i') {
       includePrivate = true
-    } else if (arg === '--profiles') {
+    } else if (arg === '--profiles' || arg === '-p') {
       if (profiles !== undefined) throw new Error('--profiles may only be supplied once')
       profiles = parseGitHubFleetProfiles(optionValue(argv, index, arg))
       index += 1
@@ -72,7 +73,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       retire = true
     } else if (arg === '--rotate-hmac') {
       rotateHmac = true
-    } else if (arg === '--secret-limit') {
+    } else if (arg === '--secret-limit' || arg === '-s') {
       const raw = optionValue(argv, index, arg)
       secretLimit = Number(raw)
       if (!Number.isSafeInteger(secretLimit) || secretLimit < 1) {
