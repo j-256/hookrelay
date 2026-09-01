@@ -100,6 +100,9 @@ describe('sink retirement', () => {
       finalize: true,
       yes: false,
     })
+    expect(parseSinkRetirementArgs(['delivery', '-m', 'retirements.json', '--finalize'])).toEqual(
+      parseSinkRetirementArgs(['delivery', '--manifest', 'retirements.json', '--finalize']),
+    )
     expect(() => parseSinkRetirementArgs(['delivery'])).toThrow(/manifest/)
   })
 

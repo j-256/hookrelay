@@ -123,11 +123,12 @@ function options(finalize = false): SubscriptionRetirementOptions {
 
 describe('subscription retirement', () => {
   it('requires an explicit private manifest', () => {
-    expect(parseSubscriptionRetirementArgs([
+    const longOptions = parseSubscriptionRetirementArgs([
       'github:example/repo', '--manifest', '/secure/retirements.json',
       '--routes', '/secure/routes.jsonc', '--dev-vars', '/secure/dev.vars',
       '--expected-slug-hash', 'a'.repeat(64), '--finalize', '-y',
-    ])).toEqual({
+    ])
+    expect(longOptions).toEqual({
       name: 'github:example/repo',
       manifest: '/secure/retirements.json',
       routes: '/secure/routes.jsonc',
@@ -136,6 +137,11 @@ describe('subscription retirement', () => {
       finalize: true,
       yes: true,
     })
+    expect(parseSubscriptionRetirementArgs([
+      'github:example/repo', '-m', '/secure/retirements.json',
+      '-r', '/secure/routes.jsonc', '-d', '/secure/dev.vars',
+      '-e', 'a'.repeat(64), '--finalize', '-y',
+    ])).toEqual(longOptions)
     expect(() => parseSubscriptionRetirementArgs(['github:example/repo'])).toThrow(/manifest/)
     expect(() => parseSubscriptionRetirementArgs([
       'github:example/repo', '--manifest', '/secure/retirements.json',

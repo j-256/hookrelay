@@ -82,9 +82,9 @@ export function sinkRetirementUsage(): string {
     '  --finalize  Require no delivery references, remove KV, and clean safe secrets',
     '',
     'options:',
-    '  --manifest <file>  Private versioned recovery manifest',
-    '  -y, --yes          Apply production changes without prompts',
-    '  -h, --help         Show this help',
+    '  -m, --manifest <file>  Private versioned recovery manifest',
+    '  -y, --yes              Apply production changes without prompts',
+    '  -h, --help             Show this help',
   ].join('\n')
 }
 
@@ -101,7 +101,7 @@ export function parseSinkRetirementArgs(argv: string[]): SinkRetirementOptions {
   let yes = false
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
-    if (argument === '--manifest') {
+    if (argument === '--manifest' || argument === '-m') {
       if (manifest !== undefined) throw new Error('--manifest may only be supplied once')
       manifest = optionValue(argv, index, argument)
       index += 1

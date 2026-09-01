@@ -167,6 +167,9 @@ describe('parseSyncArgs', () => {
       routes: '/secure/routes.jsonc',
       yes: false,
     })
+    expect(parseSyncArgs(['-r', '/secure/routes.jsonc'])).toEqual(
+      parseSyncArgs(['--routes', '/secure/routes.jsonc']),
+    )
   })
 
   it('rejects unknown options and positional arguments', () => {

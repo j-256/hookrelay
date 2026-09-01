@@ -39,7 +39,7 @@ export function commandReference(): string {
     `Sources: ${sources}`,
     'sub:add options: -s/--sink, -b/--base-url, --fallback-url, --email-base, --allow-sender, --primary-link-label, -r/--repo, -e/--events, -y/--yes',
     'github:events options: -e/--events, -y/--yes',
-    'retirement options: --manifest, --finalize, -y/--yes',
+    'retirement options: -m/--manifest, --finalize, -y/--yes; sub:retire also has -r/--routes, -d/--dev-vars, -e/--expected-slug-hash',
     'retention options: -y/--yes (apply only)',
     'GitHub --events defaults to push; recommended and named profiles compose with commas',
     `GitHub profiles: ${githubProfiles}`,

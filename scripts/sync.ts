@@ -152,9 +152,9 @@ export function syncUsage(): string {
     'usage: pnpm sync [--routes <file>] [-y]',
     '',
     'options:',
-    '  --routes <file>  read an explicit hash-only route configuration',
-    '  -y, --yes  apply the remote KV plan',
-    '  -h, --help show this help',
+    '  -r, --routes <file>  read an explicit hash-only route configuration',
+    '  -y, --yes            apply the remote KV plan',
+    '  -h, --help           show this help',
   ].join('\n')
 }
 
@@ -164,7 +164,7 @@ export function parseSyncArgs(argv: string[]): SyncOptions {
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!
     if (arg === '--yes' || arg === '-y') yes = true
-    else if (arg === '--routes') {
+    else if (arg === '--routes' || arg === '-r') {
       if (routes !== undefined) throw new Error('--routes may only be supplied once')
       const value = argv[index + 1]
       if (!value || value.startsWith('-')) throw new Error('--routes requires a value')

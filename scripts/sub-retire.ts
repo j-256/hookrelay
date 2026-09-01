@@ -85,12 +85,12 @@ export function subscriptionRetirementUsage(): string {
     '  --finalize  Archive recovery data, remove owned resources, and clean safe secrets',
     '',
     'options:',
-    '  --manifest <file>  Private versioned recovery manifest',
-    '  --routes <file>  Hash-only route configuration (default: routes.jsonc)',
-    '  --dev-vars <file>  Private local secret file (default: .dev.vars)',
-    '  --expected-slug-hash <hash>  Refuse a route or archive with another identity',
-    '  -y, --yes          Apply production changes without prompts',
-    '  -h, --help         Show this help',
+    '  -m, --manifest <file>            Private versioned recovery manifest',
+    '  -r, --routes <file>              Hash-only route configuration (default: routes.jsonc)',
+    '  -d, --dev-vars <file>            Private local secret file (default: .dev.vars)',
+    '  -e, --expected-slug-hash <hash>  Refuse a route or archive with another identity',
+    '  -y, --yes                        Apply production changes without prompts',
+    '  -h, --help                       Show this help',
   ].join('\n')
 }
 
@@ -110,19 +110,19 @@ export function parseSubscriptionRetirementArgs(argv: string[]): SubscriptionRet
   let yes = false
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index]!
-    if (argument === '--manifest') {
+    if (argument === '--manifest' || argument === '-m') {
       if (manifest !== undefined) throw new Error('--manifest may only be supplied once')
       manifest = optionValue(argv, index, argument)
       index += 1
-    } else if (argument === '--routes') {
+    } else if (argument === '--routes' || argument === '-r') {
       if (routes !== undefined) throw new Error('--routes may only be supplied once')
       routes = optionValue(argv, index, argument)
       index += 1
-    } else if (argument === '--dev-vars') {
+    } else if (argument === '--dev-vars' || argument === '-d') {
       if (devVars !== undefined) throw new Error('--dev-vars may only be supplied once')
       devVars = optionValue(argv, index, argument)
       index += 1
-    } else if (argument === '--expected-slug-hash') {
+    } else if (argument === '--expected-slug-hash' || argument === '-e') {
       if (expectedSlugHash !== undefined) throw new Error('--expected-slug-hash may only be supplied once')
       expectedSlugHash = optionValue(argv, index, argument)
       index += 1
