@@ -23,6 +23,8 @@ Use identical selection arguments for every phase. To add or audit a private rep
 
 For an intentional HMAC replacement already recorded in the private manifest, add `--rotate-hmac` to the otherwise identical explicit repository selection in every phase. Preparation may replace private local values only for those selected repositories, and apply rewrites their Worker secrets before repairing hooks through authenticated pings. Never use the flag to work around an unexplained manifest or `.dev.vars` mismatch.
 
+For an intentional bearer-path replacement, add `--rotate-slugs <profiles>` to an explicit repository selection in every phase. Group repositories by the same selected profile subset. Preparation records the old and replacement slugs in the private manifest and changes only route hashes; apply keeps both route generations live until it has updated and pinged every exact GitHub hook, then removes the old KV routes. Never print either generation or repeat prepare after a completed apply unless another rotation is intended.
+
 `plan` is read-only and must complete without blockers. `prepare` writes only local recovery and desired-state files. Inspect its encrypted-manifest change, hash-only route change, file modes, and any link reconciler state, then rerun the same plan. Checkpoint the recovery manifest and route configuration before production mutation. `apply` writes Worker secrets, production KV, and GitHub repository hooks; use `-y` only after reviewing a plan made with the exact same arguments. `verify` deliberately sends a fresh GitHub ping through every managed hook in scope, but ping events do not create sink deliveries. Finish with `pnpm sync` as an independent desired-state comparison.
 
 A selected canary still audits already-managed public repositories and can report more prepared repositories than the selected addition set. Fleet phases emit secret-free progress while they perform remote reads; wait for the complete result and check the process exit status before drawing conclusions.
@@ -35,7 +37,7 @@ Repository retirement uses the same phase order with an explicit `--repo owner/r
 
 The fleet manifest is the canonical recovery source for each repository HMAC and its raw subscription slugs. It and `.dev.vars` must be regular, non-symlink files with mode `0600`. Manifest paths are operator-owned and must not be embedded in tracked source. If a manifest is stored in another repository, verify that repository's encryption attributes before staging it.
 
-Raw slugs, full Hookrelay URLs, HMAC values, sink credentials, and secret-bearing request bodies must never reach command arguments, logs, diffs, issues, commits, or chat output. `routes.jsonc` may contain subscription names, slug hashes, secret environment names, event profiles, and sink mappings, but never raw values. Inspect manifests semantically through secret-free names and structure, and inspect encrypted diffs without decrypting their contents into output.
+Raw slugs, full Hookrelay URLs, HMAC values, sink credentials, and secret-bearing request bodies must never reach command arguments, logs, diffs, issues, commits, or chat output. `routes.jsonc` may contain subscription names, slug hashes, secret environment names, event profiles, and sink mappings, but never raw values. Inspect manifests, including pending slug-rotation state, semantically through secret-free names and structure, and inspect encrypted diffs without decrypting their contents into output.
 
 ## Verification
 

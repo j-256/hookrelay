@@ -23,11 +23,13 @@ import {
 import type { GitHubRepositoryHook } from '../../../scripts/providers/github/repository-hooks'
 import { writePrivateText } from '../../../scripts/setup'
 import type { AtomicFileSystem } from '../../../scripts/setup'
+import { parseRoutes } from '../../../scripts/sync'
 
 const REPO = 'example-owner/example-plugin'
 const OTHER_REPO = 'example-owner/example-repo'
 const HMAC_VALUE = 'fixture-hmac-value-that-must-stay-private'
 const ROTATED_HMAC_VALUE = 'replacement-hmac-value-that-must-stay-private'
+const ROTATED_ACTIVITY_SLUG = 'rotatedactivityslug001'
 const SLUGS = {
   activity: 'abcdefghijklmnopqrstuv',
   stars: 'zyxwvutsrqponmlkjihgfe',
@@ -257,6 +259,69 @@ describe('GitHub fleet planning and preparation', () => {
         directory,
       )
       expect(plan.blockers.join('\n')).toMatch(/rotation requires an existing active manifest entry/)
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('prepares selected slug rotations once and requires explicit continuation', async () => {
+    const directory = await project()
+    try {
+      await prepareGitHubFleet(options(), dependencies(), directory)
+      const manifest = parseGitHubFleetManifest(await readFile(join(directory, 'fleet.json'), 'utf8'))
+      const entry = manifest.repositories[REPO]!
+      const hooks: GitHubRepositoryHook[] = GITHUB_FLEET_PROFILE_NAMES.map((profile, index) => ({
+        id: index + 1,
+        active: true,
+        events: [],
+        config: {
+          url: `https://hooks.example.com/hook/github/${entry.slugs[profile]}`,
+          content_type: 'json',
+          insecure_ssl: '0',
+        },
+      }))
+      const deps = dependencies()
+      deps.listHooks = async () => hooks
+      deps.randomValues = {
+        hmac: () => { throw new Error('must not generate an HMAC') },
+        slug: () => ROTATED_ACTIVITY_SLUG,
+      }
+      const rotationOptions = {
+        ...options([REPO]),
+        rotateSlugs: ['activity'] as const,
+      }
+      const preview = await planGitHubFleet(
+        { ...rotationOptions, phase: 'plan' },
+        deps,
+        directory,
+      )
+      expect(preview.blockers).toEqual([])
+      expect(preview.hookAdditions).toEqual([])
+      expect(preview.slugRotations).toEqual([`github:${REPO}`])
+      expect(formatGitHubFleetPlan(preview)).toContain('Subscription slug rotations: 1')
+      expect(formatGitHubFleetPlan(preview)).not.toContain(SLUGS.activity)
+
+      const prepared = await prepareGitHubFleet(rotationOptions, deps, directory)
+      expect(prepared).toMatchObject({ subscriptionRotations: 1 })
+      const rotatedManifestText = await readFile(join(directory, 'fleet.json'), 'utf8')
+      const rotatedManifest = parseGitHubFleetManifest(rotatedManifestText)
+      expect(rotatedManifest.repositories[REPO]).toMatchObject({
+        slugs: { activity: ROTATED_ACTIVITY_SLUG },
+        slugRotation: {
+          profiles: ['activity'],
+          previousSlugs: { activity: SLUGS.activity },
+        },
+      })
+      const preparedRoutes = parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8'))
+      const activity = await buildGitHubFleetSubscription(REPO, 'activity', githubFleetManifestValues(rotatedManifest.repositories[REPO]!))
+      expect(preparedRoutes.subs.find((sub) => sub.name === `github:${REPO}`)?.slugHash).toBe(activity.slugHash)
+
+      deps.randomValues.slug = () => { throw new Error('must not regenerate a pending slug') }
+      const repeated = await prepareGitHubFleet(rotationOptions, deps, directory)
+      expect(repeated.subscriptionRotations).toBe(0)
+      expect(await readFile(join(directory, 'fleet.json'), 'utf8')).toBe(rotatedManifestText)
+      const ordinary = await planGitHubFleet({ ...options(), phase: 'plan' }, deps, directory)
+      expect(ordinary.blockers.join('\n')).toMatch(/pending slug rotation requires matching/)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

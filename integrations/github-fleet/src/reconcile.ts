@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { hmacSha256Hex } from '../../../src/lib/hmac'
-import { subscriptionKvKey } from '../../../src/lib/subscription'
+import { hashSubscriptionSlug, subscriptionKvKey } from '../../../src/lib/subscription'
 import {
   formatGitHubFleetPlan,
   planGitHubFleet,
@@ -11,8 +11,10 @@ import {
   type GitHubFleetPlan,
 } from './fleet'
 import {
+  completeGitHubFleetSlugRotation,
   githubFleetManifestProfiles,
   parseGitHubFleetManifest,
+  serializeGitHubFleetManifest,
   type GitHubFleetManifest,
 } from './manifest'
 import {
@@ -31,12 +33,13 @@ import {
   updateGitHubRepositoryHook,
   type GitHubRepositoryHook,
 } from '../../../scripts/providers/github/repository-hooks'
-import { putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
+import { deleteRemoteKv, putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
 import {
   confirm,
   listWranglerSecrets,
   putWranglerSecretsBulk,
   readPrivateOptionalText,
+  writePrivateText,
   type SecretValue,
 } from '../../../scripts/setup'
 import { computePlan, parseRoutes, type Routes, type Sub } from '../../../scripts/sync'
@@ -66,6 +69,7 @@ export interface GitHubFleetReconcileDependencies {
   putSecrets?: (secrets: readonly SecretValue[]) => Promise<Set<string>>
   readKv?: (progress?: GitHubFleetProgress) => Promise<RemoteKvSnapshot>
   putKv?: (binding: string, key: string, value: string) => Promise<void>
+  deleteKv?: (binding: string, key: string) => Promise<void>
   routeTimeoutMs?: number
   routeIntervalMs?: number
   routeGraceMs?: number
@@ -77,6 +81,7 @@ export interface GitHubFleetApplyResult {
   selected: string[]
   installedSecrets: number
   rotatedSecrets: number
+  rotatedSubscriptions: number
   reconciledHooks: number
 }
 
@@ -100,6 +105,7 @@ interface ResolvedDependencies {
   putSecrets: (secrets: readonly SecretValue[]) => Promise<Set<string>>
   readKv: (progress?: GitHubFleetProgress) => Promise<RemoteKvSnapshot>
   putKv: (binding: string, key: string, value: string) => Promise<void>
+  deleteKv: (binding: string, key: string) => Promise<void>
   routeTimeoutMs: number
   routeIntervalMs: number
   routeGraceMs: number
@@ -144,6 +150,7 @@ function resolvedDependencies(input: GitHubFleetReconcileDependencies): Resolved
     putSecrets: input.putSecrets ?? ((secrets) => putWranglerSecretsBulk(secrets)),
     readKv: input.readKv ?? ((progress) => readRemoteKvSnapshot(undefined, progress)),
     putKv: input.putKv ?? putRemoteKv,
+    deleteKv: input.deleteKv ?? deleteRemoteKv,
     routeTimeoutMs: input.routeTimeoutMs ?? ROUTE_PROPAGATION_TIMEOUT_MS,
     routeIntervalMs: input.routeIntervalMs ?? ROUTE_PROBE_INTERVAL_MS,
     routeGraceMs: input.routeGraceMs ?? ROUTE_PROPAGATION_GRACE_MS,
@@ -283,7 +290,9 @@ async function waitForRouteStatus(
   do {
     const status = await probeRouteStatus(hook, dependencies, secret)
     if (status === expectedStatus) return
-    const transitional = status === 404
+    const retiring = expectedStatus === 404 && (status === 200 || status === 401)
+    const transitional = retiring
+      || status === 404
       || (secret !== undefined && (status === 200 || status === 401))
     if (!transitional) {
       throw new Error(`${hook.subscriptionName}: route probe returned unexpected status ${status}`)
@@ -369,6 +378,33 @@ function verificationRepositories(options: GitHubFleetOptions, plan: GitHubFleet
   return [...new Set([...selectedRepositories(options, plan), ...plan.managed])].sort()
 }
 
+async function verifyOrRepairManagedHook(
+  hook: DesiredHook,
+  existing: GitHubRepositoryHook,
+  dependencies: ResolvedDependencies,
+): Promise<void> {
+  if (!gitHubRepositoryHookMatches(existing, hook.url, hook.events)) {
+    await retryMutation(
+      () => dependencies.updateHook(hook.repo, existing.id, hook.url, hook.events, hook.secret),
+      dependencies,
+    )
+    await pingWithRetry(hook.repo, existing.id, dependencies)
+    return
+  }
+
+  try {
+    await pingWithRetry(hook.repo, existing.id, dependencies)
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err)
+    if (!/status (?:401|403)\b/.test(message)) throw err
+    await retryMutation(
+      () => dependencies.updateHook(hook.repo, existing.id, hook.url, hook.events, hook.secret),
+      dependencies,
+    )
+    await pingWithRetry(hook.repo, existing.id, dependencies)
+  }
+}
+
 async function reconcileManagedHook(hook: DesiredHook, dependencies: ResolvedDependencies): Promise<void> {
   let matches = await matchingGitHubRepositoryHooks(await dependencies.listHooks(hook.repo), hook.slugHash)
   if (matches.length > 1) throw new Error(`${hook.subscriptionName}: multiple matching GitHub hooks exist`)
@@ -394,26 +430,24 @@ async function reconcileManagedHook(hook: DesiredHook, dependencies: ResolvedDep
   }
 
   const existing = matches[0]!
-  if (!gitHubRepositoryHookMatches(existing, hook.url, hook.events)) {
-    await retryMutation(
-      () => dependencies.updateHook(hook.repo, existing.id, hook.url, hook.events, hook.secret),
-      dependencies,
-    )
-    await pingWithRetry(hook.repo, existing.id, dependencies)
-    return
-  }
+  await verifyOrRepairManagedHook(hook, existing, dependencies)
+}
 
-  try {
-    await pingWithRetry(hook.repo, existing.id, dependencies)
-  } catch (err) {
-    const message = err instanceof Error ? err.message : String(err)
-    if (!/status (?:401|403)\b/.test(message)) throw err
-    await retryMutation(
-      () => dependencies.updateHook(hook.repo, existing.id, hook.url, hook.events, hook.secret),
-      dependencies,
-    )
-    await pingWithRetry(hook.repo, existing.id, dependencies)
-  }
+async function reconcileRotatingHook(
+  hook: DesiredHook,
+  previousSlug: string,
+  dependencies: ResolvedDependencies,
+): Promise<void> {
+  const repositoryHooks = await dependencies.listHooks(hook.repo)
+  const previousHash = await hashSubscriptionSlug(previousSlug)
+  const [currentMatches, previousMatches] = await Promise.all([
+    matchingGitHubRepositoryHooks(repositoryHooks, hook.slugHash),
+    matchingGitHubRepositoryHooks(repositoryHooks, previousHash),
+  ])
+  const matches = new Map([...currentMatches, ...previousMatches].map((candidate) => [candidate.id, candidate]))
+  if (matches.size === 0) throw new Error(`${hook.subscriptionName}: rotating GitHub hook is missing`)
+  if (matches.size > 1) throw new Error(`${hook.subscriptionName}: multiple rotating GitHub hooks exist`)
+  await verifyOrRepairManagedHook(hook, [...matches.values()][0]!, dependencies)
 }
 
 export async function applyGitHubFleet(
@@ -434,6 +468,18 @@ export async function applyGitHubFleet(
 
   options.progress?.('Reading prepared fleet files and Worker secrets')
   const files = await readFleetFiles(options, projectRoot, dependencies)
+  const rotations = selected.flatMap((repo) => {
+    const rotation = files.manifest.repositories[repo]?.slugRotation
+    return rotation
+      ? rotation.profiles.map((profile) => ({
+          name: githubFleetSubscriptionName(repo, profile),
+          previousSlug: rotation.previousSlugs[profile]!,
+          profile,
+          repo,
+        }))
+      : []
+  })
+  const rotationsByName = new Map(rotations.map((rotation) => [rotation.name, rotation]))
   let secretNames = await dependencies.listSecrets()
   const selectedSecrets = selected
     .map((repo) => files.manifest.repositories[repo]?.hmac)
@@ -479,13 +525,57 @@ export async function applyGitHubFleet(
   let reconciledHooks = 0
   for (const [index, hook] of hooks.entries()) {
     options.progress?.(`Reconciling repository hook ${index + 1}/${hooks.length}`)
-    await reconcileManagedHook(hook, dependencies)
+    const rotation = rotationsByName.get(hook.subscriptionName)
+    if (rotation) await reconcileRotatingHook(hook, rotation.previousSlug, dependencies)
+    else await reconcileManagedHook(hook, dependencies)
     reconciledHooks += 1
+  }
+  if (rotations.length > 0) {
+    const hooksByName = new Map(hooks.map((hook) => [hook.subscriptionName, hook]))
+    const previousHooks = await Promise.all(rotations.map(async (rotation) => {
+      const current = hooksByName.get(rotation.name)!
+      const slugHash = await hashSubscriptionSlug(rotation.previousSlug)
+      return {
+        ...current,
+        slugHash,
+        url: `${baseUrl(files.routes)}/hook/github/${rotation.previousSlug}`,
+      }
+    }))
+    const oldKeys = previousHooks.map((hook) => subscriptionKvKey(hook.slugHash))
+    for (const [index, key] of oldKeys.entries()) {
+      options.progress?.(`Deleting previous subscription route ${index + 1}/${oldKeys.length}`)
+      await dependencies.deleteKv('SUBS', key)
+    }
+    for (const [index, hook] of previousHooks.entries()) {
+      options.progress?.(`Verifying previous subscription route retirement ${index + 1}/${previousHooks.length}`)
+      await waitForRouteStatus(hook, 404, dependencies, hook.secret)
+    }
+    options.progress?.('Verifying central subscription route cleanup')
+    const remote = await dependencies.readKv(options.progress)
+    if (oldKeys.some((key) => remote.subs[key] !== undefined)) {
+      throw new Error('one or more previous subscription routes remain after cleanup')
+    }
+    const currentKeys = rotations.map((rotation) => (
+      subscriptionKvKey(namedSubscription(files.routes, rotation.name).slugHash)
+    ))
+    if (currentKeys.some((key) => remote.subs[key] === undefined)) {
+      throw new Error('one or more replacement subscription routes disappeared during cleanup')
+    }
+    let completedManifest = files.manifest
+    for (const repo of [...new Set(rotations.map((rotation) => rotation.repo))].sort()) {
+      completedManifest = completeGitHubFleetSlugRotation(completedManifest, repo)
+    }
+    await writePrivateText(
+      projectPath(projectRoot, options.manifest),
+      serializeGitHubFleetManifest(completedManifest),
+      dependencies.planDependencies?.fileSystem,
+    )
   }
   return {
     selected,
     installedSecrets: missingSecrets.length,
     rotatedSecrets: rotatedSecrets.length,
+    rotatedSubscriptions: rotations.length,
     reconciledHooks,
   }
 }

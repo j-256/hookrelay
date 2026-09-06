@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
+  beginGitHubFleetSlugRotation,
+  completeGitHubFleetSlugRotation,
   emptyGitHubFleetManifest,
   generateGitHubFleetManifestRepository,
   githubFleetManifestProfiles,
@@ -11,6 +13,8 @@ import {
 const FIRST_SLUG = 'abcdefghijklmnopqrstuv'
 const SECOND_SLUG = 'zyxwvutsrqponmlkjihgfe'
 const THIRD_SLUG = '0123456789abcdefghijkl'
+const ROTATED_ACTIVITY_SLUG = 'rotatedactivityslug001'
+const ROTATED_ALERTS_SLUG = 'rotatedalertsslug00001'
 
 function entry(repo: string, value = `${repo}-secret`, slugs = {
   activity: FIRST_SLUG,
@@ -117,5 +121,77 @@ describe('GitHub fleet manifest', () => {
     expect(error?.message).toMatch(/disagrees/)
     expect(error?.message).not.toContain('original-secret')
     expect(error?.message).not.toContain('different-secret')
+  })
+
+  it('prepares, reuses, and completes profile-scoped slug rotation state', () => {
+    const repo = 'example-owner/example-repo'
+    const original = withGitHubFleetManifestRepository(
+      emptyGitHubFleetManifest(),
+      repo,
+      entry(repo),
+    )
+    const replacements = [ROTATED_ACTIVITY_SLUG, ROTATED_ALERTS_SLUG]
+    const rotated = beginGitHubFleetSlugRotation(
+      original,
+      repo,
+      ['activity', 'alerts'],
+      '2026-09-06T12:00:00.000Z',
+      {
+        hmac: () => { throw new Error('must not generate an HMAC') },
+        slug: () => replacements.shift()!,
+      },
+    )
+    expect(rotated.version).toBe(4)
+    expect(rotated.repositories[repo]).toMatchObject({
+      slugs: {
+        activity: ROTATED_ACTIVITY_SLUG,
+        stars: SECOND_SLUG,
+        alerts: ROTATED_ALERTS_SLUG,
+      },
+      slugRotation: {
+        profiles: ['activity', 'alerts'],
+        previousSlugs: { activity: FIRST_SLUG, alerts: THIRD_SLUG },
+      },
+    })
+    const reused = beginGitHubFleetSlugRotation(
+      rotated,
+      repo,
+      ['activity', 'alerts'],
+      '2026-09-07T12:00:00.000Z',
+      {
+        hmac: () => { throw new Error('must not generate an HMAC') },
+        slug: () => { throw new Error('must not regenerate a pending slug') },
+      },
+    )
+    expect(reused).toBe(rotated)
+    expect(parseGitHubFleetManifest(serializeGitHubFleetManifest(rotated))).toEqual(rotated)
+    const completed = completeGitHubFleetSlugRotation(rotated, repo)
+    expect(completed.repositories[repo]?.slugRotation).toBeUndefined()
+    expect(completed.repositories[repo]?.slugs.activity).toBe(ROTATED_ACTIVITY_SLUG)
+  })
+
+  it('rejects ambiguous or colliding slug rotation state without printing raw values', () => {
+    const repo = 'example-owner/example-repo'
+    const original = withGitHubFleetManifestRepository(emptyGitHubFleetManifest(), repo, entry(repo))
+    expect(() => beginGitHubFleetSlugRotation(
+      original,
+      repo,
+      ['alerts', 'activity'],
+      '2026-09-06T12:00:00.000Z',
+    )).toThrow(/canonical order/)
+    let error: Error | undefined
+    try {
+      beginGitHubFleetSlugRotation(
+        original,
+        repo,
+        ['activity'],
+        '2026-09-06T12:00:00.000Z',
+        { hmac: () => 'unused', slug: () => SECOND_SLUG },
+      )
+    } catch (caught) {
+      error = caught as Error
+    }
+    expect(error?.message).toMatch(/subscription slugs?/)
+    expect(error?.message).not.toContain(SECOND_SLUG)
   })
 })

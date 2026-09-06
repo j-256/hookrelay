@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { describe, expect, it, vi } from 'vitest'
 import { hmacSha256Hex } from '../../../src/lib/hmac'
-import { subscriptionKvKey } from '../../../src/lib/subscription'
+import { hashSubscriptionSlug, subscriptionKvKey } from '../../../src/lib/subscription'
 import type { GitHubFleetDependencies, GitHubFleetOptions } from '../src/fleet'
 import {
   applyGitHubFleet,
@@ -526,6 +526,134 @@ describe('GitHub fleet apply and verify', () => {
       expect(putSecrets).toHaveBeenCalledWith([entry.hmac])
       expect(updateHook).toHaveBeenCalledTimes(3)
       expect([...pingAttempts.values()]).toEqual([2, 2, 2])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('keeps old and new routes live while rotating a hook and resumes cleanup safely', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const previousEntry = manifestEntry(REPO, 'slug-rotate')
+    const replacementSlug = 'replacementactivity001'
+    const rotatedEntry: GitHubFleetManifestRepository = {
+      ...previousEntry,
+      slugs: { ...previousEntry.slugs, activity: replacementSlug },
+      slugRotation: {
+        preparedAt: '2026-09-06T12:00:00.000Z',
+        profiles: ['activity'],
+        previousSlugs: { activity: previousEntry.slugs.activity },
+      },
+    }
+    const manifest: GitHubFleetManifest = {
+      version: 4,
+      repositories: { [REPO]: rotatedEntry },
+      retiredRepositories: {},
+    }
+    const directory = await writeProject(manifest, fileSystem)
+    try {
+      const previousManifest: GitHubFleetManifest = {
+        version: 3,
+        repositories: { [REPO]: previousEntry },
+        retiredRepositories: {},
+      }
+      const previousRoutes = {
+        baseUrl: BASE_URL,
+        subs: await subscriptionsFor(previousManifest),
+        sinks: [
+          { name: 'discord:repo-activity', type: 'discord', urlEnv: 'SINK_ACTIVITY' },
+          { name: 'discord:github-stars', type: 'discord', urlEnv: 'SINK_STARS' },
+          { name: 'discord:repo-alerts', type: 'discord', urlEnv: 'SINK_ALERTS' },
+        ],
+      }
+      const remote = { subs: {} as Record<string, string>, sinks: {} as Record<string, string> }
+      const initialPlan = computePlan(parseRoutes(`${JSON.stringify(previousRoutes)}\n`), remote)
+      for (const put of initialPlan.subPuts) remote.subs[put.key] = put.value
+      for (const put of initialPlan.sinkPuts) remote.sinks[put.key] = put.value
+      const previousActivity = await buildGitHubFleetSubscription(REPO, 'activity', {
+        hmacName: previousEntry.hmac.name,
+        slugs: previousEntry.slugs,
+      })
+      const replacementActivity = await buildGitHubFleetSubscription(REPO, 'activity', {
+        hmacName: rotatedEntry.hmac.name,
+        slugs: rotatedEntry.slugs,
+      })
+      const previousKey = subscriptionKvKey(previousActivity.slugHash)
+      const replacementKey = subscriptionKvKey(replacementActivity.slugHash)
+      const hooks = GITHUB_FLEET_PROFILE_NAMES.map((profile, index) => hookFor(previousEntry, REPO, profile, index + 1))
+      const secrets = new Set([previousEntry.hmac.name, 'SINK_ACTIVITY', 'SINK_STARS', 'SINK_ALERTS'])
+      const readKv = async () => cloneKv(remote)
+      const listHooks = async () => [...hooks]
+      const planDependencies: GitHubFleetDependencies = {
+        discover: async () => ({ repositories: [{ nameWithOwner: REPO, path: `/repo/${REPO}`, isFork: false }], exclusions: [], blockers: [] }),
+        listHooks,
+        listSecrets: async () => new Set(secrets),
+        readKv,
+        fileSystem,
+      }
+      const updateHook = vi.fn(async (
+        _repo: string,
+        hookId: number,
+        url: string,
+        events: readonly string[],
+      ) => {
+        expect(remote.subs[previousKey]).toBeDefined()
+        expect(remote.subs[replacementKey]).toBeDefined()
+        const hook = hooks.find((candidate) => candidate.id === hookId)!
+        hook.events = [...events]
+        hook.config = { url, content_type: 'json', insecure_ssl: '0' }
+      })
+      let cleanupAttempts = 0
+      const dependencies: GitHubFleetReconcileDependencies = {
+        planDependencies,
+        listHooks,
+        createHook: async () => { throw new Error('must not create a second hook') },
+        updateHook,
+        pingHook: async () => ({ id: 'ping-guid', event: 'ping', statusCode: 200, deliveredAt: null }),
+        listSecrets: async () => new Set(secrets),
+        putSecrets: async () => new Set(secrets),
+        readKv,
+        putKv: async (binding, key, value) => { remote[binding === 'SUBS' ? 'subs' : 'sinks'][key] = value },
+        deleteKv: async (_binding, key) => {
+          cleanupAttempts += 1
+          if (cleanupAttempts === 1) throw new Error('simulated cleanup interruption')
+          delete remote.subs[key]
+        },
+        fetch: async (input, init) => {
+          const slug = new URL(String(input)).pathname.split('/').pop()!
+          const key = subscriptionKvKey(await hashSubscriptionSlug(slug))
+          if (remote.subs[key] === undefined) return new Response('', { status: 404 })
+          return acceptSignedRoute(input, init)
+        },
+        sleep: async () => undefined,
+        routeGraceMs: 0,
+      }
+      const rotationOptions = {
+        ...fleetOptions('apply', [REPO]),
+        rotateSlugs: ['activity'] as const,
+      }
+
+      await expect(applyGitHubFleet(rotationOptions, directory, dependencies))
+        .rejects.toThrow(/simulated cleanup interruption/)
+      expect(updateHook).toHaveBeenCalledTimes(1)
+      expect(remote.subs[previousKey]).toBeDefined()
+      expect(remote.subs[replacementKey]).toBeDefined()
+      expect(JSON.parse(await readFile(join(directory, 'fleet.json'), 'utf8')).repositories[REPO].slugRotation)
+        .toBeDefined()
+
+      const completed = await applyGitHubFleet(rotationOptions, directory, dependencies)
+      expect(completed).toMatchObject({ rotatedSubscriptions: 1, reconciledHooks: 3 })
+      expect(updateHook).toHaveBeenCalledTimes(1)
+      expect(remote.subs[previousKey]).toBeUndefined()
+      expect(remote.subs[replacementKey]).toBeDefined()
+      expect(JSON.parse(await readFile(join(directory, 'fleet.json'), 'utf8')).repositories[REPO].slugRotation)
+        .toBeUndefined()
+
+      const verified = await verifyGitHubFleet(
+        { ...fleetOptions('verify', [REPO]), rotateSlugs: ['activity'] },
+        directory,
+        dependencies,
+      )
+      expect(verified).toMatchObject({ verifiedHooks: 3, issues: [] })
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

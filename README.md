@@ -379,7 +379,7 @@ Statuspage incident and scheduled-maintenance updates use the same `statuspage` 
 
 ## Optional integrations
 
-[`integrations/github-fleet`](integrations/github-fleet/README.md) contains the repository-fleet tooling used to dogfood Hookrelay across many GitHub repositories. It manages repository discovery, hooks, per-repository HMACs, event-profile selections, reconciliation, rotation, retirement, and verification. It is not required by the Hookrelay runtime or by ordinary GitHub subscriptions.
+[`integrations/github-fleet`](integrations/github-fleet/README.md) contains the repository-fleet tooling used to dogfood Hookrelay across many GitHub repositories. It manages repository discovery, hooks, per-repository HMACs, event-profile selections, HMAC and bearer-path rotation, reconciliation, retirement, and verification. It is not required by the Hookrelay runtime or by ordinary GitHub subscriptions.
 
 [`integrations/subscription-fleet`](integrations/subscription-fleet/README.md) reconciles externally managed, non-repository signed CloudEvents subscriptions. A private manifest supplies recovery values and optional Cloudflare Worker sender-secret targets; the integration prepares hash-only routes, applies selected Worker secrets and KV entries, and verifies authentication with a sink-filtered event. It is not required by ordinary CloudEvents subscriptions.
 

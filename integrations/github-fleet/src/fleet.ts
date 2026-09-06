@@ -1,10 +1,11 @@
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, parse as parseJsonc, type FormattingOptions, type ParseError } from 'jsonc-parser'
-import { subscriptionKvKey } from '../../../src/lib/subscription'
+import { hashSubscriptionSlug, subscriptionKvKey } from '../../../src/lib/subscription'
 import type { GitHubFleetDiscovery, GitHubFleetDiscoveryOptions } from './discovery'
 import { discoverGitHubFleet } from './discovery'
 import {
+  beginGitHubFleetSlugRotation,
   generateGitHubFleetManifestRepository,
   githubFleetManifestProfiles,
   githubFleetManifestValues,
@@ -64,6 +65,7 @@ export interface GitHubFleetOptions {
   yes: boolean
   retire?: boolean
   rotateHmac?: boolean
+  rotateSlugs?: readonly GitHubFleetProfileName[]
   profiles?: readonly GitHubFleetProfileName[]
   progress?: GitHubFleetProgress
 }
@@ -92,6 +94,7 @@ export interface GitHubFleetPlan {
   remoteKvPuts: number
   remoteKvDeletes: number
   hmacRotations: string[]
+  slugRotations: string[]
   capacity: GitHubFleetCapacity
 }
 
@@ -101,6 +104,7 @@ export interface GitHubFleetPrepareResult {
   devVarAdditions: number
   devVarRotations: number
   subscriptionAdditions: number
+  subscriptionRotations: number
 }
 
 export interface GitHubFleetDependencies {
@@ -222,7 +226,11 @@ async function fleetRouteIssues(
   const issues: string[] = []
   const desired = await buildGitHubFleetSubscription(repo, profile, githubFleetManifestValues(entry))
   if (sub.source !== desired.source) issues.push('source')
-  if (sub.slugHash !== desired.slugHash) issues.push('slug hash')
+  if (sub.slugHash !== desired.slugHash) {
+    const previousSlug = entry.slugRotation?.previousSlugs[profile]
+    const previousHash = previousSlug ? await hashSubscriptionSlug(previousSlug) : null
+    if (sub.slugHash !== previousHash) issues.push('slug hash')
+  }
   if (sub.enabled !== desired.enabled) issues.push('enabled state')
   if (!sameStrings(sub.sinks, desired.sinks)) issues.push('sink mapping')
   if (sub.setup?.github?.repo !== repo) issues.push('GitHub repository metadata')
@@ -301,6 +309,18 @@ async function loadLocalState(
     if (options.rotateHmac && !entry) {
       blockers.push(`${repo}: HMAC rotation requires an existing active manifest entry`)
     }
+    if (options.rotateSlugs && !entry) {
+      blockers.push(`${repo}: slug rotation requires an existing active manifest entry`)
+    }
+    if (options.rotateSlugs && entry) {
+      const activeProfiles = githubFleetManifestProfiles(entry)
+      for (const profile of options.rotateSlugs) {
+        if (!activeProfiles.includes(profile)) blockers.push(`${repo}: cannot rotate inactive profile ${profile}`)
+      }
+      if (entry.slugRotation && !sameStrings(entry.slugRotation.profiles, options.rotateSlugs)) {
+        blockers.push(`${repo}: pending slug rotation uses a different profile selection`)
+      }
+    }
     if (options.profiles && entry && !sameStrings(githubFleetManifestProfiles(entry), options.profiles)) {
       blockers.push(`${repo}: saved fleet profiles differ; ordinary fleet enrollment cannot change profiles`)
     }
@@ -371,6 +391,15 @@ async function loadLocalState(
   }
 
   const target = new Set([...selected, ...managed])
+  for (const [repo, entry] of Object.entries(manifest.repositories)) {
+    if (!entry.slugRotation) continue
+    const selectedForContinuation = options.rotateSlugs
+      && requested.has(repo)
+      && sameStrings(entry.slugRotation.profiles, options.rotateSlugs)
+    if (!selectedForContinuation) {
+      blockers.push(`${repo}: pending slug rotation requires matching --repo and --rotate-slugs selections`)
+    }
+  }
   return {
     routesText,
     routes,
@@ -458,6 +487,9 @@ export async function planGitHubFleet(
       remoteKvPuts: 0,
       remoteKvDeletes: 0,
       hmacRotations: options.rotateHmac ? selected : [],
+      slugRotations: options.rotateSlugs
+        ? selected.flatMap((repo) => options.rotateSlugs!.map((profile) => githubFleetSubscriptionName(repo, profile)))
+        : [],
       capacity: {
         vars: 0,
         existingSecrets: 0,
@@ -475,6 +507,9 @@ export async function planGitHubFleet(
   const selectedNames = [...state.selected].sort()
   const manifestAdditions = [...state.manifestAdditions]
   const plannedProfiles = plannedProfileNames(state, options)
+  const slugRotationNames = options.rotateSlugs
+    ? selectedNames.flatMap((repo) => options.rotateSlugs!.map((profile) => githubFleetSubscriptionName(repo, profile)))
+    : []
 
   for (const sink of [...plannedProfiles].map((profile) => GITHUB_FLEET_PROFILES[profile].sink)) {
     if (!state.routes.sinks.some((candidate) => candidate.name === sink)) blockers.push(`required sink is missing: ${sink}`)
@@ -490,9 +525,17 @@ export async function planGitHubFleet(
     for (const profile of plannedRepositoryProfiles(state, options, repo)) {
       const name = githubFleetSubscriptionName(repo, profile)
       const sub = existingRoutes[profile]
+      const pendingRotation = entry?.slugRotation?.profiles.includes(profile)
+        ? entry.slugRotation
+        : null
+      const requestedRotation = state.selected.has(repo) && options.rotateSlugs?.includes(profile)
       if (!sub) {
-        subscriptionAdditions.push(name)
-        hookAdditions.push(name)
+        if (pendingRotation || requestedRotation) {
+          blockers.push(`${name}: slug rotation requires an existing subscription`)
+        } else {
+          subscriptionAdditions.push(name)
+          hookAdditions.push(name)
+        }
         continue
       }
       if (entry) {
@@ -501,9 +544,20 @@ export async function planGitHubFleet(
       }
       const repoHooks = state.hooks.get(repo)
       if (repoHooks) {
-        const matches = await matchingGitHubRepositoryHooks(repoHooks, sub.slugHash)
-        if (matches.length === 0) hookAdditions.push(name)
-        else if (matches.length > 1) blockers.push(`${name}: multiple matching GitHub hooks in ${repo}`)
+        if (pendingRotation || requestedRotation) {
+          const currentMatches = await matchingGitHubRepositoryHooks(repoHooks, sub.slugHash)
+          const previousSlug = pendingRotation?.previousSlugs[profile]
+          const previousMatches = previousSlug
+            ? await matchingGitHubRepositoryHooks(repoHooks, await hashSubscriptionSlug(previousSlug))
+            : []
+          const matches = new Map([...currentMatches, ...previousMatches].map((hook) => [hook.id, hook]))
+          if (matches.size === 0) blockers.push(`${name}: slug rotation requires one existing GitHub hook in ${repo}`)
+          else if (matches.size > 1) blockers.push(`${name}: slug rotation found multiple GitHub hooks in ${repo}`)
+        } else {
+          const matches = await matchingGitHubRepositoryHooks(repoHooks, sub.slugHash)
+          if (matches.length === 0) hookAdditions.push(name)
+          else if (matches.length > 1) blockers.push(`${name}: multiple matching GitHub hooks in ${repo}`)
+        }
       }
     }
     if (entry) {
@@ -599,6 +653,7 @@ export async function planGitHubFleet(
     remoteKvPuts: kvPlan.subPuts.length + kvPlan.sinkPuts.length,
     remoteKvDeletes: kvPlan.subDeletes.length + kvPlan.sinkDeletes.length,
     hmacRotations: options.rotateHmac ? selectedNames : [],
+    slugRotations: slugRotationNames.sort(),
     capacity,
   }
 }
@@ -629,6 +684,7 @@ export async function prepareGitHubFleet(
   let devVarAdditions = 0
   let devVarRotations = 0
   let subscriptionAdditions = 0
+  let subscriptionRotations = 0
 
   for (const sink of [...plannedProfileNames(state, options)].map((profile) => GITHUB_FLEET_PROFILES[profile].sink)) {
     if (!routes.sinks.some((candidate) => candidate.name === sink)) blockers.push(`required sink is missing: ${sink}`)
@@ -655,10 +711,22 @@ export async function prepareGitHubFleet(
   }
   if (blockers.length > 0) throw new Error(`GitHub fleet preparation blocked\n${blockers.map((item) => `  - ${item}`).join('\n')}`)
 
-  await writePrivateText(paths.manifest, serializeGitHubFleetManifest(state.manifest), dependencies.fileSystem)
+  let manifest = state.manifest
+  if (options.rotateSlugs) {
+    for (const repo of [...state.selected].sort()) {
+      manifest = beginGitHubFleetSlugRotation(
+        manifest,
+        repo,
+        options.rotateSlugs,
+        new Date().toISOString(),
+        dependencies.randomValues,
+      )
+    }
+  }
+  await writePrivateText(paths.manifest, serializeGitHubFleetManifest(manifest), dependencies.fileSystem)
 
   const rotationRepositories = new Set(options.rotateHmac ? options.repositories : [])
-  for (const [repo, entry] of Object.entries(state.manifest.repositories)
+  for (const [repo, entry] of Object.entries(manifest.repositories)
     .filter(([, candidate]) => candidate.state !== 'retiring')) {
     const beforeCanonical = getDevVar(devVarsText, entry.hmac.name)
     if (beforeCanonical !== null && beforeCanonical !== entry.hmac.value && rotationRepositories.has(repo)) {
@@ -671,8 +739,27 @@ export async function prepareGitHubFleet(
   }
   await writePrivateText(paths.devVars, devVarsText, dependencies.fileSystem)
 
+  if (options.rotateSlugs) {
+    for (const repo of [...state.selected].sort()) {
+      const entry = manifest.repositories[repo]!
+      for (const profile of options.rotateSlugs) {
+        const name = githubFleetSubscriptionName(repo, profile)
+        const existingIndex = routes.subs.findIndex((sub) => sub.name === name)
+        if (existingIndex < 0) throw new Error(`${name}: subscription is missing during slug rotation`)
+        const desired = await buildGitHubFleetSubscription(repo, profile, githubFleetManifestValues(entry))
+        if (routes.subs[existingIndex]!.slugHash === desired.slugHash) continue
+        routesText = applyEdits(routesText, modify(routesText, ['subs', existingIndex, 'slugHash'], desired.slugHash, {
+          formattingOptions: FORMATTING_OPTIONS,
+        }))
+        if (!routesText.endsWith('\n')) routesText = `${routesText}\n`
+        routes = parseRoutes(routesText)
+        subscriptionRotations += 1
+      }
+    }
+  }
+
   for (const repo of plannedRepositoryNames(state)) {
-    const entry = state.manifest.repositories[repo]!
+    const entry = manifest.repositories[repo]!
     const existingNames = new Set(routes.subs.map((sub) => sub.name))
     for (const profile of githubFleetManifestProfiles(entry)) {
       const name = githubFleetSubscriptionName(repo, profile)
@@ -694,6 +781,7 @@ export async function prepareGitHubFleet(
     devVarAdditions,
     devVarRotations,
     subscriptionAdditions,
+    subscriptionRotations,
   }
 }
 
@@ -708,6 +796,7 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
     `Subscription additions: ${plan.subscriptionAdditions.length}`,
     `GitHub hook additions: ${plan.hookAdditions.length}`,
     `HMAC rotations: ${plan.hmacRotations.length}`,
+    `Subscription slug rotations: ${plan.slugRotations.length}`,
     `Production KV puts: ${plan.remoteKvPuts}`,
     `Production KV deletes: ${plan.remoteKvDeletes}`,
     `Worker capacity: ${plan.capacity.projected}/${plan.capacity.limit}`,

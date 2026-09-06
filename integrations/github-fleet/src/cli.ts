@@ -21,6 +21,7 @@ export function githubFleetUsage(): string {
     '  -i, --include-private         admit private repositories selected with --repo',
     '      --retire                  operate on selected managed repositories as retirements',
     '      --rotate-hmac             replace selected repository HMACs through every fleet phase',
+    '      --rotate-slugs <profiles> replace selected subscription slugs through every fleet phase',
     `  -s, --secret-limit <count> Worker variable and secret limit (default: ${DEFAULT_SECRET_LIMIT})`,
     '  -y, --yes                     apply production changes without prompts',
     '  -h, --help                    show this help',
@@ -45,6 +46,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   let yes = false
   let retire = false
   let rotateHmac = false
+  let rotateSlugs: GitHubFleetProfileName[] | undefined
   let profiles: GitHubFleetProfileName[] | undefined
 
   for (let index = 1; index < argv.length; index += 1) {
@@ -73,6 +75,10 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
       retire = true
     } else if (arg === '--rotate-hmac') {
       rotateHmac = true
+    } else if (arg === '--rotate-slugs') {
+      if (rotateSlugs !== undefined) throw new Error('--rotate-slugs may only be supplied once')
+      rotateSlugs = parseGitHubFleetProfiles(optionValue(argv, index, arg))
+      index += 1
     } else if (arg === '--secret-limit' || arg === '-s') {
       const raw = optionValue(argv, index, arg)
       secretLimit = Number(raw)
@@ -94,8 +100,12 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   if (profiles && repositories.length === 0) throw new Error('--profiles requires at least one --repo')
   if (retire && repositories.length === 0) throw new Error('--retire requires at least one --repo')
   if (rotateHmac && repositories.length === 0) throw new Error('--rotate-hmac requires at least one --repo')
+  if (rotateSlugs && repositories.length === 0) throw new Error('--rotate-slugs requires at least one --repo')
   if (retire && profiles) throw new Error('--profiles cannot be combined with --retire')
   if (retire && rotateHmac) throw new Error('--rotate-hmac cannot be combined with --retire')
+  if (retire && rotateSlugs) throw new Error('--rotate-slugs cannot be combined with --retire')
+  if (rotateHmac && rotateSlugs) throw new Error('--rotate-slugs cannot be combined with --rotate-hmac')
+  if (profiles && rotateSlugs) throw new Error('--rotate-slugs cannot be combined with --profiles')
   if (yes && phase !== 'apply') throw new Error('-y is only valid with apply')
   return {
     phase: phase as GitHubFleetPhase,
@@ -107,6 +117,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
     yes,
     retire,
     rotateHmac,
+    rotateSlugs,
     profiles,
   }
 }
@@ -169,6 +180,7 @@ async function main(): Promise<void> {
     console.log(`Local secret additions: ${result.devVarAdditions}`)
     console.log(`Local secret rotations: ${result.devVarRotations}`)
     console.log(`Subscription additions: ${result.subscriptionAdditions}`)
+    console.log(`Subscription slug rotations: ${result.subscriptionRotations}`)
     return
   }
   const { applyGitHubFleet, verifyGitHubFleet } = await import('./reconcile')
@@ -177,6 +189,7 @@ async function main(): Promise<void> {
     console.log(`Installed repository HMACs: ${result.installedSecrets}`)
     console.log(`Rotated repository HMACs: ${result.rotatedSecrets}`)
     console.log(`Reconciled GitHub hooks: ${result.reconciledHooks}`)
+    console.log(`Rotated subscription slugs: ${result.rotatedSubscriptions}`)
     return
   }
   const result = await verifyGitHubFleet(options)

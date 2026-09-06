@@ -2,7 +2,7 @@
 
 This directory contains the repository-fleet operations tooling used to dogfood Hookrelay across many GitHub repositories. It is optional: Hookrelay does not require this integration to receive GitHub webhooks, and ordinary GitHub subscriptions use the core GitHub adapter plus `pnpm sub:add` and `pnpm github:events`.
 
-The integration discovers repositories, maintains a private recovery manifest, prepares one Hookrelay subscription and GitHub repository hook per selected profile, reconciles drift, rotates repository HMACs, retires managed repositories, and verifies end-to-end authentication. It depends on Hookrelay's generic operator helpers and GitHub provider tooling, while nothing in the Worker runtime or ordinary operator scripts depends on the integration.
+The integration discovers repositories, maintains a private recovery manifest, prepares one Hookrelay subscription and GitHub repository hook per selected profile, reconciles drift, rotates repository HMACs and subscription slugs, retires managed repositories, and verifies end-to-end authentication. It depends on Hookrelay's generic operator helpers and GitHub provider tooling, while nothing in the Worker runtime or ordinary operator scripts depends on the integration.
 
 ## Prerequisites
 
@@ -38,7 +38,7 @@ The strict, versioned JSON manifest is the canonical recovery source for each re
 
 ```json
 {
-  "version": 3,
+  "version": 4,
   "repositories": {
     "owner/repo": {
       "hmac": {
@@ -58,7 +58,7 @@ The strict, versioned JSON manifest is the canonical recovery source for each re
 }
 ```
 
-Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. Omitted `profiles` selects the complete topology; a present array stores a nonempty subset in canonical `activity`, `stars`, `alerts` order. Active and retiring repositories carry explicit lifecycle state, and a retiring entry also carries resumable hook, route, KV, and secret phase markers. Completed entries move to `retiredRepositories` with their recovery values intact.
+Preparation writes missing entries and refuses unknown fields, malformed values, or conflicts with existing recovery data. Omitted `profiles` selects the complete topology; a present array stores a nonempty subset in canonical `activity`, `stars`, `alerts` order. Active and retiring repositories carry explicit lifecycle state, and a retiring entry also carries resumable hook, route, KV, and secret phase markers. A pending slug rotation stores its selected profiles and previous slugs beside the replacement values until production cleanup succeeds. Completed retirements move to `retiredRepositories` with their recovery values intact.
 
 `routes.jsonc` contains only slug hashes, subscription names, secret environment names, profile names, and sink mappings. Never reconstruct or manually copy manifest values after an interrupted operation; rerun the identical phase so it reuses the recovery source.
 
@@ -75,7 +75,7 @@ pnpm github:fleet verify --root <checkout-root> [--root <additional-root> ...] -
 pnpm sync
 ```
 
-The common aliases are `-r, --root`, `-m, --manifest`, `-p, --profiles`, `-i, --include-private`, and `-s, --secret-limit`. Repository selection, retirement, and HMAC rotation remain long-only so the repeated root alias stays unambiguous and production mutations remain explicit.
+The common aliases are `-r, --root`, `-m, --manifest`, `-p, --profiles`, `-i, --include-private`, and `-s, --secret-limit`. Repository selection, retirement, HMAC rotation, and slug rotation remain long-only so the repeated root alias stays unambiguous and production mutations remain explicit. `--rotate-slugs` accepts a comma-separated subset of `activity`, `stars`, and `alerts`.
 
 `plan` is read-only. It reports discovery, exclusions, drift, exact additions, GitHub administration blockers, remote KV differences, and projected Worker variable and secret capacity. It must complete without blockers before preparation or production mutation.
 
@@ -122,6 +122,23 @@ pnpm sync
 
 Preparation replaces private local values only for the selected repositories. Apply rewrites their Worker secrets before repairing hooks through authenticated pings. Never use the flag to work around an unexplained manifest or `.dev.vars` mismatch. Rotation cannot be combined with retirement.
 
+## Subscription slug rotation
+
+Use `--rotate-slugs <profiles>` to replace the bearer paths for selected profiles of explicitly selected repositories. Group repositories by the profile subset that needs rotation and use identical arguments for each phase:
+
+```sh
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
+pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
+pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
+pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
+pnpm sync
+```
+
+Preparation saves each previous slug in resumable private manifest state, generates its replacement once, and updates only the corresponding hash in `routes.jsonc`. Inspect and checkpoint both files before production mutation. A repeated prepare before apply reuses the saved replacement instead of generating another value.
+
+Apply puts and authenticates every replacement route before changing GitHub. It retains the previous routes while updating each exact existing hook in place and proving the new path through a GitHub ping. Only after every selected hook succeeds does it delete the previous KV routes, verify their absence, and clear the pending manifest state. A partial rerun discovers hooks by either generation, so delivery continues through the overlap. Slug rotation cannot be combined with retirement, HMAC rotation, or topology-changing `--profiles` selection.
+
 ## Repository retirement
 
 Retirement uses the same phase order with an explicit repository selection on every command. Add `--include-private` on every phase for a private repository:
@@ -145,4 +162,4 @@ Individual subscription and sink retirement remains part of Hookrelay's generic 
 
 Fleet phases emit secret-free progress while they perform remote reads. Wait for the complete result and check the exit status before drawing conclusions. Remote KV inventories use bulk reads, secret values travel through stdin, and diagnostics must not contain repository names alongside private state, KV values, raw slugs, HMACs, or full Hookrelay URLs.
 
-Route writes account for Workers KV eventual consistency. Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Omitted Worker secrets and unrelated repository hooks remain unchanged.
+Route writes account for Workers KV eventual consistency. Apply verifies the central value, probes the public route, and waits through a propagation grace period before creating or updating hooks. Slug rotation keeps the previous route until every replacement hook has passed an authenticated ping. Omitted Worker secrets and unrelated repository hooks remain unchanged.

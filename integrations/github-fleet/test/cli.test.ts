@@ -85,6 +85,23 @@ describe('GitHub fleet CLI', () => {
     ])).toThrow(/cannot be combined/)
   })
 
+  it('requires explicit repositories and isolated profiles for slug rotation', () => {
+    expect(parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO,
+      '--rotate-slugs', 'activity,alerts',
+    ])).toMatchObject({ repositories: [REPO], rotateSlugs: ['activity', 'alerts'] })
+    expect(() => parseGitHubFleetArgs([
+      'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--rotate-slugs', 'activity',
+    ])).toThrow(/requires at least one --repo/)
+    for (const incompatible of ['--retire', '--rotate-hmac', '--profiles']) {
+      const suffix = incompatible === '--profiles' ? [incompatible, 'activity'] : [incompatible]
+      expect(() => parseGitHubFleetArgs([
+        'prepare', '--root', '/repo', '--manifest', 'fleet.json', '--repo', REPO,
+        '--rotate-slugs', 'activity', ...suffix,
+      ])).toThrow(/cannot be combined/)
+    }
+  })
+
   it('documents every phase and option', () => {
     const usage = githubFleetUsage()
     expect(usage).toContain('<plan|prepare|apply|verify>')
@@ -95,5 +112,6 @@ describe('GitHub fleet CLI', () => {
     expect(usage).toContain('-s, --secret-limit')
     expect(usage).toContain('--retire')
     expect(usage).toContain('--rotate-hmac')
+    expect(usage).toContain('--rotate-slugs')
   })
 })
