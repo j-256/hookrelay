@@ -113,6 +113,7 @@ async function recordDisplayResult(
   eventId: string,
   sinkName: string,
   result: FanoutResult,
+  redactErrors = false,
 ): Promise<void> {
   try {
     await updateFanoutResult(env, eventId, sinkName, result)
@@ -122,7 +123,7 @@ async function recordDisplayResult(
       msg: 'delivery.display.failed',
       eventId,
       sinkName,
-      errMsg: errMsg(err),
+      errMsg: redactErrors ? 'Delivery display update failed' : errMsg(err),
     }))
   }
 }
@@ -220,7 +221,7 @@ async function pendingDeliveries(env: Env, eventId?: string): Promise<DeliveryRo
   return result.results ?? []
 }
 
-async function markQueued(env: Env, row: DeliveryRow): Promise<boolean> {
+async function markQueued(env: Env, row: DeliveryRow, redactErrors = false): Promise<boolean> {
   const timestamp = nowIso()
   const updated = await env.EVENTS_DB.prepare(
     `UPDATE deliveries
@@ -235,11 +236,12 @@ async function markQueued(env: Env, row: DeliveryRow): Promise<boolean> {
     row.event_id,
     row.sink_name,
     displayResult('queued', row.attempts, timestamp),
+    redactErrors,
   )
   return true
 }
 
-async function markEnqueueFailure(env: Env, row: DeliveryRow, error: string): Promise<void> {
+async function markEnqueueFailure(env: Env, row: DeliveryRow, error: string, redactErrors = false): Promise<void> {
   const timestamp = nowIso()
   const updated = await env.EVENTS_DB.prepare(
     `UPDATE deliveries
@@ -254,6 +256,7 @@ async function markEnqueueFailure(env: Env, row: DeliveryRow, error: string): Pr
     row.event_id,
     row.sink_name,
     displayResult('pending', row.attempts, timestamp, error),
+    redactErrors,
   )
 }
 
@@ -273,7 +276,7 @@ async function reservePendingForPublish(
   return { ...row, generation: row.generation + 1 }
 }
 
-async function publishPendingRows(env: Env, rows: DeliveryRow[]): Promise<EnqueueSummary> {
+async function publishPendingRows(env: Env, rows: DeliveryRow[], redactErrors = false): Promise<EnqueueSummary> {
   let queued = 0
   let deferred = 0
   for (let offset = 0; offset < rows.length; offset += OUTBOX_BATCH_SIZE) {
@@ -290,7 +293,7 @@ async function publishPendingRows(env: Env, rows: DeliveryRow[]): Promise<Enqueu
           msg: 'delivery.enqueue.reserve_failed',
           eventId: row.event_id,
           sinkName: row.sink_name,
-          errMsg: errMsg(err),
+          errMsg: redactErrors ? 'Queue reservation failed' : errMsg(err),
         }))
       }
     }
@@ -298,10 +301,10 @@ async function publishPendingRows(env: Env, rows: DeliveryRow[]): Promise<Enqueu
     try {
       await env.DELIVERY_QUEUE.sendBatch(reserved.map((row) => ({ body: queueMessage(row) })))
       for (const row of reserved) {
-        if (await markQueued(env, row)) queued += 1
+        if (await markQueued(env, row, redactErrors)) queued += 1
       }
     } catch (err) {
-      const error = `queue enqueue failed: ${errMsg(err)}`
+      const error = redactErrors ? 'Queue publication is deferred' : `queue enqueue failed: ${errMsg(err)}`
       deferred += reserved.length
       console.log(JSON.stringify({
         level: 'error',
@@ -309,7 +312,7 @@ async function publishPendingRows(env: Env, rows: DeliveryRow[]): Promise<Enqueu
         count: reserved.length,
         errMsg: error,
       }))
-      for (const row of reserved) await markEnqueueFailure(env, row, error)
+      for (const row of reserved) await markEnqueueFailure(env, row, error, redactErrors)
     }
   }
   return { queued, deferred }
@@ -320,6 +323,19 @@ export async function enqueuePendingDeliveries(
   eventId?: string,
 ): Promise<EnqueueSummary> {
   return publishPendingRows(env, await pendingDeliveries(env, eventId))
+}
+
+export async function enqueueReviewedDelivery(
+  env: Env,
+  eventId: string,
+  sinkName: string,
+  acceptedGeneration: number,
+): Promise<EnqueueSummary> {
+  const row = await getDelivery(env, eventId, sinkName)
+  if (!row || row.status !== 'pending' || row.generation !== acceptedGeneration) {
+    return { queued: 0, deferred: 0 }
+  }
+  return publishPendingRows(env, [row], true)
 }
 
 export async function prepareDeliveries(

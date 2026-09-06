@@ -403,6 +403,10 @@ When `operations` is configured, scheduled maintenance detects deliveries that e
 
 The Access-protected `/admin/health` page shows delivery totals, the oldest active delivery, recent redacted signals, alert state, last accepted event per subscription, last successful delivery per sink, and configured retention. From a filtered `Needs attention` view, `Retry matching deliveries` opens a confirmation page that rechecks the filters on POST, requires the browser's same origin, redrives only still-exhausted rows, enforces a fixed batch maximum, and reports succeeded, skipped, and capped selections. Individual retry remains available for a single exhausted sink.
 
+## Scoped management
+
+The [scoped management API](docs/management.md) provides a versioned, credential-restricted contract for operator dashboards: bounded redacted reads, exact-state retry reviews, and durable reconciliation receipts. It does not replace route configuration authority or grant raw-event access.
+
 ## Retention
 
 Retention is disabled by omission. Add `retention.r2Days` to manage raw and normalized objects under the `events/` R2 prefix, add `retention.d1Days` to prune persisted event metadata, or configure both. Removing `d1Days` stops D1 pruning after KV sync. Removing `r2Days` makes absence of Hookrelay's managed lifecycle rule the desired state, so a confirmed `pnpm retention apply` removes only that rule and stops future managed R2 expiration. Neither disablement path deletes data directly.

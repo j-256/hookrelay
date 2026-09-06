@@ -10,6 +10,9 @@ import { handleEmail, type IncomingEmailMessage } from './email'
 import { handleHook } from './router'
 import { runOperationalMaintenance } from './operations'
 import { runD1Retention } from './retention'
+import { handleManagement } from './management'
+import { MANAGEMENT_PATH } from './management/contract'
+import { pruneManagementReceipts } from './management/retry'
 import type { DeliveryMessage } from './types'
 
 const ADMIN_ROOT_PATH = '/admin'
@@ -25,6 +28,7 @@ export interface Env {
   DELIVERY_QUEUE: Queue<DeliveryMessage>
   CF_ACCESS_TEAM_DOMAIN: string
   CF_ACCESS_AUD: string
+  MANAGEMENT_CREDENTIALS?: string
   /** JSON binding injected by tests via cloudflareTest() miniflare.bindings */
   TEST_MIGRATIONS?: { name: string; queries: string[] }[]
   /** Set to '1' in test env to bypass CF Access JWT verification; never set in production */
@@ -34,6 +38,9 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
+    if (url.pathname === MANAGEMENT_PATH) {
+      return handleManagement(request, env)
+    }
     if (url.pathname.startsWith('/hook/')) {
       return handleHook(request, env, ctx)
     }
@@ -113,6 +120,11 @@ export default {
         msg: 'operations.maintenance.completed',
         ...operations,
       }))
+    }
+    try {
+      await pruneManagementReceipts(env)
+    } catch {
+      console.log(JSON.stringify({ level: 'warn', msg: 'management.receipts.prune_deferred' }))
     }
   },
 } satisfies ExportedHandler<Env>
