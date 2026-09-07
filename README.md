@@ -28,7 +28,7 @@ Admin: `/admin` redirects to the Cloudflare Access-protected `/admin/events` das
 ## Deploy your own
 
 You will need:
-- A Cloudflare account on the Workers free plan or higher
+- A Cloudflare account on Workers Paid for the checked-in execution ceilings; the Free fallback and its tradeoffs are documented below
 - A custom domain on Cloudflare (the WAF rule and Cloudflare Access only work on a real zone, not `*.workers.dev`)
 - Node 22 + pnpm 11
 - Wrangler authenticated to your account (`npx wrangler login`)
@@ -113,7 +113,19 @@ hookrelay separates configuration by sensitivity. The guiding rule: **nothing se
 | `r2_buckets[].bucket_name` | R2 bucket for raw payloads (bound by name, so there is no id to set) |
 | `queues` | Producer and consumer bindings for per-sink delivery and its dead-letter queue |
 | `triggers.crons` | Five-minute recovery sweep for delivery rows that could not be published to the queue |
+| `limits` | Workers Standard ceilings of 1,000 ms CPU and 1,000 total subrequests per invocation |
+| `ratelimits` | Account-unique Rate Limiting binding namespaces for source, subscription, and coalesced signal budgets |
 | `observability` | Stored Workers Logs are disabled on purpose -- webhook URLs contain the slug (a bearer token) and Cloudflare enriches stored logs with the request URL, which would leak it. See the comment in the file; failure visibility comes from D1 (`/admin/events`) and `wrangler tail` instead. |
+
+### Cost guardrails and Free compatibility
+
+Hookrelay applies a 2,000-request-per-minute source-class budget before hashing the slug or reading KV. Registered source types each receive one counter, while unregistered source names share an `unknown` counter so a scanner cannot evade the guardrail by varying the path. The log event omits the bearer path. After a subscription resolves and is enabled, a separate 1,200-request-per-minute subscription budget runs before the body is read, authenticated, stored in D1 or R2, or published to a queue. A refusal returns `429` with `Retry-After: 60`. A third one-per-minute binding coalesces each subscription's durable `ingress-rate-limited` operational signal so the diagnostic path cannot perform one D1 write per rejected request.
+
+Production D1 observations for the 30 days ending 2026-09-07 recorded a maximum of 547 events for an entire source-minute and 530 events for one subscription-minute. The configured budgets therefore preserve at least about 3.7 times and 2.3 times those respective global observed peaks before Cloudflare's per-location behavior adds further permissiveness. Rate Limiting bindings are intentionally eventually consistent and maintain independent counters in each Cloudflare location, so distributed traffic and counter propagation can exceed these thresholds. They are denial-of-wallet guardrails, not exact quotas or monthly spending caps. Namespace IDs must remain unique within one account; change the checked-in example values if another Worker already uses them. See [Workers Rate Limiting bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/), verified 2026-09-07.
+
+The same configuration caps every invocation at 1,000 ms CPU and 1,000 total subrequests. Seven-day platform data ending 2026-09-07 put ordinary ingress CPU near 5 ms on average and approximately 22.7 ms at p99, but no verified maximum was available; the CPU choice is therefore about 44 times the observed p99, not a claimed max-headroom ratio. The subrequest ceiling preserves the bounded 100-row scheduled outbox and operations sweeps while reducing the Workers Paid default of 10,000. Cloudflare terminates an invocation that exhausts either ceiling. Inspect queue receipts, D1 operational state, and the platform resource-limit outcome before retrying or raising one.
+
+Custom `limits.cpu_ms` and `limits.subrequests` require Workers Standard. A Free deployment must omit the custom `limits` block and rely on Cloudflare's fixed 10 ms CPU, 50 external-subrequest, and 1,000 internal-service-subrequest ceilings. That fallback removes the source-controlled 1,000 ms CPU boundary, and the observed p99 is above the Free CPU allowance, so this production workload is not verified on Free. A smaller deployment can keep subscriptions disabled and run representative signed canaries before enabling ingress, at the cost of providing no live relay until it proves the fixed allowance. The exact platform limits and configuration behavior were verified against [Workers limits](https://developers.cloudflare.com/workers/platform/limits/) and [Wrangler limits configuration](https://developers.cloudflare.com/workers/wrangler/configuration/#limits) on 2026-09-07.
 
 ### 2. Environment variables – your shell or CI
 
@@ -395,7 +407,7 @@ Delivery is at least once. The D1 claim and lease suppress ordinary duplicate qu
 
 ## Operational health
 
-Hookrelay records actionable known-route ingress failures, exhausted deliveries, and stale active deliveries as fixed-code operational signals. Signal summaries are selected from constants, aggregate by a secret-free fingerprint, and never contain request paths, slugs, payloads, exception text, or sink credentials. Unknown routes remain unrecorded so internet scanning cannot create health data.
+Hookrelay records actionable known-route ingress failures, coalesced subscription rate-limit refusals, exhausted deliveries, and stale active deliveries as fixed-code operational signals. Signal summaries are selected from constants, aggregate by a secret-free fingerprint, and never contain request paths, slugs, payloads, exception text, source addresses, or sink credentials. Unknown routes remain unrecorded so internet scanning cannot create health data.
 
 If D1 is temporarily unavailable while a signal is being recorded, the Worker writes a compact fixed-field record with an expiration under `ops-fallback:` in the `SUBS` namespace. Scheduled maintenance imports and deletes those records after D1 recovers. `pnpm sync` preserves fallback keys while reconciling subscriptions and the special operations configuration key.
 

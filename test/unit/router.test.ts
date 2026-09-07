@@ -4,6 +4,7 @@ import '../../src/registry'
 import { handleHook, parseHookPath, SLUG_PATH_RE } from '../../src/router'
 import { registerAdapter } from '../../src/adapters'
 import type { Adapter } from '../../src/adapters'
+import type { Env } from '../../src/index'
 import { hashSubscriptionSlug, subscriptionKvKey, subscriptionKvKeyForSlug } from '../../src/lib/subscription'
 import type { Subscription } from '../../src/types'
 
@@ -38,6 +39,23 @@ const fixture: Adapter = {
       raw: text,
     }
   },
+}
+
+function rateLimiter(success: boolean, keys: string[]): RateLimit {
+  return {
+    async limit({ key }) {
+      keys.push(key)
+      return { success }
+    },
+  } as RateLimit
+}
+
+function rateLimitEnv(overrides: Partial<Pick<Env,
+  | 'HOOK_RATE_LIMIT_SIGNAL'
+  | 'HOOK_SOURCE_RATE_LIMITER'
+  | 'HOOK_SUBSCRIPTION_RATE_LIMITER'
+>>): Env {
+  return { ...env, ...overrides }
 }
 
 beforeAll(async () => {
@@ -95,6 +113,85 @@ describe('handleHook', () => {
     expect(res.status).toBe(404)
     await expect(
       env.EVENTS_DB.prepare('SELECT COUNT(*) AS total FROM operational_signals').first(),
+    ).resolves.toEqual({ total: 0 })
+  })
+
+  it('rate limits a source class before subscription lookup', async () => {
+    const keys: string[] = []
+    const res = await handleHook(
+      new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
+        method: 'POST',
+        body: 'x',
+      }),
+      rateLimitEnv({
+        HOOK_SOURCE_RATE_LIMITER: rateLimiter(false, keys),
+      }),
+      ctx,
+    )
+    expect(res.status).toBe(429)
+    expect(res.headers.get('retry-after')).toBe('60')
+    expect(keys).toEqual(['fixture'])
+  })
+
+  it('shares one limiter class across unregistered source names', async () => {
+    const keys: string[] = []
+    for (const sourceType of ['scanner-a', 'scanner-b']) {
+      const res = await handleHook(
+        new Request(`https://hooks.example.com/hook/${sourceType}/${SUB_SLUG}`, {
+          method: 'POST',
+          body: 'x',
+        }),
+        rateLimitEnv({
+          HOOK_SOURCE_RATE_LIMITER: rateLimiter(false, keys),
+        }),
+        ctx,
+      )
+      expect(res.status).toBe(429)
+    }
+    expect(keys).toEqual(['unknown', 'unknown'])
+  })
+
+  it('rate limits a known subscription before reading or persisting the body', async () => {
+    const sourceKeys: string[] = []
+    const subscriptionKeys: string[] = []
+    const signalKeys: string[] = []
+    const pending: Promise<unknown>[] = []
+    const waitingContext = {
+      waitUntil(promise: Promise<unknown>) { pending.push(promise) },
+      passThroughOnException() {},
+    } as unknown as ExecutionContext
+    const res = await handleHook(
+      new Request(`https://hooks.example.com/hook/fixture/${SUB_SLUG}`, {
+        method: 'POST',
+        body: 'must-not-persist',
+      }),
+      rateLimitEnv({
+        HOOK_RATE_LIMIT_SIGNAL: rateLimiter(true, signalKeys),
+        HOOK_SOURCE_RATE_LIMITER: rateLimiter(true, sourceKeys),
+        HOOK_SUBSCRIPTION_RATE_LIMITER: rateLimiter(false, subscriptionKeys),
+      }),
+      waitingContext,
+    )
+    await Promise.all(pending)
+
+    expect(res.status).toBe(429)
+    expect(res.headers.get('retry-after')).toBe('60')
+    expect(sourceKeys).toEqual(['fixture'])
+    expect(subscriptionKeys).toEqual([SUB_HASH])
+    expect(signalKeys).toEqual([SUB_HASH])
+    await expect(
+      env.EVENTS_DB.prepare(
+        'SELECT code, summary, source, sub_name, occurrences FROM operational_signals',
+      ).first(),
+    ).resolves.toEqual({
+      code: 'ingress-rate-limited',
+      summary: 'A known route exceeded its ingress traffic budget',
+      source: 'fixture',
+      sub_name: 'fixture-sub',
+      occurrences: 1,
+    })
+    await expect(
+      env.EVENTS_DB.prepare('SELECT COUNT(*) AS total FROM events').first(),
     ).resolves.toEqual({ total: 0 })
   })
 

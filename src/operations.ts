@@ -10,6 +10,7 @@ import {
 import type { NormalizedEvent, Severity } from './types'
 
 export const OPERATIONAL_SIGNAL_CODES = [
+  'ingress-rate-limited',
   'ingress-payload-too-large',
   'ingress-adapter-missing',
   'ingress-authentication-rejected',
@@ -28,6 +29,10 @@ interface SignalDefinition {
 }
 
 const SIGNAL_DEFINITIONS: Record<OperationalSignalCode, SignalDefinition> = {
+  'ingress-rate-limited': {
+    severity: 'warning',
+    summary: 'A known route exceeded its ingress traffic budget',
+  },
   'ingress-payload-too-large': {
     severity: 'warning',
     summary: 'A known route rejected an oversized payload',

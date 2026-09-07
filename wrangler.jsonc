@@ -15,6 +15,30 @@
   // The custom domain (route) is managed in the Cloudflare dashboard, not here, so
   // this file carries no account- or domain-identifying values
   "workers_dev": false,
+  "preview_urls": false,
+
+  "limits": {
+    "cpu_ms": 1000,
+    "subrequests": 1000
+  },
+
+  "ratelimits": [
+    {
+      "name": "HOOK_SOURCE_RATE_LIMITER",
+      "namespace_id": "256001",
+      "simple": { "limit": 2000, "period": 60 }
+    },
+    {
+      "name": "HOOK_SUBSCRIPTION_RATE_LIMITER",
+      "namespace_id": "256002",
+      "simple": { "limit": 1200, "period": 60 }
+    },
+    {
+      "name": "HOOK_RATE_LIMIT_SIGNAL",
+      "namespace_id": "256003",
+      "simple": { "limit": 1, "period": 60 }
+    }
+  ],
 
   // Replace these binding ids with your own after running the `wrangler ... create`
   // commands in the README. They are opaque resource handles, not secrets

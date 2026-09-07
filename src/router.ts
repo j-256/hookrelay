@@ -10,6 +10,8 @@ import type { Subscription } from './types'
 export const SLUG_PATH_RE = new RegExp(`^/hook/[a-z0-9-]+/${SUBSCRIPTION_SLUG_PATTERN}$`)
 const HOOK_PATH_RE = new RegExp(`^/hook/([a-z0-9-]+)/(${SUBSCRIPTION_SLUG_PATTERN})$`)
 const MAX_BODY_BYTES = 1024 * 1024
+const RATE_LIMIT_RETRY_SECONDS = 60
+const UNKNOWN_SOURCE_CLASS = 'unknown'
 
 export interface ParsedHookPath {
   sourceType: string
@@ -29,15 +31,42 @@ function json(body: unknown, status: number): Response {
   })
 }
 
+function rateLimited(): Response {
+  return new Response(JSON.stringify({ error: 'too many requests' }), {
+    status: 429,
+    headers: {
+      'content-type': 'application/json',
+      'retry-after': String(RATE_LIMIT_RETRY_SECONDS),
+    },
+  })
+}
+
+async function withinRateLimit(binding: RateLimit, key: string): Promise<boolean> {
+  return (await binding.limit({ key })).success
+}
+
 export async function handleHook(
   request: Request,
   env: Env,
-  _ctx: ExecutionContext,
+  ctx: ExecutionContext,
 ): Promise<Response> {
   const url = new URL(request.url)
   const parsed = parseHookPath(url.pathname)
   if (!parsed) return new Response('not found', { status: 404 })
   const { sourceType, slug } = parsed
+  const adapter = getAdapter(sourceType)
+  if (!await withinRateLimit(
+    env.HOOK_SOURCE_RATE_LIMITER,
+    adapter ? sourceType : UNKNOWN_SOURCE_CLASS,
+  )) {
+    console.log(JSON.stringify({
+      level: 'warn',
+      msg: 'ingress.rate_limited',
+      scope: 'source',
+      sourceType,
+    }))
+    return rateLimited()
+  }
   const slugHash = await hashSubscriptionSlug(slug)
 
   const subRaw = await env.SUBS.get(subscriptionKvKey(slugHash))
@@ -52,6 +81,23 @@ export async function handleHook(
 
   if (sub.source !== sourceType) return new Response('not found', { status: 404 })
   if (!sub.enabled) return new Response(null, { status: 204 })
+
+  if (!await withinRateLimit(env.HOOK_SUBSCRIPTION_RATE_LIMITER, slugHash)) {
+    if (await withinRateLimit(env.HOOK_RATE_LIMIT_SIGNAL, slugHash)) {
+      ctx.waitUntil(recordOperationalSignal(env, {
+        code: 'ingress-rate-limited',
+        source: sub.source,
+        subName: sub.name,
+      }))
+    }
+    console.log(JSON.stringify({
+      level: 'warn',
+      msg: 'ingress.rate_limited',
+      scope: 'subscription',
+      sourceType,
+    }))
+    return rateLimited()
+  }
 
   const declared = Number(request.headers.get('content-length') ?? '0')
   if (declared > MAX_BODY_BYTES) {
@@ -73,7 +119,6 @@ export async function handleHook(
     return new Response('payload too large', { status: 413 })
   }
 
-  const adapter = getAdapter(sourceType)
   if (!adapter) {
     await recordOperationalSignal(env, {
       code: 'ingress-adapter-missing',

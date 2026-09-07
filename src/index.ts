@@ -26,6 +26,9 @@ export interface Env {
   EVENTS_DB: D1Database
   EVENTS_RAW: R2Bucket
   DELIVERY_QUEUE: Queue<DeliveryMessage>
+  HOOK_SOURCE_RATE_LIMITER: RateLimit
+  HOOK_SUBSCRIPTION_RATE_LIMITER: RateLimit
+  HOOK_RATE_LIMIT_SIGNAL: RateLimit
   CF_ACCESS_TEAM_DOMAIN: string
   CF_ACCESS_AUD: string
   MANAGEMENT_CREDENTIALS?: string
