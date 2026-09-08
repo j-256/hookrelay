@@ -61,11 +61,11 @@ beforeEach(async () => {
   })
 })
 
-async function call(command: string, input: Record<string, unknown> = {}) {
+async function call(command: string, input: Record<string, unknown> = {}, target = runtime) {
   return worker.fetch(new Request(`https://hooks.example${MANAGEMENT_PATH}`, {
     method: 'POST', headers: { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' },
     body: JSON.stringify({ command, input: { ...context, ...input } }),
-  }), runtime, ctx)
+  }), target, ctx)
 }
 
 async function result(command: string, input: Record<string, unknown> = {}) {
@@ -241,5 +241,34 @@ describe('reviewed provider policy management', () => {
       .bind('2020-01-01T00:00:00.000Z', plan.planId).run()
     await pruneConfigurationReviews(runtime)
     expect((await env.EVENTS_DB.prepare('SELECT id FROM configuration_receipts WHERE id = ?').bind(plan.planId).first())).toBeNull()
+  })
+
+  it('never reports a conflicting review when acceptance raced the first receipt read', async () => {
+    const plan = await review()
+    let raced = false
+    const database = new Proxy(env.EVENTS_DB, {
+      get(target, key) {
+        if (key === 'prepare') return (sql: string) => {
+          const statement = target.prepare(sql)
+          if (!sql.startsWith('SELECT authority_id AS authorityId')) return statement
+          return { bind: (...params: unknown[]) => ({ all: async () => {
+            if (!raced) {
+              raced = true
+              await result('configuration_policy_apply', { planId: plan.planId })
+            }
+            return statement.bind(...params).all()
+          } }) }
+        }
+        const value = Reflect.get(target, key)
+        return typeof value === 'function' ? value.bind(target) : value
+      },
+    })
+    const racing = new Proxy(runtime, {
+      get(target, key, receiver) { return key === 'EVENTS_DB' ? database : Reflect.get(target, key, receiver) },
+    })
+    const response = await call('configuration_policy_get', { planId: plan.planId }, racing)
+    expect(response.status).toBe(200)
+    expect(await response.json()).toMatchObject({ result: { status: 'accepted', receipt: { revision: 2 } } })
+    expect(raced).toBe(true)
   })
 })

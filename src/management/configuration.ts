@@ -100,10 +100,15 @@ async function findReview(query: ConfigurationQuery, principal: ManagementPrinci
 }
 
 async function reviewResult(query: ConfigurationQuery, principal: ManagementPrincipal, context: ManagementContext, review: ReviewRow) {
-  const receipt = await readConfigurationReceipt(query, review.id, owner(principal, context))
+  const expired = Date.parse(review.expires_at) <= Date.now()
+  let receipt = await readConfigurationReceipt(query, review.id, owner(principal, context))
   const state = await readConfigurationState(query)
-  const status = receipt ? 'accepted' : Date.parse(review.expires_at) <= Date.now() ? 'expired' :
-    state.authorityId !== review.authority_id || state.revision !== review.revision ? 'conflict' : 'ready'
+  const changed = state.authorityId !== review.authority_id || state.revision !== review.revision
+  if (!receipt && (expired || changed)) {
+    // Acceptance can race the first receipt read; terminal evidence must follow the state check
+    receipt = await readConfigurationReceipt(query, review.id, owner(principal, context))
+  }
+  const status = receipt ? 'accepted' : expired ? 'expired' : changed ? 'conflict' : 'ready'
   return {
     planId: review.id, authorityId: review.authority_id, revision: review.revision,
     resourceId: review.resource_id, resourceName: review.resource_name, status,
