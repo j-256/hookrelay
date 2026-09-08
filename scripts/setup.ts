@@ -29,10 +29,17 @@ const NODE_FILE_SYSTEM: AtomicFileSystem = { chmod, lstat, open, rename, unlink 
 export type ProductionResult = 'local-only' | 'previewed' | 'applied'
 
 export const WRANGLER_BULK_SECRET_LIMIT = 100
+const PRIVATE_PROCESS_ENV = Object.freeze({
+  WRANGLER_LOG_SANITIZE: 'true',
+  WRANGLER_WRITE_LOGS: 'false',
+  WRANGLER_SEND_METRICS: 'false',
+})
 
 interface ProcessOptions {
   input?: string
   captureStdout?: boolean
+  privateOutput?: boolean
+  privateInput?: boolean
 }
 
 export function envSegment(value: string): string {
@@ -245,7 +252,12 @@ export async function readSecret(prompt: string): Promise<string> {
 export async function runProcess(command: string, args: string[], options: ProcessOptions = {}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
-      stdio: [options.input === undefined ? 'inherit' : 'pipe', options.captureStdout ? 'pipe' : 'inherit', 'inherit'],
+      ...(options.privateOutput || options.privateInput ? { env: { ...process.env, ...PRIVATE_PROCESS_ENV } } : {}),
+      stdio: [
+        options.input === undefined ? 'inherit' : 'pipe',
+        options.privateOutput ? 'ignore' : options.captureStdout ? 'pipe' : options.privateInput ? 'ignore' : 'inherit',
+        options.privateOutput || options.privateInput ? 'ignore' : 'inherit',
+      ],
     })
     const stdout: Buffer[] = []
 
@@ -264,7 +276,7 @@ export async function runProcess(command: string, args: string[], options: Proce
 }
 
 export async function putWranglerSecret(secret: SecretValue): Promise<void> {
-  await runProcess('npx', ['wrangler', 'secret', 'put', secret.name], { input: `${secret.value}\n` })
+  await runProcess('npx', ['wrangler', 'secret', 'put', secret.name], { input: `${secret.value}\n`, privateOutput: true })
 }
 
 export async function deleteWranglerSecret(name: string): Promise<void> {
@@ -294,6 +306,7 @@ async function patchWranglerSecretsBulk(
 
   await runner('npx', ['wrangler', 'secret', 'bulk'], {
     input: `${JSON.stringify(values)}\n`,
+    privateOutput: true,
   })
   const names = await listWranglerSecrets(runner)
   for (const [name, value] of entries) {

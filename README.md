@@ -155,6 +155,8 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 
 `routes.jsonc` is your real subscription config. It contains a hash of each incoming slug, never the raw slug. It remains **gitignored** because some sink types, such as an unreserved ntfy topic, can still place bearer credentials there. `pnpm sync` validates the file and writes it into the `SUBS`/`SINKS` KV namespaces; the Worker reads only KV at runtime.
 
+KV writes pass values through an owner-only temporary file, never a command argument. The write subprocess suppresses both output streams, disables Wrangler log files and telemetry, and forces log sanitization. The temporary file is removed after success or failure. A failed command reports an unverified write outcome: inspect remote configuration before retrying, because a lost response does not prove the write failed.
+
 | Field | What it is |
 | --- | --- |
 | `baseUrl` | Optional public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. Without it, the command discovers the single production custom domain attached to the Worker through Cloudflare's API and saves the result here. This local setup value is not written to KV. |
@@ -568,6 +570,10 @@ To support a new destination ("Slack"):
    ```
 3. Add the type to `knownSinkTypes` and the schema to `sinkSchemas` in `scripts/sync.ts`.
 4. Tests in `test/unit/sinks/slack.test.ts`.
+
+## Verification
+
+Run `pnpm typecheck` and `pnpm test` before integration. The test command checks the documentation asset and dependency boundaries, runs native Node operator tests, and runs the Worker suite. `pnpm test:node` exercises actual filesystem permissions, private subprocess behavior, and installed Wrangler file-input compatibility against isolated local storage; it does not access production.
 
 ## Versioning and releases
 

@@ -17,6 +17,7 @@ interface RemoteKvBulkObjectEntry {
 }
 
 const BULK_KEYS_FILE = 'keys.json'
+const KV_VALUE_FILE = 'value'
 const REMOTE_KV_BULK_GET_LIMIT = 100
 const REMOTE_KV_BULK_READ_CONCURRENCY = 4
 
@@ -72,7 +73,7 @@ async function bulkReadRemoteKv(
           const output = await runner(
             'npx',
             ['wrangler', 'kv', 'bulk', 'get', keysPath, '--binding', binding, '--remote'],
-            { captureStdout: true },
+            { captureStdout: true, privateInput: true },
           )
           Object.assign(result, parseRemoteKvBulkValues(binding, output, batch))
         }
@@ -101,7 +102,7 @@ export async function listRemoteKv(
   const keysOut = await runner(
     'npx',
     ['wrangler', 'kv', 'key', 'list', '--binding', binding, '--remote'],
-    { captureStdout: true },
+    { captureStdout: true, privateInput: true },
   )
   const keys = JSON.parse(keysOut) as Array<{ name: string }>
   const out: Record<string, string> = {}
@@ -135,7 +136,18 @@ export async function putRemoteKv(
   value: string,
   runner: ProcessRunner = runProcess,
 ): Promise<void> {
-  await runner('npx', ['wrangler', 'kv', 'key', 'put', key, value, '--binding', binding, '--remote'])
+  const directory = await mkdtemp(join(tmpdir(), 'hookrelay-kv-write-'))
+  try {
+    const valuePath = join(directory, KV_VALUE_FILE)
+    await writeFile(valuePath, value, { mode: 0o600, flag: 'wx' })
+    await runner('npx', [
+      'wrangler', 'kv', 'key', 'put', key, '--path', valuePath, '--binding', binding, '--remote',
+    ], { privateOutput: true })
+  } catch {
+    throw new Error(`KV write outcome is unverified in ${binding}; inspect remote configuration before retrying`)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
 }
 
 export async function deleteRemoteKv(
