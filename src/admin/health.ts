@@ -1,4 +1,5 @@
 import type { Env } from '../index'
+import { readRuntimeConfiguration } from '../configuration/authority'
 import {
   OPERATIONS_CONFIG_KEY,
   parseOperationsConfig,
@@ -152,8 +153,8 @@ export async function handleAdminHealth(req: Request, env: Env): Promise<Respons
     env.EVENTS_DB.prepare(
       `SELECT updated_at FROM maintenance_state WHERE key = 'retention:last-success'`,
     ).first<{ updated_at: string }>(),
-    env.SUBS.get(OPERATIONS_CONFIG_KEY),
-    env.SUBS.get(RETENTION_CONFIG_KEY),
+    readRuntimeConfiguration(env, 'SUBS', OPERATIONS_CONFIG_KEY),
+    readRuntimeConfiguration(env, 'SUBS', RETENTION_CONFIG_KEY),
   ])
 
   const totals = new Map((totalsResult.results ?? []).map((row) => [row.state, row.total]))

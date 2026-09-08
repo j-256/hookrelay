@@ -1,4 +1,5 @@
 import PostalMime, { type Address, type Email } from 'postal-mime'
+import { readRuntimeConfiguration } from './configuration/authority'
 import { ingestEvent } from './ingest'
 import type { Env } from './index'
 import {
@@ -220,7 +221,7 @@ async function loadSubscription(
   slug: string,
 ): Promise<{ subscription: Subscription; hash: string }> {
   const hash = await hashSubscriptionSlug(slug)
-  const rawSubscription = await env.SUBS.get(subscriptionKvKey(hash))
+  const rawSubscription = await readRuntimeConfiguration(env, 'SUBS', subscriptionKvKey(hash))
   if (!rawSubscription) reject('Unknown email route')
 
   let subscription: Subscription

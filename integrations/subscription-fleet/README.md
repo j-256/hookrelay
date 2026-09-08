@@ -6,6 +6,8 @@ The integration is optional. Ordinary CloudEvents subscriptions can continue to 
 
 ## Prerequisites
 
+This integration operates only in legacy KV configuration mode. Its CLI checks the provider authority before entering a workflow and requires D1 Read permission plus the repository's configuration-authority migration. Active-authority enrollment and reconciliation are unavailable through this integration; do not activate while depending on these phases. See [provider-owned configuration](../../docs/configuration-authority.md) for the activation and recovery boundary.
+
 Run every command from the Hookrelay repository root. Before managing a subscription, provide:
 
 - A deployed Hookrelay Worker with `routes.jsonc`, `.dev.vars`, and a public HTTPS `baseUrl`

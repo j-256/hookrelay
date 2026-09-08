@@ -2,7 +2,7 @@
 
 Run `pnpm commands` for a one-screen reference to routine setup, sync, development, and deployment commands.
 
-Hookrelay is a small, provider-agnostic webhook notification gateway for Cloudflare Workers. Add adapters for new webhook senders, receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Routing lives in KV, inbound bearer credentials are represented there by hashes, and recoverable credentials live in Wrangler secrets.
+Hookrelay is a small, provider-agnostic webhook notification gateway for Cloudflare Workers. Add adapters for new webhook senders, receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Routing starts in KV and can move to a separately activated [provider-owned D1 configuration authority](docs/configuration-authority.md). Inbound bearer credentials are represented by hashes, and recoverable credentials live in Wrangler secrets.
 
 ![The Hookrelay admin events dashboard showing normalized webhook events and independent sink-delivery states](docs/screenshots/cover.png)
 
@@ -153,9 +153,11 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 
 ### 4. KV via `routes.jsonc` – synced with `pnpm sync`
 
-`routes.jsonc` is your real subscription config. It contains a hash of each incoming slug, never the raw slug. It remains **gitignored** because some sink types, such as an unreserved ntfy topic, can still place bearer credentials there. `pnpm sync` validates the file and writes it into the `SUBS`/`SINKS` KV namespaces; the Worker reads only KV at runtime.
+In legacy configuration mode, `routes.jsonc` is your subscription config. It contains a hash of each incoming slug, never the raw slug. It remains **gitignored** because some sink types, such as an unreserved ntfy topic, can still place bearer credentials there. `pnpm sync` validates the file and writes it into the `SUBS`/`SINKS` KV namespaces. The runtime checks the provider authority before reading KV; an active D1 authority never falls back to KV. See [configuration authority](docs/configuration-authority.md) for explicit migration, supported online policy controls and recovery.
 
 KV writes pass values through an owner-only temporary file, never a command argument. The write subprocess suppresses both output streams, disables Wrangler log files and telemetry, and forces log sanitization. The temporary file is removed after success or failure. A failed command reports an unverified write outcome: inspect remote configuration before retrying, because a lost response does not prove the write failed.
+
+Private KV reads capture values only in process memory while suppressing child diagnostics and Wrangler log files. Secret installation uses the same protected subprocess settings with values supplied through stdin.
 
 | Field | What it is |
 | --- | --- |

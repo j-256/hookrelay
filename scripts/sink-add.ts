@@ -1,3 +1,4 @@
+import { requireLegacyConfiguration } from './configuration-client'
 import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -181,6 +182,7 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSinkAddArgs(argv)
+  await requireLegacyConfiguration()
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')

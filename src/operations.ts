@@ -1,5 +1,6 @@
 import { dispatchSink } from './fanout'
 import type { Env } from './index'
+import { readRuntimeConfiguration } from './configuration/authority'
 import { sha256Hex } from './lib/hmac'
 import {
   OPERATIONS_CONFIG_KEY,
@@ -248,7 +249,7 @@ export async function importOperationalFallbacks(env: Env): Promise<number> {
 
 export async function loadOperationsConfig(env: Env): Promise<OperationsConfig | null> {
   try {
-    return parseOperationsConfig(await env.SUBS.get(OPERATIONS_CONFIG_KEY))
+    return parseOperationsConfig(await readRuntimeConfiguration(env, 'SUBS', OPERATIONS_CONFIG_KEY))
   } catch {
     return null
   }

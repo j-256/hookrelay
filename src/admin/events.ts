@@ -1,4 +1,5 @@
 import type { Env } from '../index'
+import { readRuntimeConfiguration } from '../configuration/authority'
 import { redriveDelivery } from '../delivery'
 import type { DeliveryDecisionReason, DeliveryStatus, FanoutResults } from '../types'
 import { parseRetentionConfig, RETENTION_CONFIG_KEY } from '../lib/runtime-config'
@@ -535,7 +536,7 @@ export async function handleAdminRaw(req: Request, env: Env, eventId: string): P
 
   let r2Days: number | undefined
   try {
-    r2Days = parseRetentionConfig(await env.SUBS.get(RETENTION_CONFIG_KEY))?.r2Days
+    r2Days = parseRetentionConfig(await readRuntimeConfiguration(env, 'SUBS', RETENTION_CONFIG_KEY))?.r2Days
   } catch {}
   const ageDays = (Date.now() - new Date(row.received_at).getTime()) / 86400e3
   if (r2Days !== undefined && ageDays > r2Days) {

@@ -13,6 +13,7 @@ import { runD1Retention } from './retention'
 import { handleManagement } from './management'
 import { MANAGEMENT_PATH } from './management/contract'
 import { pruneManagementReceipts } from './management/retry'
+import { pruneConfigurationReviews } from './management/configuration'
 import type { DeliveryMessage } from './types'
 
 const ADMIN_ROOT_PATH = '/admin'
@@ -126,6 +127,7 @@ export default {
     }
     try {
       await pruneManagementReceipts(env)
+      await pruneConfigurationReviews(env)
     } catch {
       console.log(JSON.stringify({ level: 'warn', msg: 'management.receipts.prune_deferred' }))
     }

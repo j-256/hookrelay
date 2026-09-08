@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { Env } from '../index'
+import { ConfigurationError } from '../configuration/authority'
 import { authenticateManagement, authorizeManagement } from './access'
 import {
   MANAGEMENT_VERSION, ManagementError, managementEnvelope, managementInputs,
@@ -7,6 +8,10 @@ import {
 } from './contract'
 import { readDeliveries, readDelivery, readSnapshot, readSubscriptions } from './read'
 import { applyRetry, planRetry, readRetry } from './retry'
+import {
+  applyConfigurationPolicy, planConfigurationPolicy, readConfiguration, readConfigurationPage,
+  readConfigurationPolicy, readConfigurationSubscription,
+} from './configuration'
 
 export async function handleManagement(request: Request, env: Env): Promise<Response> {
   try {
@@ -42,13 +47,36 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
       case 'retry_get':
         result = await readRetry(env, principal, managementInputs.retry_get.parse(envelope.input))
         break
+      case 'configuration': result = await readConfiguration(env, principal); break
+      case 'configuration_subscriptions':
+        result = await readConfigurationPage(env, 'subscriptions', managementInputs.configuration_subscriptions.parse(envelope.input))
+        break
+      case 'configuration_subscription':
+        result = await readConfigurationSubscription(env, managementInputs.configuration_subscription.parse(envelope.input).resourceId)
+        break
+      case 'configuration_sinks':
+        result = await readConfigurationPage(env, 'sinks', managementInputs.configuration_sinks.parse(envelope.input))
+        break
+      case 'configuration_policy_plan':
+        result = await planConfigurationPolicy(env, principal, managementInputs.configuration_policy_plan.parse(envelope.input))
+        break
+      case 'configuration_policy_apply':
+        result = await applyConfigurationPolicy(env, principal, managementInputs.configuration_policy_apply.parse(envelope.input))
+        break
+      case 'configuration_policy_get':
+        result = await readConfigurationPolicy(env, principal, managementInputs.configuration_policy_get.parse(envelope.input))
+        break
     }
     return managementResponse({
       version: MANAGEMENT_VERSION,
-      capabilities: principal.capabilities,
+      capabilities: principal.capabilities.filter(capability => capability !== 'configure'),
       result,
     })
   } catch (error) {
+    if (error instanceof ConfigurationError) {
+      const statuses = { unavailable: 503, validation: 400, conflict: 409, expired: 409, not_found: 404, inactive: 409 }
+      return managementResponse({ error: { code: error.code, message: error.message } }, statuses[error.code])
+    }
     if (error instanceof ManagementError) {
       return managementResponse({ error: { code: error.code, message: error.message } }, error.status)
     }

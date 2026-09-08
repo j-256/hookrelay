@@ -1,4 +1,5 @@
 import type { Env } from './index'
+import { readRuntimeConfiguration } from './configuration/authority'
 import { parseRetentionConfig, RETENTION_CONFIG_KEY } from './lib/runtime-config'
 import { recordOperationalSignal, resolveOperationalSignal } from './operations'
 
@@ -14,18 +15,20 @@ export type RetentionMaintenanceResult =
   | { status: 'failed'; deleted: 0 }
 
 async function loadRetentionConfig(env: Env): Promise<ReturnType<typeof parseRetentionConfig>> {
-  try {
-    return parseRetentionConfig(await env.SUBS.get(RETENTION_CONFIG_KEY))
-  } catch {
-    return null
-  }
+  return parseRetentionConfig(await readRuntimeConfiguration(env, 'SUBS', RETENTION_CONFIG_KEY))
 }
 
 export async function runD1Retention(
   env: Env,
   now = new Date(),
 ): Promise<RetentionMaintenanceResult> {
-  const retention = await loadRetentionConfig(env)
+  let retention: ReturnType<typeof parseRetentionConfig>
+  try {
+    retention = await loadRetentionConfig(env)
+  } catch {
+    await recordOperationalSignal(env, { code: 'retention-prune-rejected' })
+    return { status: 'failed', deleted: 0 }
+  }
   if (!retention?.d1Days) return { status: 'disabled', deleted: 0 }
 
   const timestamp = now.toISOString()

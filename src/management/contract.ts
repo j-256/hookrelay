@@ -1,4 +1,6 @@
 import { z } from 'zod'
+import { authorityIdSchema } from '../configuration/authority'
+import { subscriptionPolicySchema } from '../configuration/policy'
 
 export const MANAGEMENT_PATH = '/admin/api/v1'
 export const MANAGEMENT_VERSION = 1
@@ -38,6 +40,20 @@ export const managementInputs = {
   }).strict(),
   retry_apply: context.extend({ planId: z.uuid() }).strict(),
   retry_get: context.extend({ planId: z.uuid() }).strict(),
+  configuration: context,
+  configuration_subscriptions: context.extend({
+    cursor: z.uuid().nullable().default(null), revision: z.number().int().nonnegative(),
+  }).strict(),
+  configuration_subscription: context.extend({ resourceId: z.uuid() }).strict(),
+  configuration_sinks: context.extend({
+    cursor: z.uuid().nullable().default(null), revision: z.number().int().nonnegative(),
+  }).strict(),
+  configuration_policy_plan: context.extend({
+    planId: z.uuid(), authorityId: authorityIdSchema, revision: z.number().int().nonnegative(),
+    resourceId: z.uuid(), policy: subscriptionPolicySchema,
+  }).strict(),
+  configuration_policy_apply: context.extend({ planId: z.uuid() }).strict(),
+  configuration_policy_get: context.extend({ planId: z.uuid() }).strict(),
 } as const
 export const managementEnvelope = z.object({
   command: z.enum(Object.keys(managementInputs) as [keyof typeof managementInputs]),

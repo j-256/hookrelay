@@ -1,3 +1,4 @@
+import { requireLegacyConfiguration } from './configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { subscriptionKvKey } from '../src/lib/subscription'
@@ -419,7 +420,9 @@ async function main(): Promise<void> {
     console.log(subscriptionRetirementUsage())
     return
   }
-  await runSubscriptionRetirement(parseSubscriptionRetirementArgs(argv))
+  const options = parseSubscriptionRetirementArgs(argv)
+  await requireLegacyConfiguration()
+  await runSubscriptionRetirement(options)
 }
 
 if (import.meta.main) {

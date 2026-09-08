@@ -6,6 +6,8 @@ The integration discovers repositories, maintains a private recovery manifest, p
 
 ## Prerequisites
 
+This integration operates only in legacy KV configuration mode. Its CLI checks the provider authority before entering a workflow and requires D1 Read permission plus the repository's configuration-authority migration. Active-authority enrollment, rotation and retirement are unavailable through this integration; do not activate while depending on these phases. See [provider-owned configuration](../../docs/configuration-authority.md) for the activation and recovery boundary.
+
 Run every command from the Hookrelay repository root. Before managing a fleet, provide:
 
 - A deployed Hookrelay Worker with its custom domain and Cloudflare resources configured

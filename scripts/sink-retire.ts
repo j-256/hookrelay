@@ -1,3 +1,4 @@
+import { requireLegacyConfiguration } from './configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
@@ -380,7 +381,9 @@ async function main(): Promise<void> {
     console.log(sinkRetirementUsage())
     return
   }
-  await runSinkRetirement(parseSinkRetirementArgs(argv))
+  const options = parseSinkRetirementArgs(argv)
+  await requireLegacyConfiguration()
+  await runSinkRetirement(options)
 }
 
 if (import.meta.main) {

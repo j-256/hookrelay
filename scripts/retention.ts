@@ -1,3 +1,4 @@
+import { requireLegacyConfiguration } from './configuration-client'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { readFile } from 'node:fs/promises'
 import { parseRoutes } from './sync'
@@ -293,7 +294,9 @@ async function main(): Promise<void> {
     console.log(retentionUsage())
     return
   }
-  await runRetentionCommand(parseRetentionArgs(argv))
+  const options = parseRetentionArgs(argv)
+  await requireLegacyConfiguration()
+  await runRetentionCommand(options)
 }
 
 if (import.meta.main) {

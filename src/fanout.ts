@@ -1,4 +1,5 @@
 import { getSink } from './sinks'
+import { readRuntimeConfiguration } from './configuration/authority'
 import type { Env } from './index'
 import { HttpError } from './lib/http'
 import type { NormalizedEvent, SinkDeliveryContext } from './types'
@@ -27,19 +28,17 @@ export async function dispatchSink(
 ): Promise<DispatchResult> {
   let raw: string | null
   try {
-    raw = await env.SINKS.get(`sink:${sinkName}`)
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { ok: false, errMsg: `sink KV read failed: ${msg}` }
+    raw = await readRuntimeConfiguration(env, 'SINKS', `sink:${sinkName}`)
+  } catch {
+    return { ok: false, errMsg: 'sink configuration is unavailable' }
   }
-  if (!raw) return { ok: false, errMsg: `sink not found in KV: ${sinkName}` }
+  if (!raw) return { ok: false, errMsg: `sink configuration not found: ${sinkName}` }
 
   let cfg: SinkConfig
   try {
     cfg = JSON.parse(raw) as SinkConfig
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err)
-    return { ok: false, errMsg: `sink config not JSON: ${msg}` }
+  } catch {
+    return { ok: false, errMsg: 'sink configuration is not valid JSON' }
   }
 
   const sink = getSink(cfg.type)

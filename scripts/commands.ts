@@ -8,6 +8,11 @@ export function commandReference(): string {
   return [
     'Hookrelay quick reference',
     '',
+    'Provider-owned configuration',
+    '  pnpm configuration --help',
+    '      Read authority state, export privately, review policy imports, and reconcile receipts',
+    '      Activation is explicit; legacy routes.jsonc workflows below refuse an active authority',
+    '',
     'Guided setup',
     '  pnpm sink:add <name> <discord|webhook>',
     '      Add a Discord or signed generic webhook sink, then offer to install and sync it',

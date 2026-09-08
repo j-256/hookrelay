@@ -25,6 +25,7 @@ import { getSourceProfile, KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { githubEventTypeFilter, parseGitHubEventSelection } from './providers/github/event-profiles'
 import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
 import { listWranglerSecrets } from './setup'
+import { requireLegacyConfiguration } from './configuration-client'
 
 export { printableKvKey } from './kv'
 
@@ -506,6 +507,7 @@ async function main() {
     return
   }
   const { routes: routesOption, yes } = parseSyncArgs(argv)
+  await requireLegacyConfiguration()
   const routesPath = resolve(routesOption ?? 'routes.jsonc')
   const text = await readFile(routesPath, 'utf8')
   const routes = parseRoutes(text)

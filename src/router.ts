@@ -1,4 +1,5 @@
 import { getAdapter } from './adapters'
+import { readRuntimeConfiguration } from './configuration/authority'
 import { ingestEvent } from './ingest'
 import { withSubscriptionFallbackUrl } from './lib/event-url'
 import { hashSubscriptionSlug, SUBSCRIPTION_SLUG_PATTERN, subscriptionKvKey } from './lib/subscription'
@@ -69,7 +70,7 @@ export async function handleHook(
   }
   const slugHash = await hashSubscriptionSlug(slug)
 
-  const subRaw = await env.SUBS.get(subscriptionKvKey(slugHash))
+  const subRaw = await readRuntimeConfiguration(env, 'SUBS', subscriptionKvKey(slugHash))
   if (!subRaw) return new Response('not found', { status: 404 })
   let sub: Subscription
   try {

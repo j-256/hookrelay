@@ -1,3 +1,4 @@
+import { requireLegacyConfiguration } from '../../configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
@@ -154,6 +155,7 @@ async function main(): Promise<void> {
     return
   }
   const options = parseGitHubSubscriptionEventsArgs(argv)
+  await requireLegacyConfiguration()
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')

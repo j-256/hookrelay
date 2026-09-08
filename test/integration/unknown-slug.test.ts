@@ -1,7 +1,11 @@
-import { describe, expect, it } from 'vitest'
-import { env } from 'cloudflare:test'
+import { beforeAll, describe, expect, it } from 'vitest'
+import { applyD1Migrations, env } from 'cloudflare:test'
 import worker from '../../src/index'
 import { subscriptionKvKeyForSlug } from '../../src/lib/subscription'
+
+beforeAll(async () => {
+  await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
+})
 
 describe('unknown slug', () => {
   it('returns 404 for slug-shape paths whose KV entry is missing', async () => {

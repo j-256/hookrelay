@@ -1,5 +1,6 @@
 import { z } from 'zod'
 import type { Env } from '../index'
+import { CONFIGURATION_MODE, authorityIdSchema, configurationQuery, readConfigurationState, type ConfigurationEntry } from '../configuration/authority'
 import { OPERATIONAL_SIGNAL_CODES } from '../operations'
 import { DELIVERY_DECISION_REASONS, SEVERITIES } from '../types'
 import {
@@ -78,6 +79,36 @@ const subscriptionSchema = z.object({
 })
 
 export async function readSubscriptions(env: Env, cursor: string | null) {
+  const query = configurationQuery(env.EVENTS_DB)
+  const state = await readConfigurationState(query)
+  if (state.mode === CONFIGURATION_MODE.ACTIVE) {
+    const cursorPrefix = 'configuration:'
+    const parts = cursor?.startsWith(cursorPrefix) ? cursor.slice(cursorPrefix.length).split(':') : []
+    const [authorityId, revision, last] = parts
+    if (cursor && (parts.length !== 3 || !authorityIdSchema.safeParse(authorityId).success ||
+        authorityId !== state.authorityId || revision !== String(state.revision) || !z.uuid().safeParse(last).success)) {
+      throw new ManagementError('cursor_invalid', 409, 'Subscription inventory changed; restart pagination')
+    }
+    const rows = await query<ConfigurationEntry>({
+      sql: `SELECT resource_id AS resourceId, value FROM configuration_entries
+        WHERE namespace = 'SUBS' AND entry_key LIKE 'sub:sha256:%' AND resource_id > ? ORDER BY resource_id LIMIT ?`,
+      params: [last ?? '', MANAGEMENT_LIMITS.PAGE_SIZE + 1],
+    })
+    const observed = await readConfigurationState(query)
+    if (observed.authorityId !== state.authorityId || observed.revision !== state.revision || observed.mode !== state.mode) {
+      throw new ManagementError('cursor_invalid', 409, 'Subscription inventory changed; restart pagination')
+    }
+    const candidates = rows.slice(0, MANAGEMENT_LIMITS.PAGE_SIZE)
+    return {
+      items: candidates.map(entry => {
+        try { return metadata(subscriptionSchema, JSON.parse(entry.value)) } catch {
+          throw new ManagementError('metadata_invalid', 502, 'Subscription metadata could not be read safely')
+        }
+      }),
+      nextCursor: rows.length > MANAGEMENT_LIMITS.PAGE_SIZE ? `${cursorPrefix}${state.authorityId}:${state.revision}:${candidates.at(-1)!.resourceId}` : null,
+      disappeared: 0, observedAt: new Date().toISOString(),
+    }
+  }
   const page = await env.SUBS.list({
     prefix: 'sub:sha256:', limit: MANAGEMENT_LIMITS.PAGE_SIZE,
     ...(cursor ? { cursor } : {}),

@@ -1,4 +1,4 @@
-import { env } from 'cloudflare:test'
+import { applyD1Migrations, env } from 'cloudflare:test'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { dispatchSink } from '../../src/fanout'
 import { HttpError } from '../../src/lib/http'
@@ -42,7 +42,8 @@ const rateLimitSink: Sink<{}> = {
   send: rateLimitSpy,
 }
 
-beforeAll(() => {
+beforeAll(async () => {
+  await applyD1Migrations(env.EVENTS_DB, env.TEST_MIGRATIONS!)
   for (const sink of [okSink, failSink, rateLimitSink]) {
     try { registerSink(sink) } catch {}
   }
