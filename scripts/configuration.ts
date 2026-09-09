@@ -1,4 +1,4 @@
-import { lstat, open, unlink } from 'node:fs/promises'
+import { open, unlink } from 'node:fs/promises'
 import { constants } from 'node:fs'
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
@@ -96,11 +96,9 @@ export function parseConfigurationArgs(argv: string[]): ConfigurationOptions | n
 export async function readPrivateConfigurationFile(path: string): Promise<string> {
   let file: Awaited<ReturnType<typeof open>> | undefined
   try {
-    const info = await lstat(path)
-    if (!info.isFile() || info.isSymbolicLink() || (info.mode & 0o777) !== 0o600 || info.size > PRIVATE_CONFIGURATION_FILE_BYTES) throw new Error()
     file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW)
     const opened = await file.stat()
-    if (!opened.isFile() || (opened.mode & 0o777) !== 0o600 || opened.ino !== info.ino || opened.dev !== info.dev || opened.size > PRIVATE_CONFIGURATION_FILE_BYTES) throw new Error()
+    if (!opened.isFile() || (opened.mode & 0o777) !== 0o600 || opened.size > PRIVATE_CONFIGURATION_FILE_BYTES) throw new Error()
     const text = await file.readFile('utf8')
     if (Buffer.byteLength(text) > PRIVATE_CONFIGURATION_FILE_BYTES) throw new Error()
     return text

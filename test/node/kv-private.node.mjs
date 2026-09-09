@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { lstat, mkdtemp, readFile, rm } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { lstat, mkdtemp, open, rm } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
@@ -18,12 +19,17 @@ test('KV values use exact owner-only file input, not arguments or output', async
   let observed
   await putRemoteKv('SINKS', KEY, PRIVATE, async (command, args, options) => {
     valuePath = args[args.indexOf('--path') + 1]
-    const file = await lstat(valuePath)
-    observed = {
-      command, prefix: args.slice(0, 5), privateArgument: args.includes(PRIVATE),
-      exactValue: await readFile(valuePath, 'utf8') === PRIVATE,
-      file: file.isFile(), symlink: file.isSymbolicLink(), mode: file.mode & 0o777,
-      directoryMode: (await lstat(dirname(valuePath))).mode & 0o777, options,
+    const handle = await open(valuePath, constants.O_RDONLY | constants.O_NOFOLLOW)
+    try {
+      const file = await handle.stat()
+      observed = {
+        command, prefix: args.slice(0, 5), privateArgument: args.includes(PRIVATE),
+        exactValue: await handle.readFile('utf8') === PRIVATE,
+        file: file.isFile(), symlink: file.isSymbolicLink(), mode: file.mode & 0o777,
+        directoryMode: (await lstat(dirname(valuePath))).mode & 0o777, options,
+      }
+    } finally {
+      await handle.close()
     }
     return ''
   })

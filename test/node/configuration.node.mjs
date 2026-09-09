@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { chmod, lstat, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { mkdtemp, open, readFile, rm, symlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -37,18 +38,23 @@ test('private configuration files have real restrictive modes and cannot overwri
   const link = join(directory, 'link.json')
   try {
     await writeNewPrivateConfigurationFile(target, { private: PRIVATE })
-    assert.equal((await lstat(target)).mode & 0o777, 0o600)
-    assert.deepEqual(JSON.parse(await readPrivateConfigurationFile(target)), { private: PRIVATE })
-    await assert.rejects(writeNewPrivateConfigurationFile(target, {}), { code: 'validation' })
-    assert.match(await readFile(target, 'utf8'), new RegExp(PRIVATE))
-    await symlink(target, link)
-    await assert.rejects(readPrivateConfigurationFile(link), { code: 'validation' })
-    await assert.rejects(writeNewPrivateConfigurationFile(link, {}), { code: 'validation' })
-    await chmod(target, 0o644)
-    await assert.rejects(readPrivateConfigurationFile(target), { code: 'validation' })
-    await chmod(target, 0o600)
-    await writeFile(target, 'x'.repeat(1024 * 1024 + 1))
-    await assert.rejects(readPrivateConfigurationFile(target), { code: 'validation' })
+    const targetFile = await open(target, constants.O_RDWR | constants.O_NOFOLLOW)
+    try {
+      assert.equal((await targetFile.stat()).mode & 0o777, 0o600)
+      assert.deepEqual(JSON.parse(await readPrivateConfigurationFile(target)), { private: PRIVATE })
+      await assert.rejects(writeNewPrivateConfigurationFile(target, {}), { code: 'validation' })
+      assert.match(await targetFile.readFile('utf8'), new RegExp(PRIVATE))
+      await symlink(target, link)
+      await assert.rejects(readPrivateConfigurationFile(link), { code: 'validation' })
+      await assert.rejects(writeNewPrivateConfigurationFile(link, {}), { code: 'validation' })
+      await targetFile.chmod(0o644)
+      await assert.rejects(readPrivateConfigurationFile(target), { code: 'validation' })
+      await targetFile.chmod(0o600)
+      await targetFile.truncate(1024 * 1024 + 1)
+      await assert.rejects(readPrivateConfigurationFile(target), { code: 'validation' })
+    } finally {
+      await targetFile.close()
+    }
     await assert.rejects(readPrivateConfigurationFile(directory), { code: 'validation' })
   } finally { await rm(directory, { recursive: true, force: true }) }
 })
