@@ -1,8 +1,7 @@
-import { requireLegacyConfiguration } from './configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
-import { readRemoteKvSnapshot, type RemoteKvSnapshot } from './kv'
+import type { RemoteKvSnapshot } from './kv'
 import {
   archiveSink,
   captureSecretValues,
@@ -25,7 +24,8 @@ import {
   writePrivateText,
   writeText,
 } from './setup'
-import { parseRoutes, type Routes, type SinkRef } from './sync'
+import { parseRoutes, type ProviderSyncScope, type Routes, type SinkRef } from './sync'
+import { readProviderConfiguration } from './provider-configuration'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -45,7 +45,7 @@ export interface SinkRetirementDependencies {
   writeText(path: string, text: string): Promise<void>
   writePrivateText(path: string, text: string): Promise<void>
   readKv(): Promise<RemoteKvSnapshot>
-  runSync(apply: boolean): Promise<void>
+  runSync(apply: boolean, routesPath?: string, scope?: ProviderSyncScope): Promise<void>
   confirm(question: string): Promise<boolean>
   countActiveDeliveries(wranglerText: string, sinkName: string): Promise<number>
   listSecrets(): Promise<Set<string>>
@@ -65,7 +65,7 @@ const DEFAULT_DEPENDENCIES: SinkRetirementDependencies = {
   readPrivateText: readPrivateOptionalText,
   writeText,
   writePrivateText,
-  readKv: readRemoteKvSnapshot,
+  readKv: () => readProviderConfiguration(),
   runSync,
   confirm,
   countActiveDeliveries: (wranglerText, sinkName) => countActiveSinkDeliveries(wranglerText, sinkName),
@@ -79,8 +79,8 @@ export function sinkRetirementUsage(): string {
     'usage: pnpm sink:retire <name> --manifest <file> [--finalize] [-y]',
     '',
     'phases:',
-    '  default     Move an unused active sink to retiredSinks and verify KV',
-    '  --finalize  Require no delivery references, remove KV, and clean safe secrets',
+    '  default     Move an unused active sink to retiredSinks and verify provider state',
+    '  --finalize  Require no delivery references, remove provider state, and clean safe secrets',
     '',
     'options:',
     '  -m, --manifest <file>  Private versioned recovery manifest',
@@ -237,13 +237,16 @@ async function prepareSinkRetirement(
   await persistManifest(paths.manifest, manifest, dependencies)
   if (result.changed) await dependencies.writeText(paths.routes, result.routesText)
   dependencies.log(`${result.changed ? 'Staged' : 'Already staged'} sink retirement for ${options.name}`)
-  await dependencies.runSync(false)
-  if (!options.yes && !(await dependencies.confirm(`Apply the staged sink ${options.name} state to production KV?`))) {
-    dependencies.log('Production KV was not changed')
+  const scope: ProviderSyncScope = {
+    puts: [{ namespace: 'SINKS', key: `sink:${options.name}` }],
+  }
+  await dependencies.runSync(false, undefined, scope)
+  if (!options.yes && !(await dependencies.confirm(`Apply the staged sink ${options.name} state to provider configuration?`))) {
+    dependencies.log('Production configuration was not changed')
     return 'cancelled'
   }
-  await dependencies.runSync(true)
-  dependencies.log(`Verified staged sink ${options.name} in production KV`)
+  await dependencies.runSync(true, undefined, scope)
+  dependencies.log(`Verified staged sink ${options.name} in provider configuration`)
   return options.yes ? 'applied' : 'prepared'
 }
 
@@ -310,7 +313,7 @@ async function finalizeSinkRetirement(
     return 'complete'
   }
   if (local && remote.sinks[`sink:${options.name}`] === undefined) {
-    throw new Error(`sink ${options.name} is not present in production KV; apply the staged phase first`)
+    throw new Error(`sink ${options.name} is not present in provider configuration; apply the staged phase first`)
   }
   const references = routes.subs.filter((subscription) => subscription.sinks.includes(options.name))
   if (references.length > 0) {
@@ -335,15 +338,18 @@ async function finalizeSinkRetirement(
     manifest = updateArchive(manifest, options.name, { localRemoved: true })
     await persistManifest(paths.manifest, manifest, dependencies)
   }
-  await dependencies.runSync(false)
+  const scope: ProviderSyncScope = {
+    deletes: [{ namespace: 'SINKS', key: `sink:${options.name}` }],
+  }
+  await dependencies.runSync(false, undefined, scope)
   if (!options.yes && !(await dependencies.confirm(`Finalize sink retirement for ${options.name}?`))) {
-    dependencies.log('Finalization cancelled; production KV and the recovery archive were retained')
+    dependencies.log('Finalization cancelled; production configuration and the recovery archive were retained')
     return 'cancelled'
   }
-  await dependencies.runSync(true)
+  await dependencies.runSync(true, undefined, scope)
   const verified = await dependencies.readKv()
   if (verified.sinks[`sink:${options.name}`] !== undefined) {
-    throw new Error(`sink ${options.name} still exists in production KV after sync`)
+    throw new Error(`sink ${options.name} still exists in provider configuration after sync`)
   }
   manifest = updateArchive(manifest, options.name, { kvRemoved: true })
   await persistManifest(paths.manifest, manifest, dependencies)
@@ -382,7 +388,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSinkRetirementArgs(argv)
-  await requireLegacyConfiguration()
   await runSinkRetirement(options)
 }
 

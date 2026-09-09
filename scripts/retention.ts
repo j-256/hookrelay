@@ -1,8 +1,10 @@
-import { requireLegacyConfiguration } from './configuration-client'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { readFile } from 'node:fs/promises'
 import { parseRoutes } from './sync'
 import { confirm } from './setup'
+import { RETENTION_CONFIG_KEY } from '../src/lib/runtime-config'
+import { readProviderConfiguration } from './provider-configuration'
+import type { RemoteKvSnapshot } from './kv'
 
 export const MANAGED_RETENTION_RULE_ID = 'hookrelay-events-retention'
 export const MANAGED_RETENTION_PREFIX = 'events/'
@@ -44,6 +46,7 @@ export interface LifecyclePlan {
 export interface RetentionDependencies {
   fetch: typeof fetch
   readText(path: string): Promise<string>
+  readProviderConfiguration(): Promise<RemoteKvSnapshot>
   confirm(question: string): Promise<boolean>
   environment: Record<string, string | undefined>
   log(line: string): void
@@ -52,6 +55,7 @@ export interface RetentionDependencies {
 const DEFAULT_DEPENDENCIES: RetentionDependencies = {
   fetch,
   readText: (path) => readFile(path, 'utf8'),
+  readProviderConfiguration: () => readProviderConfiguration(),
   confirm,
   environment: process.env,
   log: console.log,
@@ -184,6 +188,20 @@ export function formatLifecyclePlan(plan: LifecyclePlan): string {
   ].join('\n')
 }
 
+export function assertProviderRetention(routesText: string, provider: RemoteKvSnapshot): void {
+  const desired = parseRoutes(routesText).retention
+  const current = provider.subs[RETENTION_CONFIG_KEY]
+  let parsed: unknown
+  try {
+    parsed = current === undefined ? undefined : JSON.parse(current)
+  } catch {
+    throw new Error('Provider retention configuration is invalid')
+  }
+  if (canonicalize(parsed) !== canonicalize(desired)) {
+    throw new Error('Provider retention does not match routes.jsonc; run pnpm sync --put-retention and add -y to apply before managing R2')
+  }
+}
+
 function cloudflareCredentials(environment: RetentionDependencies['environment']): {
   accountId: string
   apiToken: string
@@ -257,10 +275,12 @@ export async function runRetentionCommand(
   options: RetentionOptions,
   dependencies: RetentionDependencies = DEFAULT_DEPENDENCIES,
 ): Promise<'disabled' | 'planned' | 'applied' | 'verified' | 'cancelled' | 'unchanged'> {
-  const [routesText, wranglerText] = await Promise.all([
+  const [routesText, wranglerText, provider] = await Promise.all([
     dependencies.readText('routes.jsonc'),
     dependencies.readText('wrangler.jsonc'),
+    dependencies.readProviderConfiguration(),
   ])
+  assertProviderRetention(routesText, provider)
   const settings = parseRetentionSettings(routesText, wranglerText)
   const currentRules = await getLifecycleRules(settings.bucketName, dependencies)
   const plan = computeLifecyclePlan(settings.bucketName, settings.r2Days, currentRules)
@@ -295,7 +315,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseRetentionArgs(argv)
-  await requireLegacyConfiguration()
   await runRetentionCommand(options)
 }
 

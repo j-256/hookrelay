@@ -13,7 +13,7 @@ import {
 } from '../../scripts/sink-retire'
 import { parseRetirementManifest } from '../../scripts/retirement-manifest'
 import { readPrivateOptionalText, writePrivateText, writeText } from '../../scripts/setup'
-import { computePlan, parseRoutes } from '../../scripts/sync'
+import { computePlan, parseRoutes, type ProviderSyncScope } from '../../scripts/sync'
 import { modeAwareFileSystem } from '../helpers/atomic-file-system'
 import type { AtomicFileSystem } from '../../scripts/setup'
 
@@ -63,17 +63,24 @@ function dependencies(
   secrets: Set<string>,
   countActiveDeliveries: (wranglerText: string, sinkName: string) => Promise<number>,
   fileSystem: AtomicFileSystem,
-): { dependencies: SinkRetirementDependencies; logs: string[] } {
+): {
+  dependencies: SinkRetirementDependencies
+  logs: string[]
+  syncScopes: Array<{ apply: boolean; scope?: ProviderSyncScope }>
+} {
   const logs: string[] = []
+  const syncScopes: Array<{ apply: boolean; scope?: ProviderSyncScope }> = []
   return {
     logs,
+    syncScopes,
     dependencies: {
       readText: (path) => readFile(path, 'utf8'),
       readPrivateText: (path) => readPrivateOptionalText(path, fileSystem),
       writeText,
       writePrivateText: (path, text) => writePrivateText(path, text, fileSystem),
       readKv: async () => ({ subs: { ...remote.subs }, sinks: { ...remote.sinks } }),
-      runSync: async (apply) => {
+      runSync: async (apply, _routesPath, scope) => {
+        syncScopes.push({ apply, ...(scope ? { scope } : {}) })
         if (apply) applyPlan(await readFile(join(directory, 'routes.jsonc'), 'utf8'), remote)
       },
       confirm: async () => true,
@@ -120,6 +127,10 @@ describe('sink retirement', () => {
       expect(staged.sinks).toEqual([])
       expect(staged.retiredSinks?.map((sink) => sink.name)).toEqual(['delivery'])
       expect(remote.sinks['sink:delivery']).toBeDefined()
+      expect(harness.syncScopes).toEqual([
+        { apply: false, scope: { puts: [{ namespace: 'SINKS', key: 'sink:delivery' }] } },
+        { apply: true, scope: { puts: [{ namespace: 'SINKS', key: 'sink:delivery' }] } },
+      ])
       expect((await fileSystem.lstat(join(directory, 'retirements.json'))).mode & 0o777).toBe(0o600)
 
       await expect(runSinkRetirement(options(true), harness.dependencies, directory)).rejects.toThrow(/delivery rows/)
@@ -128,6 +139,10 @@ describe('sink retirement', () => {
       await expect(runSinkRetirement(options(true), harness.dependencies, directory)).resolves.toBe('finalized')
       expect(parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8')).retiredSinks).toEqual([])
       expect(remote.sinks).toEqual({})
+      expect(harness.syncScopes.slice(2)).toEqual([
+        { apply: false, scope: { deletes: [{ namespace: 'SINKS', key: 'sink:delivery' }] } },
+        { apply: true, scope: { deletes: [{ namespace: 'SINKS', key: 'sink:delivery' }] } },
+      ])
       expect(secrets.has('SINK_DELIVERY_URL')).toBe(false)
       expect(secrets.has('SINK_DELIVERY_SIGNING_SECRET')).toBe(false)
       const manifest = parseRetirementManifest(await readFile(join(directory, 'retirements.json'), 'utf8'))

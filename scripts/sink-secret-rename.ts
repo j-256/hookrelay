@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from './configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
@@ -11,12 +10,12 @@ import {
   prepareProduction,
   readOptionalText,
   removeDevVar,
-  runProcess,
   type SecretValue,
   writePrivateText,
   writeText,
 } from './setup'
 import { parseRoutes, type Routes, type SinkRef } from './sync'
+import { readProviderConfiguration } from './provider-configuration'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -54,8 +53,8 @@ export function sinkSecretRenameUsage(): string {
     'usage: pnpm sink:secret:rename <sink-name> <old-secret> <new-secret> [--finalize] [-y]',
     '',
     'phases:',
-    '  default     copy the secret, switch the sink *Env reference, and sync KV',
-    '  --finalize  delete the obsolete secret after the KV change has propagated',
+    '  default     copy the secret, switch the sink *Env reference, and sync provider configuration',
+    '  --finalize  delete the obsolete secret after the provider change has propagated',
     '',
     'options:',
     '  -y, --yes   apply production changes without prompts',
@@ -208,18 +207,12 @@ export function finalizeSinkSecretRename(
 }
 
 async function readRemoteSink(name: string): Promise<Record<string, unknown>> {
-  let stdout: string
-  try {
-    stdout = await runProcess(
-      'npx',
-      ['wrangler', 'kv', 'key', 'get', `sink:${name}`, '--binding', 'SINKS', '--text', '--remote'],
-      { captureStdout: true },
-    )
-  } catch {
+  const value = (await readProviderConfiguration()).sinks[`sink:${name}`]
+  if (value === undefined) {
     throw new Error(`remote sink is not ready: ${name}; apply the prepare phase first`)
   }
   try {
-    return JSON.parse(stdout) as Record<string, unknown>
+    return JSON.parse(value) as Record<string, unknown>
   } catch {
     throw new Error(`remote sink is invalid: ${name}`)
   }
@@ -276,16 +269,18 @@ async function runPrepare(
   await writePrivateText(devVarsPath, prepared.devVarsText)
   console.log(`Prepared ${options.sinkName}.${prepared.fieldName}: ${options.oldSecretName} -> ${options.newSecretName}`)
 
-  const production = await prepareProduction(prepared.secret, options.yes)
+  const production = await prepareProduction(prepared.secret, options.yes, {
+    puts: [{ namespace: 'SINKS', key: `sink:${options.sinkName}` }],
+  })
   if (production === 'local-only') {
-    console.log(`Production was not changed; install ${options.newSecretName}, then run pnpm sync and pnpm sync -y`)
+    console.log(`Production was not changed; install ${options.newSecretName}, then run pnpm sync --put-sink ${JSON.stringify(options.sinkName)} and add -y to apply`)
     return
   }
   if (production === 'previewed') {
-    console.log('The sink secret reference was not changed; run pnpm sync -y before finalizing')
+    console.log(`The sink secret reference was not changed; run pnpm sync --put-sink ${JSON.stringify(options.sinkName)} -y before finalizing`)
     return
   }
-  console.log(`Sink secret reference changed; after KV propagation run ${finalizeCommand(options)}`)
+  console.log(`Sink secret reference changed; after provider propagation run ${finalizeCommand(options)}`)
 }
 
 async function runFinalize(
@@ -322,7 +317,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSinkSecretRenameArgs(argv)
-  await requireLegacyConfiguration()
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   if (options.phase === PREPARE_PHASE) await runPrepare(options, routesPath, devVarsPath)

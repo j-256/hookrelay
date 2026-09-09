@@ -8,7 +8,6 @@ import {
   applyConfigurationReview, configurationReviewSummary, exportConfiguration, parseConfigurationReview,
   reviewConfigurationImport, reviewConfigurationMigration,
 } from '../../scripts/configuration-workflow'
-import { requireLegacyConfiguration } from '../../scripts/configuration-client'
 import { computePlan, parseRoutes } from '../../scripts/sync'
 
 const PRIVATE = 'synthetic-private-operator-value'
@@ -43,7 +42,6 @@ function disable(exported: Awaited<ReturnType<typeof exportConfiguration>>) {
 
 describe('revision-bound operator workflows', () => {
   it('requires an explicit migration apply and preserves every legacy value', async () => {
-    await requireLegacyConfiguration(query)
     const review = await reviewConfigurationMigration(query, snapshot, JSON.stringify(routes))
     expect(await readConfigurationState(query)).toMatchObject({ mode: 'legacy', revision: 0 })
     expect(JSON.stringify(configurationReviewSummary(review))).not.toContain(PRIVATE)
@@ -56,7 +54,6 @@ describe('revision-bound operator workflows', () => {
     expect(Object.fromEntries(entries.filter(entry => entry.namespace === 'SUBS').map(entry => [entry.key, entry.value]))).toEqual(snapshot.subs)
     expect(Object.fromEntries(entries.filter(entry => entry.namespace === 'SINKS').map(entry => [entry.key, entry.value]))).toEqual(snapshot.sinks)
     expect(await applyConfigurationReview(query, review, async () => { throw new Error('must not reread obsolete KV after acceptance') })).toEqual(receipt)
-    await expect(requireLegacyConfiguration(query)).rejects.toMatchObject({ code: 'inactive' })
   })
 
   it('refuses migration drift before review or apply and never silently changes values at activation', async () => {
@@ -133,6 +130,6 @@ describe('revision-bound operator workflows', () => {
 
   it('fails closed when the authority cannot be read', async () => {
     const unavailable: ConfigurationQuery = async () => { throw new Error('synthetic database unavailable') }
-    await expect(requireLegacyConfiguration(unavailable)).rejects.toThrow('synthetic database unavailable')
+    await expect(exportConfiguration(unavailable)).rejects.toThrow('synthetic database unavailable')
   })
 })

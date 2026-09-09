@@ -100,7 +100,7 @@ test('CLI help is dependency-free and usage failures keep stdout clean', async (
   }
 })
 
-test('legacy operator entrypoints keep the authority guard ahead of their workflow', async () => {
+test('provider operator entrypoints no longer reject the active authority', async () => {
   const files = [
     'scripts/sync.ts', 'scripts/sub-add.ts', 'scripts/sink-add.ts', 'scripts/sub-retire.ts', 'scripts/sink-retire.ts',
     'scripts/sink-rename.ts', 'scripts/sink-secret-rename.ts', 'scripts/retention.ts',
@@ -110,7 +110,6 @@ test('legacy operator entrypoints keep the authority guard ahead of their workfl
   for (const file of files) {
     const source = await readFile(file, 'utf8')
     const main = source.slice(source.indexOf('async function main('))
-    assert.match(main, /await requireLegacyConfiguration\(\)/, file)
-    assert.ok(main.indexOf('return') < main.indexOf('await requireLegacyConfiguration()'), `${file}: help precedes provider dependency`)
+    assert.doesNotMatch(main, /requireLegacyConfiguration/, file)
   }
 })

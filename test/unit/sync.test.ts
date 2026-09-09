@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest'
-import { computePlan, parseRoutes, parseSyncArgs, printableKvKey, validateRoutes } from '../../scripts/sync'
+import {
+  computePlan,
+  computeProviderComparisonPlan,
+  parseProviderSyncScope,
+  parseRoutes,
+  parseSyncArgs,
+  printableKvKey,
+  providerSyncScopeForOptions,
+  scopedProviderMutation,
+  validateRoutes,
+} from '../../scripts/sync'
 import ROUTES_EXAMPLE from '../../routes.example.jsonc?raw'
 
 const CLAUDE_HASH = 'a'.repeat(64)
@@ -170,6 +180,12 @@ describe('parseSyncArgs', () => {
     expect(parseSyncArgs(['-r', '/secure/routes.jsonc'])).toEqual(
       parseSyncArgs(['--routes', '/secure/routes.jsonc']),
     )
+    expect(parseSyncArgs(['--put-sub', 'alerts', '--put-sink', 'phone', '--put-sub', 'builds', '--put-retention'])).toEqual({
+      yes: false,
+      putSubscriptions: ['alerts', 'builds'],
+      putSinks: ['phone'],
+      putRetention: true,
+    })
   })
 
   it('rejects unknown options and positional arguments', () => {
@@ -177,6 +193,33 @@ describe('parseSyncArgs', () => {
     expect(() => parseSyncArgs(['extra'])).toThrow(/unknown option: extra/)
     expect(() => parseSyncArgs(['--routes'])).toThrow(/requires a value/)
     expect(() => parseSyncArgs(['--routes', 'one', '--routes', 'two'])).toThrow(/only be supplied once/)
+    expect(() => parseSyncArgs(['--put-sub', 'same', '--put-sub', 'same'])).toThrow(/same name/)
+    expect(() => parseSyncArgs(['--put-operations', '--put-operations'])).toThrow(/only be supplied once/)
+  })
+})
+
+describe('providerSyncScopeForOptions', () => {
+  it('treats an explicit subscription selection as ownership of its complete local policy', () => {
+    const routes = parseRoutes(ROUTES)
+    expect(providerSyncScopeForOptions(routes, parseSyncArgs(['--put-sub', 'gh']))).toEqual({
+      puts: [{
+        namespace: 'SUBS',
+        key: `sub:sha256:${GITHUB_HASH}`,
+        policyFields: ['enabled', 'sinks', 'filter', 'sinkFilters'],
+      }],
+      deletes: [],
+    })
+  })
+
+  it('treats omitted singleton configuration as an explicit deletion', () => {
+    const routes = parseRoutes(ROUTES)
+    expect(providerSyncScopeForOptions(routes, parseSyncArgs(['--put-retention', '--put-operations']))).toEqual({
+      puts: [],
+      deletes: [
+        { namespace: 'SUBS', key: 'config:retention' },
+        { namespace: 'SUBS', key: 'config:operations' },
+      ],
+    })
   })
 })
 
@@ -754,6 +797,178 @@ describe('computePlan', () => {
     })
     expect(JSON.parse(plan.subPuts[1]!.value)).toEqual({ d1Days: 90, r2Days: 30 })
     expect(plan.subDeletes).not.toContain(fallbackKey)
+  })
+})
+
+describe('scopedProviderMutation', () => {
+  it('preserves active online policy unless the command owns selected fields', () => {
+    const routes = parseRoutes(ROUTES)
+    const key = `sub:sha256:${GITHUB_HASH}`
+    const desired = JSON.parse(computePlan(routes, { subs: {}, sinks: {} }).subPuts.find(entry => entry.key === key)!.value)
+    const online = {
+      ...desired,
+      name: 'stale-provider-name',
+      enabled: false,
+      sinks: ['hq-selected'],
+      filter: { eventTypes: { include: ['issues.*'] } },
+      sinkFilters: { 'hq-selected': { severities: { include: ['critical'] } } },
+    }
+    const current = {
+      state: { authorityId: 'a'.repeat(32), revision: 7, mode: 'active' as const },
+      entries: [{
+        namespace: 'SUBS' as const,
+        key,
+        resourceId: '00000000-0000-4000-8000-000000000007',
+        retired: false,
+        value: JSON.stringify(online),
+      }],
+      aliases: [],
+      subs: { [key]: JSON.stringify(online) },
+      sinks: {},
+    }
+    const preserved = scopedProviderMutation(routes, current, {
+      puts: [{ namespace: 'SUBS', key }],
+    })
+    expect(JSON.parse(preserved.puts![0]!.value)).toEqual({
+      ...desired,
+      enabled: online.enabled,
+      sinks: online.sinks,
+      filter: online.filter,
+      sinkFilters: online.sinkFilters,
+    })
+
+    const selected = scopedProviderMutation(routes, current, {
+      puts: [{ namespace: 'SUBS', key, policyFields: ['enabled', 'filter'] }],
+    })
+    expect(JSON.parse(selected.puts![0]!.value)).toEqual({
+      ...desired,
+      sinks: online.sinks,
+      sinkFilters: online.sinkFilters,
+    })
+  })
+
+  it('inherits unowned policy from a previous key during identity rotation', () => {
+    const routes = parseRoutes(ROUTES)
+    const targetKey = `sub:sha256:${GITHUB_HASH}`
+    const sourceKey = `sub:sha256:${'d'.repeat(64)}`
+    const desired = JSON.parse(computePlan(routes, { subs: {}, sinks: {} }).subPuts.find(entry => entry.key === targetKey)!.value)
+    const online = {
+      ...desired,
+      enabled: false,
+      sinks: ['old-owned-sink'],
+      filter: { eventTypes: { include: ['old-owned.*'] } },
+      sinkFilters: { inherited: { severities: { include: ['critical'] } } },
+    }
+    const current = {
+      state: { authorityId: 'd'.repeat(32), revision: 8, mode: 'active' as const },
+      entries: [{
+        namespace: 'SUBS' as const,
+        key: sourceKey,
+        resourceId: '00000000-0000-4000-8000-000000000008',
+        retired: false,
+        value: JSON.stringify(online),
+      }],
+      aliases: [],
+      subs: { [sourceKey]: JSON.stringify(online) },
+      sinks: {},
+    }
+
+    const mutation = scopedProviderMutation(routes, current, {
+      puts: [{
+        namespace: 'SUBS',
+        key: targetKey,
+        policyFields: ['sinks', 'filter'],
+        policySourceKey: sourceKey,
+      }],
+    })
+    expect(JSON.parse(mutation.puts![0]!.value)).toEqual({
+      ...desired,
+      enabled: false,
+      sinkFilters: online.sinkFilters,
+    })
+
+    const completed = {
+      ...current,
+      entries: [{ ...current.entries[0]!, key: targetKey }],
+      subs: { [targetKey]: JSON.stringify(online) },
+    }
+    const resumed = scopedProviderMutation(routes, completed, {
+      puts: [{
+        namespace: 'SUBS',
+        key: targetKey,
+        policyFields: ['sinks', 'filter'],
+        policySourceKey: sourceKey,
+      }],
+    })
+    expect(JSON.parse(resumed.puts![0]!.value)).toEqual({
+      ...desired,
+      enabled: false,
+      sinkFilters: online.sinkFilters,
+    })
+  })
+
+  it('derives retired destination state and validates encoded scopes', () => {
+    const routes = parseRoutes(RETIRED_SINK_ROUTES)
+    const current = {
+      state: { authorityId: 'b'.repeat(32), revision: 2, mode: 'active' as const },
+      entries: [],
+      aliases: [],
+      subs: {},
+      sinks: {},
+    }
+    expect(scopedProviderMutation(routes, current, {
+      puts: [{ namespace: 'SINKS', key: 'sink:retiring' }],
+    }).puts).toMatchObject([{ key: 'sink:retiring', retired: true }])
+    expect(parseProviderSyncScope(JSON.stringify({
+      deletes: [{ namespace: 'SUBS', key: `sub:sha256:${CLAUDE_HASH}` }],
+    }))).toMatchObject({ puts: [], rekeys: [], aliasDeletes: [] })
+    expect(() => parseProviderSyncScope('{}')).toThrow(/invalid/)
+  })
+})
+
+describe('computeProviderComparisonPlan', () => {
+  it('ignores durable aliases but reports canonical retirement metadata drift', () => {
+    const routes = parseRoutes(RETIRED_SINK_ROUTES)
+    const desired = computePlan(routes, { subs: {}, sinks: {} })
+    const subscription = desired.subPuts[0]!
+    const sink = desired.sinkPuts[0]!
+    const current = {
+      state: { authorityId: 'c'.repeat(32), revision: 4, mode: 'active' as const },
+      entries: [
+        {
+          namespace: 'SUBS' as const,
+          key: subscription.key,
+          resourceId: '00000000-0000-4000-8000-000000000031',
+          retired: false,
+          value: subscription.value,
+        },
+        {
+          namespace: 'SINKS' as const,
+          key: sink.key,
+          resourceId: '00000000-0000-4000-8000-000000000032',
+          retired: false,
+          value: sink.value,
+        },
+      ],
+      aliases: [{
+        namespace: 'SINKS' as const,
+        key: 'sink:former-name',
+        resourceId: '00000000-0000-4000-8000-000000000032',
+      }],
+      subs: { [subscription.key]: subscription.value },
+      sinks: {
+        [sink.key]: sink.value,
+        'sink:former-name': sink.value,
+      },
+    }
+
+    expect(computeProviderComparisonPlan(routes, current)).toEqual({
+      subPuts: [],
+      subDeletes: [],
+      sinkPuts: [],
+      sinkDeletes: [],
+      retirementUpdates: [{ namespace: 'SINKS', key: sink.key, retired: true }],
+    })
   })
 })
 

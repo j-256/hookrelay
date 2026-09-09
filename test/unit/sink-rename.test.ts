@@ -19,6 +19,9 @@ const ROUTES = `
       "slugHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "enabled": true,
       "sinks": ["discord"],
+      "sinkFilters": {
+        "discord": { "severities": { "include": ["critical"] } }
+      },
       "auth": null
     },
     {
@@ -112,6 +115,9 @@ describe('switchSinkRename', () => {
       ['discord-service-status'],
       ['discord-service-status'],
     ])
+    expect(routes.subs[0]!.sinkFilters).toEqual({
+      'discord-service-status': { severities: { include: ['critical'] } },
+    })
     expect(routes.sinks.map((sink) => sink.name)).toEqual(['discord', 'discord-service-status'])
   })
 
@@ -145,9 +151,35 @@ describe('finalizeSinkRename', () => {
     expect(finalized.secretNames).toEqual([
       { oldName: 'SINK_DISCORD_URL', newName: 'SINK_DISCORD_SERVICE_STATUS_URL' },
     ])
-    const routes = parseRoutes(switched.routesText)
+    const routes = parseRoutes(finalized.routesText)
     expect(routes.sinks).toHaveLength(2)
     expect(routes.sinks.every((sink) => sink.urlEnv === 'SINK_DISCORD_SERVICE_STATUS_URL')).toBe(true)
+  })
+
+  it('replaces the local compatibility entry with a durable provider alias in active mode', () => {
+    const prepared = prepareSinkRename(
+      ROUTES.replace(', "discord-service-status"', ''),
+      `SINK_DISCORD_URL=${DISCORD_URL}\n`,
+      'discord',
+      'discord-service-status',
+    )
+    const switched = switchSinkRename(prepared.routesText, 'discord', 'discord-service-status')
+    const finalized = finalizeSinkRename(
+      switched.routesText,
+      prepared.devVarsText,
+      'discord',
+      'discord-service-status',
+      true,
+    )
+
+    expect(parseRoutes(finalized.routesText).sinks.map(sink => sink.name)).toEqual(['discord-service-status'])
+    expect(() => finalizeSinkRename(
+      finalized.routesText,
+      finalized.devVarsText,
+      'discord',
+      'discord-service-status',
+      true,
+    )).not.toThrow()
   })
 
   it('refuses to remove the old secret before subscription routing switches', () => {

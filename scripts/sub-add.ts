@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from './configuration-client'
 import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -11,7 +10,7 @@ import {
   routedEmailAddress,
 } from '../src/lib/email-address'
 import { normalizeEmailLinkLabel } from '../src/lib/email-links'
-import { hashSubscriptionSlug } from '../src/lib/subscription'
+import { hashSubscriptionSlug, subscriptionKvKey } from '../src/lib/subscription'
 import { normalizeFallbackUrl } from '../src/lib/public-url'
 import { discoverWorkerBaseUrl } from './cloudflare-domains'
 import {
@@ -431,7 +430,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSubAddArgs(argv)
-  await requireLegacyConfiguration()
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')
@@ -453,13 +451,15 @@ async function main(): Promise<void> {
   if (prepared.senderSecret) await writePrivateText(devVarsPath, prepared.devVarsText)
   printPrepared(resolvedOptions, prepared)
 
-  const production = await prepareProduction(prepared.senderSecret, options.yes)
+  const production = await prepareProduction(prepared.senderSecret, options.yes, {
+    puts: [{ namespace: 'SUBS', key: subscriptionKvKey(prepared.subscription.slugHash) }],
+  })
   if (production === 'local-only') {
     console.log('')
     if (prepared.senderSecret) {
-      console.log(`Production was not changed; install ${prepared.senderSecret.name} in Wrangler, then run pnpm sync and pnpm sync -y`)
+      console.log(`Production was not changed; install ${prepared.senderSecret.name} in Wrangler, then run pnpm sync --put-sub ${JSON.stringify(options.name)} and add -y to apply`)
     } else {
-      console.log('Production was not changed; run pnpm sync and pnpm sync -y')
+      console.log(`Production was not changed; run pnpm sync --put-sub ${JSON.stringify(options.name)} and add -y to apply`)
     }
     if (options.source === 'github' && options.githubEvents.kind !== 'manual') {
       console.log('After the route is live, create the GitHub webhook manually with the fields printed above')
@@ -467,7 +467,7 @@ async function main(): Promise<void> {
     return
   }
   if (production === 'previewed') {
-    console.log('The KV route was not changed; run pnpm sync -y to apply it')
+    console.log(`The provider route was not changed; run pnpm sync --put-sub ${JSON.stringify(options.name)} -y to apply it`)
     if (options.source === 'github' && options.githubEvents.kind !== 'manual') {
       console.log('After the route is live, create the GitHub webhook manually with the fields printed above')
     }

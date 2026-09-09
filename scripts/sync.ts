@@ -23,9 +23,16 @@ import {
 import { SEVERITIES } from '../src/types'
 import { getSourceProfile, KNOWN_SOURCE_TYPES } from './subscription-sources'
 import { githubEventTypeFilter, parseGitHubEventSelection } from './providers/github/event-profiles'
-import { deleteRemoteKv, printableKvKey, putRemoteKv, readRemoteKvSnapshot } from './kv'
-import { listWranglerSecrets } from './setup'
-import { requireLegacyConfiguration } from './configuration-client'
+import { printableKvKey } from './kv'
+import { listWranglerSecrets, PROVIDER_SYNC_SCOPE_ENV } from './setup'
+import {
+  applyProviderConfiguration,
+  planProviderConfiguration,
+  providerConfigurationPlanSummary,
+  readProviderConfiguration,
+  type ProviderConfigurationMutation,
+  type ProviderConfigurationSnapshot,
+} from './provider-configuration'
 
 export { printableKvKey } from './kv'
 
@@ -146,6 +153,75 @@ export type SinkRef = z.infer<typeof sinkSchema>
 export interface SyncOptions {
   routes?: string
   yes: boolean
+  putSubscriptions?: string[]
+  putSinks?: string[]
+  putRetention?: boolean
+  putOperations?: boolean
+}
+
+export const SUBSCRIPTION_POLICY_FIELDS = Object.freeze(['enabled', 'sinks', 'filter', 'sinkFilters'] as const)
+export type SubscriptionPolicyField = typeof SUBSCRIPTION_POLICY_FIELDS[number]
+
+const syncScopeKeySchema = z.object({
+  namespace: z.enum(['SUBS', 'SINKS']),
+  key: z.string().min(1).max(240),
+}).strict()
+const syncScopePutSchema = syncScopeKeySchema.extend({
+  policyFields: z.array(z.enum(SUBSCRIPTION_POLICY_FIELDS)).min(1).optional(),
+  policySourceKey: z.string().min(1).max(240).optional(),
+}).strict()
+const syncScopeRekeySchema = z.object({
+  namespace: z.enum(['SUBS', 'SINKS']),
+  fromKey: z.string().min(1).max(240),
+  toKey: z.string().min(1).max(240),
+  retainFromAlias: z.boolean(),
+  replaceTarget: z.boolean().optional(),
+  allowMissingSourceIfTarget: z.boolean().optional(),
+}).strict()
+const providerSyncScopeSchema = z.object({
+  puts: z.array(syncScopePutSchema).default([]),
+  deletes: z.array(syncScopeKeySchema).default([]),
+  rekeys: z.array(syncScopeRekeySchema).default([]),
+  aliasDeletes: z.array(syncScopeKeySchema).default([]),
+}).strict().superRefine((scope, context) => {
+  if (scope.puts.length + scope.deletes.length + scope.rekeys.length + scope.aliasDeletes.length === 0) {
+    context.addIssue({ code: 'custom', message: 'provider sync scope has no changes' })
+  }
+  for (const put of scope.puts) {
+    if (put.namespace !== 'SUBS' && (put.policyFields || put.policySourceKey)) {
+      context.addIssue({ code: 'custom', message: 'policy selection applies only to subscriptions' })
+    }
+    if (put.policyFields && new Set(put.policyFields).size !== put.policyFields.length) {
+      context.addIssue({ code: 'custom', message: 'policy field is selected more than once' })
+    }
+    if (put.policySourceKey && !put.policyFields) {
+      context.addIssue({ code: 'custom', message: 'a policy source requires selected policy fields' })
+    }
+  }
+})
+export interface ProviderSyncScopePut {
+  namespace: 'SUBS' | 'SINKS'
+  key: string
+  policyFields?: readonly SubscriptionPolicyField[]
+  policySourceKey?: string
+}
+export interface ProviderSyncScopeKey {
+  namespace: 'SUBS' | 'SINKS'
+  key: string
+}
+export interface ProviderSyncScopeRekey {
+  namespace: 'SUBS' | 'SINKS'
+  fromKey: string
+  toKey: string
+  retainFromAlias: boolean
+  replaceTarget?: boolean
+  allowMissingSourceIfTarget?: boolean
+}
+export interface ProviderSyncScope {
+  puts?: readonly ProviderSyncScopePut[]
+  deletes?: readonly ProviderSyncScopeKey[]
+  rekeys?: readonly ProviderSyncScopeRekey[]
+  aliasDeletes?: readonly ProviderSyncScopeKey[]
 }
 
 export function syncUsage(): string {
@@ -154,13 +230,21 @@ export function syncUsage(): string {
     '',
     'options:',
     '  -r, --routes <file>  read an explicit hash-only route configuration',
-    '  -y, --yes            apply the remote KV plan',
+    '      --put-sub <name> apply one local subscription, repeatable',
+    '      --put-sink <name> apply one local sink, repeatable',
+    '      --put-retention  apply config:retention only',
+    '      --put-operations apply config:operations only',
+    '  -y, --yes            apply the plan (exact scope required in active mode)',
     '  -h, --help           show this help',
   ].join('\n')
 }
 
 export function parseSyncArgs(argv: string[]): SyncOptions {
   let routes: string | undefined
+  const putSubscriptions: string[] = []
+  const putSinks: string[] = []
+  let putRetention = false
+  let putOperations = false
   let yes = false
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index]!
@@ -172,10 +256,34 @@ export function parseSyncArgs(argv: string[]): SyncOptions {
       routes = value
       index += 1
     }
+    else if (arg === '--put-sub' || arg === '--put-sink') {
+      const value = argv[index + 1]
+      if (!value || value.startsWith('-')) throw new Error(`${arg} requires a value`)
+      const selected = arg === '--put-sub' ? putSubscriptions : putSinks
+      if (selected.includes(value)) throw new Error(`${arg} may not select the same name more than once`)
+      selected.push(value)
+      index += 1
+    }
+    else if (arg === '--put-retention' || arg === '--put-operations') {
+      if (arg === '--put-retention') {
+        if (putRetention) throw new Error('--put-retention may only be supplied once')
+        putRetention = true
+      } else {
+        if (putOperations) throw new Error('--put-operations may only be supplied once')
+        putOperations = true
+      }
+    }
     else if (arg === '--help' || arg === '-h') throw new Error(syncUsage())
     else throw new Error(`unknown option: ${arg}`)
   }
-  return { ...(routes ? { routes } : {}), yes }
+  return {
+    ...(routes ? { routes } : {}),
+    yes,
+    ...(putSubscriptions.length ? { putSubscriptions } : {}),
+    ...(putSinks.length ? { putSinks } : {}),
+    ...(putRetention ? { putRetention } : {}),
+    ...(putOperations ? { putOperations } : {}),
+  }
 }
 
 export function parseRoutes(text: string): Routes {
@@ -409,6 +517,16 @@ export interface Plan {
   sinkDeletes: string[]
 }
 
+export interface ProviderRetirementUpdate {
+  namespace: 'SUBS' | 'SINKS'
+  key: string
+  retired: boolean
+}
+
+export interface ProviderComparisonPlan extends Plan {
+  retirementUpdates: ProviderRetirementUpdate[]
+}
+
 function canonicalize(value: unknown): string {
   // Deterministic JSON: sort object keys recursively so unchanged data round-trips identically
   if (value === null || typeof value !== 'object') return JSON.stringify(value)
@@ -424,6 +542,142 @@ function canonicalizeJson(text: string): string | null {
   } catch {
     return null
   }
+}
+
+function desiredSnapshot(routes: Routes): KvSnapshot {
+  const plan = computePlan(routes, { subs: {}, sinks: {} })
+  return {
+    subs: Object.fromEntries(plan.subPuts.map(entry => [entry.key, entry.value])),
+    sinks: Object.fromEntries(plan.sinkPuts.map(entry => [entry.key, entry.value])),
+  }
+}
+
+function canonicalProviderSnapshot(current: ProviderConfigurationSnapshot): KvSnapshot {
+  const subs: Record<string, string> = {}
+  const sinks: Record<string, string> = {}
+  for (const entry of current.entries) {
+    (entry.namespace === 'SUBS' ? subs : sinks)[entry.key] = entry.value
+  }
+  return { subs, sinks }
+}
+
+export function computeProviderComparisonPlan(
+  routes: Routes,
+  current: ProviderConfigurationSnapshot,
+): ProviderComparisonPlan {
+  const plan = computePlan(
+    routes,
+    current.state.mode === 'active' ? canonicalProviderSnapshot(current) : current,
+  )
+  if (current.state.mode !== 'active') return { ...plan, retirementUpdates: [] }
+  const desired = desiredSnapshot(routes)
+  const retirementUpdates = current.entries.flatMap(entry => {
+    const values = entry.namespace === 'SUBS' ? desired.subs : desired.sinks
+    if (values[entry.key] === undefined) return []
+    const retired = desiredRetired(routes, entry.namespace, entry.key)
+    return entry.retired === retired ? [] : [{ namespace: entry.namespace, key: entry.key, retired }]
+  })
+  return { ...plan, retirementUpdates }
+}
+
+function parseObject(value: string, label: string): Record<string, unknown> {
+  try {
+    const parsed: unknown = JSON.parse(value)
+    if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error()
+    return parsed as Record<string, unknown>
+  } catch {
+    throw new Error(`${label} has invalid provider configuration`)
+  }
+}
+
+export function mergeSubscriptionPolicy(
+  current: string,
+  desired: string,
+  selected: readonly SubscriptionPolicyField[] | undefined,
+): string {
+  const before = parseObject(current, 'The active subscription')
+  const after = parseObject(desired, 'The local subscription')
+  const fields = new Set(selected ?? [])
+  for (const field of SUBSCRIPTION_POLICY_FIELDS) {
+    if (fields.has(field)) continue
+    if (Object.hasOwn(before, field)) after[field] = before[field]
+    else delete after[field]
+  }
+  return canonicalize(after)
+}
+
+function desiredRetired(routes: Routes, namespace: 'SUBS' | 'SINKS', key: string): boolean {
+  if (namespace === 'SUBS') return false
+  return (routes.retiredSinks ?? []).some(sink => `sink:${sink.name}` === key)
+}
+
+export function parseProviderSyncScope(value: string): Required<ProviderSyncScope> {
+  try {
+    return providerSyncScopeSchema.parse(JSON.parse(value))
+  } catch {
+    throw new Error('The internal provider sync scope is invalid')
+  }
+}
+
+export function scopedProviderMutation(
+  routes: Routes,
+  current: ProviderConfigurationSnapshot,
+  input: ProviderSyncScope,
+): ProviderConfigurationMutation {
+  const scope = providerSyncScopeSchema.parse(input)
+  const desired = desiredSnapshot(routes)
+  const puts = scope.puts.map(selected => {
+    const values = selected.namespace === 'SUBS' ? desired.subs : desired.sinks
+    const value = values[selected.key]
+    if (value === undefined) throw new Error(`Selected provider key is missing from routes.jsonc: ${printableKvKey(selected.key)}`)
+    const currentValues = selected.namespace === 'SUBS' ? current.subs : current.sinks
+    const policySource = current.entries.find(entry => (
+      entry.namespace === selected.namespace && entry.key === (selected.policySourceKey ?? selected.key)
+    )) ?? current.entries.find(entry => entry.namespace === selected.namespace && entry.key === selected.key)
+    const merged = current.state.mode === 'active' && selected.namespace === 'SUBS' && policySource
+      ? mergeSubscriptionPolicy(currentValues[policySource.key]!, value, selected.policyFields)
+      : value
+    return {
+      namespace: selected.namespace,
+      key: selected.key,
+      value: merged,
+      retired: desiredRetired(routes, selected.namespace, selected.key),
+    }
+  })
+  return {
+    puts,
+    deletes: scope.deletes,
+    rekeys: current.state.mode === 'active' ? scope.rekeys : [],
+    aliasDeletes: current.state.mode === 'active' ? scope.aliasDeletes : [],
+  }
+}
+
+export function providerSyncScopeForOptions(routes: Routes, options: SyncOptions): ProviderSyncScope | null {
+  const puts: ProviderSyncScopePut[] = []
+  const deletes: ProviderSyncScopeKey[] = []
+  for (const name of options.putSubscriptions ?? []) {
+    const matches = routes.subs.filter(subscription => subscription.name === name)
+    if (matches.length !== 1) throw new Error(`Selected subscription must exist exactly once in routes.jsonc: ${name}`)
+    puts.push({
+      namespace: 'SUBS',
+      key: subscriptionKvKey(matches[0]!.slugHash),
+      policyFields: SUBSCRIPTION_POLICY_FIELDS,
+    })
+  }
+  for (const name of options.putSinks ?? []) {
+    const matches = [...routes.sinks, ...(routes.retiredSinks ?? [])].filter(sink => sink.name === name)
+    if (matches.length !== 1) throw new Error(`Selected sink must exist exactly once in routes.jsonc: ${name}`)
+    puts.push({ namespace: 'SINKS', key: `sink:${name}` })
+  }
+  if (options.putRetention) {
+    if (routes.retention) puts.push({ namespace: 'SUBS', key: RETENTION_CONFIG_KEY })
+    else deletes.push({ namespace: 'SUBS', key: RETENTION_CONFIG_KEY })
+  }
+  if (options.putOperations) {
+    if (routes.operations) puts.push({ namespace: 'SUBS', key: OPERATIONS_CONFIG_KEY })
+    else deletes.push({ namespace: 'SUBS', key: OPERATIONS_CONFIG_KEY })
+  }
+  return puts.length + deletes.length ? { puts, deletes } : null
 }
 
 export function computePlan(routes: Routes, current: KvSnapshot): Plan {
@@ -506,8 +760,8 @@ async function main() {
     console.log(syncUsage())
     return
   }
-  const { routes: routesOption, yes } = parseSyncArgs(argv)
-  await requireLegacyConfiguration()
+  const options = parseSyncArgs(argv)
+  const { routes: routesOption, yes } = options
   const routesPath = resolve(routesOption ?? 'routes.jsonc')
   const text = await readFile(routesPath, 'utf8')
   const routes = parseRoutes(text)
@@ -542,15 +796,40 @@ async function main() {
     process.exit(1)
   }
 
-  const current: KvSnapshot = await readRemoteKvSnapshot()
-  const plan = computePlan(routes, current)
+  const current = await readProviderConfiguration()
+  const encodedScope = process.env[PROVIDER_SYNC_SCOPE_ENV]
+  if (encodedScope && (options.putSubscriptions || options.putSinks || options.putRetention || options.putOperations)) {
+    throw new Error('Do not combine an internal provider scope with command-line selectors')
+  }
+  const scope = encodedScope ? parseProviderSyncScope(encodedScope) : providerSyncScopeForOptions(routes, options)
+  const plan = scope
+    ? await planProviderConfiguration(current, scopedProviderMutation(routes, current, scope))
+    : null
+  const fullPlan = scope ? null : computeProviderComparisonPlan(routes, current)
+  const summary = plan ? providerConfigurationPlanSummary(plan) : null
 
-  console.log('Plan:')
-  for (const p of plan.subPuts) console.log(`  PUT    ${printableKvKey(p.key)}`)
-  for (const k of plan.subDeletes) console.log(`  DELETE ${printableKvKey(k)}`)
-  for (const p of plan.sinkPuts) console.log(`  PUT    ${p.key}`)
-  for (const k of plan.sinkDeletes) console.log(`  DELETE ${k}`)
-  if (plan.subPuts.length === 0 && plan.subDeletes.length === 0 && plan.sinkPuts.length === 0 && plan.sinkDeletes.length === 0) {
+  console.log(`Plan (${current.state.mode} authority at revision ${current.state.revision}):`)
+  if (summary) {
+    for (const entry of summary.puts) console.log(`  PUT    ${printableKvKey(entry.key)}`)
+    for (const entry of summary.deletes) console.log(`  DELETE ${printableKvKey(entry.key)}`)
+    for (const entry of summary.rekeys) {
+      console.log(`  REKEY  ${printableKvKey(entry.fromKey)} -> ${printableKvKey(entry.toKey)}${entry.retainFromAlias ? ' (retain alias)' : ''}`)
+    }
+    for (const entry of summary.aliasDeletes) console.log(`  UNALIAS ${printableKvKey(entry.key)}`)
+  } else if (fullPlan) {
+    for (const p of fullPlan.subPuts) console.log(`  PUT    ${printableKvKey(p.key)}`)
+    for (const k of fullPlan.subDeletes) console.log(`  DELETE ${printableKvKey(k)}`)
+    for (const p of fullPlan.sinkPuts) console.log(`  PUT    ${p.key}`)
+    for (const k of fullPlan.sinkDeletes) console.log(`  DELETE ${k}`)
+    for (const update of fullPlan.retirementUpdates) {
+      console.log(`  STATUS ${printableKvKey(update.key)} -> ${update.retired ? 'retired' : 'active'}`)
+    }
+  }
+  const changed = summary?.changed ?? (fullPlan !== null && (
+    fullPlan.subPuts.length + fullPlan.subDeletes.length + fullPlan.sinkPuts.length + fullPlan.sinkDeletes.length +
+      fullPlan.retirementUpdates.length > 0
+  ))
+  if (!changed) {
     console.log('  (no changes)')
     return
   }
@@ -560,10 +839,20 @@ async function main() {
     return
   }
 
-  for (const { key, value } of plan.subPuts) await putRemoteKv('SUBS', key, value)
-  for (const k of plan.subDeletes) await deleteRemoteKv('SUBS', k)
-  for (const { key, value } of plan.sinkPuts) await putRemoteKv('SINKS', key, value)
-  for (const k of plan.sinkDeletes) await deleteRemoteKv('SINKS', k)
+  if (current.state.mode === 'active' && !scope) {
+    throw new Error('Active D1 configuration requires an exact command scope; use the lifecycle command that owns this change')
+  }
+  const selectedPlan = plan ?? await planProviderConfiguration(current, {
+    puts: [
+      ...fullPlan!.subPuts.map(entry => ({ namespace: 'SUBS' as const, ...entry })),
+      ...fullPlan!.sinkPuts.map(entry => ({ namespace: 'SINKS' as const, ...entry })),
+    ],
+    deletes: [
+      ...fullPlan!.subDeletes.map(key => ({ namespace: 'SUBS' as const, key })),
+      ...fullPlan!.sinkDeletes.map(key => ({ namespace: 'SINKS' as const, key })),
+    ],
+  })
+  await applyProviderConfiguration(selectedPlan)
   console.log('Applied.')
 }
 

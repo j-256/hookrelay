@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from './configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
@@ -12,13 +11,18 @@ import {
   prepareProduction,
   readOptionalText,
   removeDevVar,
-  runProcess,
   type SecretValue,
   writePrivateText,
   writeText,
 } from './setup'
 import { parseRoutes, type Routes, type SinkRef } from './sync'
 import { subscriptionKvKey } from '../src/lib/subscription'
+import {
+  applyProviderConfiguration,
+  planProviderConfiguration,
+  readProviderConfiguration,
+  type ProviderConfigurationSnapshot,
+} from './provider-configuration'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -56,6 +60,7 @@ export interface SwitchedSinkRename {
 }
 
 export interface FinalizedSinkRename {
+  routesText: string
   devVarsText: string
   secretNames: Array<{ oldName: string; newName: string }>
 }
@@ -120,13 +125,18 @@ function sameSinkConfig(first: SinkRef, second: SinkRef): boolean {
   return canonicalize(sinkConfig(first)) === canonicalize(sinkConfig(second))
 }
 
-function namedSink(routes: Routes, name: string): { sink: SinkRef; index: number } {
+function optionalNamedSink(routes: Routes, name: string): { sink: SinkRef; index: number } | null {
   const matches = routes.sinks
     .map((sink, index) => ({ sink, index }))
     .filter(({ sink }) => sink.name === name)
-  if (matches.length === 0) throw new Error(`sink does not exist: ${name}`)
   if (matches.length > 1) throw new Error(`sink is declared more than once: ${name}`)
-  return matches[0]!
+  return matches[0] ?? null
+}
+
+function namedSink(routes: Routes, name: string): { sink: SinkRef; index: number } {
+  const match = optionalNamedSink(routes, name)
+  if (!match) throw new Error(`sink does not exist: ${name}`)
+  return match
 }
 
 function expectedSecretName(sinkName: string, fieldName: string): string | null {
@@ -242,12 +252,28 @@ export function switchSinkRename(routesText: string, oldName: string, newName: s
         formattingOptions: FORMATTING_OPTIONS,
       }),
     )
+    if (sub.sinkFilters?.[oldName]) {
+      const renamedFilters = { ...sub.sinkFilters, [newName]: sub.sinkFilters[oldName] }
+      delete renamedFilters[oldName]
+      updatedRoutesText = applyEdits(
+        updatedRoutesText,
+        modify(updatedRoutesText, ['subs', index, 'sinkFilters'], renamedFilters, {
+          formattingOptions: FORMATTING_OPTIONS,
+        }),
+      )
+    }
     subscriptions.push(sub.name)
   }
 
   updatedRoutesText = withTrailingNewline(updatedRoutesText)
-  parseRoutes(updatedRoutesText)
-  return { routesText: updatedRoutesText, subscriptions }
+  const updatedRoutes = parseRoutes(updatedRoutesText)
+  return {
+    routesText: updatedRoutesText,
+    subscriptions: [...new Set([
+      ...subscriptions,
+      ...updatedRoutes.subs.filter(sub => sub.sinks.includes(newName)).map(sub => sub.name),
+    ])],
+  }
 }
 
 export function finalizeSinkRename(
@@ -255,11 +281,13 @@ export function finalizeSinkRename(
   devVarsText: string,
   oldName: string,
   newName: string,
+  removeLocalAlias = false,
 ): FinalizedSinkRename {
   const routes = parseRoutes(routesText)
-  const oldSink = namedSink(routes, oldName).sink
+  const oldMatch = optionalNamedSink(routes, oldName)
+  if (!oldMatch && !removeLocalAlias) throw new Error(`sink does not exist: ${oldName}`)
   const newSink = namedSink(routes, newName).sink
-  if (!sameSinkConfig(oldSink, newSink)) {
+  if (oldMatch && !sameSinkConfig(oldMatch.sink, newSink)) {
     throw new Error(`sink aliases differ: ${oldName} and ${newName}`)
   }
   const oldSubscriptions = routes.subs.filter((sub) => sub.sinks.includes(oldName))
@@ -287,74 +315,66 @@ export function finalizeSinkRename(
     secretNames.push({ oldName: oldSecretName, newName: newSecretName })
   }
 
-  return { devVarsText: updatedDevVarsText, secretNames }
+  const updatedRoutesText = removeLocalAlias && oldMatch
+    ? withTrailingNewline(applyEdits(
+        routesText,
+        modify(routesText, ['sinks', oldMatch.index], undefined, { formattingOptions: FORMATTING_OPTIONS }),
+      ))
+    : routesText
+  parseRoutes(updatedRoutesText)
+  return { routesText: updatedRoutesText, devVarsText: updatedDevVarsText, secretNames }
 }
 
-async function readRemoteSink(name: string): Promise<Record<string, unknown>> {
-  let stdout: string
-  try {
-    stdout = await runProcess(
-      'npx',
-      ['wrangler', 'kv', 'key', 'get', `sink:${name}`, '--binding', 'SINKS', '--text', '--remote'],
-      { captureStdout: true },
-    )
-  } catch {
+function readRemoteSink(provider: ProviderConfigurationSnapshot, name: string): Record<string, unknown> {
+  const value = provider.sinks[`sink:${name}`]
+  if (value === undefined) {
     throw new Error(`remote sink alias is not ready: ${name}; apply the prepare phase first`)
   }
   try {
-    return JSON.parse(stdout) as Record<string, unknown>
+    return JSON.parse(value) as Record<string, unknown>
   } catch {
     throw new Error(`remote sink alias is invalid: ${name}`)
   }
 }
 
-async function assertRemoteSubscriptionsSwitched(routes: Routes): Promise<void> {
-  await Promise.all(routes.subs.map(async (sub) => {
+function assertRemoteSubscriptionsSwitched(routes: Routes, remote: ProviderConfigurationSnapshot): void {
+  for (const sub of routes.subs) {
     const key = subscriptionKvKey(sub.slugHash)
-    let stdout: string
-    try {
-      stdout = await runProcess(
-        'npx',
-        ['wrangler', 'kv', 'key', 'get', key, '--binding', 'SUBS', '--text', '--remote'],
-        { captureStdout: true },
-      )
-    } catch {
+    const value = remote.subs[key]
+    if (value === undefined) {
       throw new Error(`remote subscription is not ready: ${sub.name}; apply the --switch phase first`)
     }
     let remoteSub: Record<string, unknown>
     try {
-      remoteSub = JSON.parse(stdout) as Record<string, unknown>
+      remoteSub = JSON.parse(value) as Record<string, unknown>
     } catch {
       throw new Error(`remote subscription is invalid: ${sub.name}`)
     }
-    const expectedSub = {
-      name: sub.name,
-      source: sub.source,
-      enabled: sub.enabled,
-      sinks: sub.sinks,
-      auth: sub.auth ?? null,
+    if (canonicalize(remoteSub.sinks) !== canonicalize(sub.sinks) ||
+        canonicalize(remoteSub.sinkFilters ?? {}) !== canonicalize(sub.sinkFilters ?? {})) {
+      throw new Error(`remote subscription sink policy does not match local configuration: ${sub.name}`)
     }
-    if (canonicalize(remoteSub) !== canonicalize(expectedSub)) {
-      throw new Error(`remote subscription does not match local configuration: ${sub.name}`)
-    }
-  }))
+  }
 }
 
-async function assertRemoteAliasesReady(routes: Routes, oldName: string, newName: string): Promise<Set<string>> {
-  const oldSink = namedSink(routes, oldName).sink
+async function assertRemoteAliasesReady(
+  routes: Routes,
+  provider: ProviderConfigurationSnapshot,
+  oldName: string,
+  newName: string,
+): Promise<Set<string>> {
+  const oldSink = optionalNamedSink(routes, oldName)?.sink
   const newSink = namedSink(routes, newName).sink
-  const [remoteOldSink, remoteNewSink, remoteSecrets] = await Promise.all([
-    readRemoteSink(oldName),
-    readRemoteSink(newName),
-    listWranglerSecrets(),
-  ])
-  if (canonicalize(remoteOldSink) !== canonicalize(sinkConfig(oldSink))) {
+  const remoteOldSink = readRemoteSink(provider, oldName)
+  const remoteNewSink = readRemoteSink(provider, newName)
+  const remoteSecrets = await listWranglerSecrets()
+  if (canonicalize(remoteOldSink) !== canonicalize(sinkConfig(oldSink ?? newSink))) {
     throw new Error(`remote sink alias does not match local configuration: ${oldName}`)
   }
   if (canonicalize(remoteNewSink) !== canonicalize(sinkConfig(newSink))) {
     throw new Error(`remote sink alias does not match local configuration: ${newName}`)
   }
-  for (const sink of [oldSink, newSink]) {
+  for (const sink of oldSink ? [oldSink, newSink] : [newSink]) {
     for (const [field, value] of Object.entries(sinkRecord(sink))) {
       if (field.endsWith(ENV_REFERENCE_SUFFIX) && typeof value === 'string' && !remoteSecrets.has(value)) {
         throw new Error(`remote sink secret is not set: ${value}`)
@@ -387,13 +407,15 @@ async function runPrepare(options: SinkRenameOptions, routesPath: string, devVar
   console.log(`Prepared compatible sink names ${options.oldName} and ${options.newName}`)
   for (const secret of prepared.secrets) console.log(`Prepared secret rename ${secret.oldName} -> ${secret.name}`)
 
-  const production = await prepareProduction(prepared.secrets, options.yes)
+  const production = await prepareProduction(prepared.secrets, options.yes, {
+    puts: [prepared.oldSink, prepared.newSink].map(sink => ({ namespace: 'SINKS' as const, key: `sink:${sink.name}` })),
+  })
   if (production === 'local-only') {
-    console.log('Production was not changed; install the new secret and run pnpm sync, then pnpm sync -y')
+    console.log(`Production was not changed; install the new secret, then run pnpm sync --put-sink ${JSON.stringify(options.oldName)} --put-sink ${JSON.stringify(options.newName)} and add -y to apply`)
     return
   }
   if (production === 'previewed') {
-    console.log('The compatibility aliases were not deployed; run pnpm sync -y before switching')
+    console.log(`The compatibility names were not deployed; run pnpm sync --put-sink ${JSON.stringify(options.oldName)} --put-sink ${JSON.stringify(options.newName)} -y before switching`)
     return
   }
   console.log(`Compatibility aliases deployed; next run ${nextCommand(options.oldName, options.newName, SWITCH_PHASE)}`)
@@ -402,47 +424,80 @@ async function runPrepare(options: SinkRenameOptions, routesPath: string, devVar
 async function runSwitch(options: SinkRenameOptions, routesPath: string): Promise<void> {
   const routesText = await readFile(routesPath, 'utf8')
   const routes = parseRoutes(routesText)
-  await assertRemoteAliasesReady(routes, options.oldName, options.newName)
+  const provider = await readProviderConfiguration()
+  await assertRemoteAliasesReady(routes, provider, options.oldName, options.newName)
   const switched = switchSinkRename(routesText, options.oldName, options.newName)
   await writeText(routesPath, switched.routesText)
   if (switched.subscriptions.length === 0) console.log('No subscription references needed changing')
   else console.log(`Prepared subscription routing to ${options.newName}: ${switched.subscriptions.join(', ')}`)
 
-  const production = await prepareProduction(null, options.yes)
+  const switchedRoutes = parseRoutes(switched.routesText)
+  const selected = switchedRoutes.subs.filter(sub => switched.subscriptions.includes(sub.name))
+  const production = await prepareProduction(null, options.yes, {
+    puts: selected.map(sub => ({
+      namespace: 'SUBS' as const,
+      key: subscriptionKvKey(sub.slugHash),
+      policyFields: ['sinks', 'sinkFilters'] as const,
+    })),
+  })
   if (production === 'local-only') {
-    console.log('Production was not changed; run pnpm sync and pnpm sync -y before finalizing')
+    console.log(`Production was not changed; rerun ${nextCommand(options.oldName, options.newName, SWITCH_PHASE)} to preview and apply the exact switch`)
     return
   }
   if (production === 'previewed') {
-    console.log('Subscription routing was not changed; run pnpm sync -y before finalizing')
+    console.log(`Subscription routing was not changed; rerun ${nextCommand(options.oldName, options.newName, SWITCH_PHASE)} -y before finalizing`)
     return
   }
-  console.log(`Subscriptions switched; after KV propagation run ${nextCommand(options.oldName, options.newName, FINALIZE_PHASE)}`)
+  console.log(`Subscriptions switched; after provider propagation run ${nextCommand(options.oldName, options.newName, FINALIZE_PHASE)}`)
 }
 
 async function runFinalize(options: SinkRenameOptions, routesPath: string, devVarsPath: string): Promise<void> {
   const routesText = await readFile(routesPath, 'utf8')
   const devVarsText = await readOptionalText(devVarsPath)
   const routes = parseRoutes(routesText)
-  const finalized = finalizeSinkRename(routesText, devVarsText, options.oldName, options.newName)
-  const remoteSecrets = await assertRemoteAliasesReady(routes, options.oldName, options.newName)
-  await assertRemoteSubscriptionsSwitched(routes)
+  const provider = await readProviderConfiguration()
+  const canonicalizeProvider = provider.state.mode === 'active'
+  const finalized = finalizeSinkRename(
+    routesText,
+    devVarsText,
+    options.oldName,
+    options.newName,
+    canonicalizeProvider,
+  )
+  const remoteSecrets = await assertRemoteAliasesReady(routes, provider, options.oldName, options.newName)
+  assertRemoteSubscriptionsSwitched(routes, provider)
   const oldSecretNames = finalized.secretNames.map(({ oldName }) => oldName)
-  if (oldSecretNames.length === 0) {
+  if (oldSecretNames.length === 0 && !canonicalizeProvider) {
     console.log('No convention-derived secrets need finalizing')
     return
   }
-  if (!options.yes && !(await confirm(`Delete ${oldSecretNames.join(', ')} from Wrangler and .dev.vars?`))) {
+  const action = oldSecretNames.length > 0
+    ? `Finalize the provider identity and delete ${oldSecretNames.join(', ')} from Wrangler and .dev.vars?`
+    : 'Finalize the provider sink identity?'
+  if (!options.yes && !(await confirm(action))) {
     console.log('Finalization cancelled; old secrets were retained')
     return
   }
 
+  const providerPlan = canonicalizeProvider
+    ? await planProviderConfiguration(provider, {
+      rekeys: [{
+        namespace: 'SINKS',
+        fromKey: `sink:${options.oldName}`,
+        toKey: `sink:${options.newName}`,
+        retainFromAlias: true,
+        replaceTarget: true,
+      }],
+    })
+    : null
+  if (providerPlan) await applyProviderConfiguration(providerPlan)
   for (const secretName of oldSecretNames) {
     if (remoteSecrets.has(secretName)) await deleteWranglerSecret(secretName)
   }
   await writePrivateText(devVarsPath, finalized.devVarsText)
-  console.log(`Removed obsolete secrets: ${oldSecretNames.join(', ')}`)
-  console.log(`Retained sink alias ${options.oldName} so queued and historical retries remain valid`)
+  if (canonicalizeProvider) await writeText(routesPath, finalized.routesText)
+  if (oldSecretNames.length > 0) console.log(`Removed obsolete secrets: ${oldSecretNames.join(', ')}`)
+  console.log(`Retained provider sink alias ${options.oldName} so queued and historical retries remain valid`)
 }
 
 async function main(): Promise<void> {
@@ -452,7 +507,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSinkRenameArgs(argv)
-  await requireLegacyConfiguration()
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   if (options.phase === PREPARE_PHASE) await runPrepare(options, routesPath, devVarsPath)

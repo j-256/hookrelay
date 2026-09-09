@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from '../../configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
@@ -13,8 +12,9 @@ import {
   updateGitHubRepositoryHookEvents,
   validateGitHubRepo,
 } from './repository-hooks'
-import { confirm, getDevVar, readOptionalText, writeText } from '../../setup'
+import { confirm, getDevVar, prepareProduction, readOptionalText, writeText } from '../../setup'
 import { parseRoutes } from '../../sync'
+import { subscriptionKvKey } from '../../../src/lib/subscription'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -155,7 +155,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseGitHubSubscriptionEventsArgs(argv)
-  await requireLegacyConfiguration()
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')
@@ -168,6 +167,18 @@ async function main(): Promise<void> {
     )
   } else {
     console.log(`Using saved event profiles for ${options.name}: ${profileLabel(prepared.githubEvents.names)}`)
+  }
+
+  const production = await prepareProduction(null, options.yes, {
+    puts: [{
+      namespace: 'SUBS',
+      key: subscriptionKvKey(prepared.slugHash),
+      policyFields: ['filter'],
+    }],
+  })
+  if (production !== 'applied') {
+    console.log(`Provider filtering was not changed; rerun pnpm github:events ${JSON.stringify(options.name)} -y before changing GitHub`)
+    return
   }
 
   if (prepared.githubEvents.kind === 'manual') {

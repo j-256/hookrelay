@@ -18,7 +18,7 @@ import {
   writePrivateText,
   writeText,
 } from '../../scripts/setup'
-import { computePlan, parseRoutes } from '../../scripts/sync'
+import { computePlan, parseRoutes, type ProviderSyncScope } from '../../scripts/sync'
 import { modeAwareFileSystem } from '../helpers/atomic-file-system'
 import type { AtomicFileSystem } from '../../scripts/setup'
 
@@ -72,9 +72,11 @@ function dependencies(
   deleteHook: ReturnType<typeof vi.fn>
   logs: string[]
   syncRoutes: string[]
+  syncScopes: Array<{ apply: boolean; scope?: ProviderSyncScope }>
 } {
   const logs: string[] = []
   const syncRoutes: string[] = []
+  const syncScopes: Array<{ apply: boolean; scope?: ProviderSyncScope }> = []
   let shouldFail = failFinalSync
   const deleteHook = vi.fn(async (_repo: string, id: number) => {
     const index = hooks.findIndex((hook) => hook.id === id)
@@ -84,14 +86,16 @@ function dependencies(
     deleteHook,
     logs,
     syncRoutes,
+    syncScopes,
     dependencies: {
       readText: (path) => readFile(path, 'utf8'),
       readPrivateText: (path) => readPrivateOptionalText(path, fileSystem),
       writeText,
       writePrivateText: (path, text) => writePrivateText(path, text, fileSystem),
       readKv: async () => ({ subs: { ...remote.subs }, sinks: { ...remote.sinks } }),
-      runSync: async (apply, routesPath = join(directory, 'routes.jsonc')) => {
+      runSync: async (apply, routesPath = join(directory, 'routes.jsonc'), scope) => {
         syncRoutes.push(routesPath)
+        syncScopes.push({ apply, ...(scope ? { scope } : {}) })
         const text = await readFile(routesPath, 'utf8')
         if (apply && shouldFail && parseRoutes(text).subs.length === 0) {
           shouldFail = false
@@ -216,15 +220,48 @@ describe('subscription retirement', () => {
     ]
     const secrets = new Set(['HMAC_EXAMPLE_REPO', 'SINK_DELIVERY_URL'])
     const harness = dependencies(directory, remote, hooks, secrets, fileSystem)
+    const subscriptionKey = `sub:sha256:${await hashSubscriptionSlug(RAW_SLUG)}`
     try {
       await expect(runSubscriptionRetirement(options(), harness.dependencies, directory)).resolves.toBe('applied')
       expect(parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8')).subs[0]?.enabled).toBe(false)
       expect(JSON.parse(Object.values(remote.subs)[0]!).enabled).toBe(false)
+      expect(harness.syncScopes).toEqual([
+        {
+          apply: false,
+          scope: {
+            puts: [{
+              namespace: 'SUBS',
+              key: subscriptionKey,
+              policyFields: ['enabled'],
+            }],
+          },
+        },
+        {
+          apply: true,
+          scope: {
+            puts: [{
+              namespace: 'SUBS',
+              key: subscriptionKey,
+              policyFields: ['enabled'],
+            }],
+          },
+        },
+      ])
       expect((await fileSystem.lstat(join(directory, 'retirements.json'))).mode & 0o777).toBe(0o600)
 
       await expect(runSubscriptionRetirement(options(true), harness.dependencies, directory)).resolves.toBe('finalized')
       expect(parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8')).subs).toEqual([])
       expect(remote.subs).toEqual({})
+      expect(harness.syncScopes.slice(2)).toEqual([
+        {
+          apply: false,
+          scope: { deletes: [{ namespace: 'SUBS', key: subscriptionKey }] },
+        },
+        {
+          apply: true,
+          scope: { deletes: [{ namespace: 'SUBS', key: subscriptionKey }] },
+        },
+      ])
       expect(hooks.map((hook) => hook.id)).toEqual([2])
       expect(secrets.has('HMAC_EXAMPLE_REPO')).toBe(false)
       expect(await readFile(join(directory, '.dev.vars'), 'utf8')).not.toContain('HMAC_EXAMPLE_REPO=')

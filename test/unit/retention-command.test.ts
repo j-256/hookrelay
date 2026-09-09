@@ -45,6 +45,10 @@ function dependencies(fetchFn: typeof fetch): RetentionDependencies & {
   return {
     fetch: fetchFn,
     readText: async (path) => path === 'routes.jsonc' ? ROUTES : WRANGLER,
+    readProviderConfiguration: async () => ({
+      subs: { 'config:retention': '{"d1Days":90,"r2Days":30}' },
+      sinks: {},
+    }),
     confirm: confirmMock,
     environment: {
       CLOUDFLARE_ACCOUNT_ID: 'account-id',
@@ -142,6 +146,18 @@ describe('retention command', () => {
     expect(fetchMock).toHaveBeenCalledOnce()
   })
 
+  it('refuses R2 work until provider retention matches the reviewed local value', async () => {
+    const fetchMock = vi.fn(async () => response([]))
+    const deps = dependencies(fetchMock as typeof fetch)
+    deps.readProviderConfiguration = async () => ({
+      subs: { 'config:retention': '{"d1Days":30,"r2Days":10}' },
+      sinks: {},
+    })
+
+    await expect(runRetentionCommand({ phase: 'plan', yes: false }, deps)).rejects.toThrow(/--put-retention/)
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+
   it('removes only the managed rule when R2 retention is omitted', async () => {
     let remoteRules: LifecycleRule[] = [unrelatedRule, managedLifecycleRule(30)]
     const fetchMock = vi.fn(async (
@@ -158,6 +174,10 @@ describe('retention command', () => {
     deps.readText = async (path) => path === 'routes.jsonc'
       ? '{ "retention": { "d1Days": 90 }, "subs": [], "sinks": [] }'
       : WRANGLER
+    deps.readProviderConfiguration = async () => ({
+      subs: { 'config:retention': '{"d1Days":90}' },
+      sinks: {},
+    })
 
     await expect(runRetentionCommand({ phase: 'apply', yes: true }, deps)).resolves.toBe('applied')
     expect(remoteRules).toEqual([unrelatedRule])

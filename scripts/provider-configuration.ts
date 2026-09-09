@@ -30,6 +30,14 @@ export interface ProviderConfigurationSnapshot extends RemoteKvSnapshot {
   aliases: ConfigurationAlias[]
 }
 
+export function isActiveProviderConfiguration(
+  snapshot: RemoteKvSnapshot,
+): snapshot is ProviderConfigurationSnapshot {
+  const candidate = snapshot as Partial<ProviderConfigurationSnapshot>
+  return candidate.state?.mode === CONFIGURATION_MODE.ACTIVE &&
+    Array.isArray(candidate.entries) && Array.isArray(candidate.aliases)
+}
+
 export interface ProviderConfigurationPut {
   namespace: ConfigurationNamespace
   key: string
@@ -50,6 +58,7 @@ export interface ProviderConfigurationRekey {
   toKey: string
   retainFromAlias: boolean
   replaceTarget?: boolean
+  allowMissingSourceIfTarget?: boolean
   value?: string
   retired?: boolean
 }
@@ -103,8 +112,8 @@ const DEFAULT_DEPENDENCIES: Required<Omit<ProviderConfigurationDependencies, 'qu
   readLegacy: (progress) => readRemoteKvSnapshot(runProcess, progress),
   putLegacy: (binding, key, value) => putRemoteKv(binding, key, value),
   deleteLegacy: (binding, key) => deleteRemoteKv(binding, key),
-  randomUuid: crypto.randomUUID,
-  now: Date.now,
+  randomUuid: () => crypto.randomUUID(),
+  now: () => Date.now(),
 }
 
 function dependencies(input: ProviderConfigurationDependencies) {
@@ -269,6 +278,22 @@ export async function planProviderConfiguration(
       }
       continue
     }
+    if (!source && !sourceAlias && target && rekey.allowMissingSourceIfTarget) {
+      if (rekey.value !== undefined || rekey.retired !== undefined) {
+        const nextValue = rekey.value ?? target.value
+        const nextRetired = rekey.retired ?? target.retired ?? false
+        if (target.value !== nextValue || target.retired !== nextRetired) {
+          puts.push({
+            namespace: rekey.namespace,
+            key: rekey.toKey,
+            resourceId: target.resourceId,
+            value: nextValue,
+            retired: nextRetired,
+          })
+        }
+      }
+      continue
+    }
     if (!source) throw new ConfigurationError('conflict', 'The canonical configuration resource to rekey is missing')
     if ((target || targetAlias) && !rekey.replaceTarget) {
       throw new ConfigurationError('conflict', 'The replacement configuration key already exists')
@@ -385,18 +410,33 @@ export async function changeProviderConfiguration(
 }
 
 export function providerConfigurationPlanSummary(plan: ProviderConfigurationPlan) {
+  const puts = plan.mode === 'active'
+    ? plan.review?.change.puts ?? []
+    : plan.mutation.puts
+  const deletes = plan.mode === 'active'
+    ? plan.review?.change.deletes ?? []
+    : plan.mutation.deletes
+  const rekeys = plan.mode === 'active'
+    ? plan.review?.change.moves.map(entry => ({ ...entry, retainFromAlias: plan.review!.change.aliasPuts.some(alias => (
+        alias.namespace === entry.namespace && alias.key === entry.fromKey
+      )) })) ?? []
+    : plan.mutation.rekeys
+  const aliasDeletes = plan.mode === 'active'
+    ? plan.review?.change.aliasDeletes ?? []
+    : plan.mutation.aliasDeletes
   return {
     mode: plan.mode,
     authorityId: plan.before.state.authorityId,
     expectedRevision: plan.before.state.revision,
-    puts: plan.mutation.puts.map(entry => ({ namespace: entry.namespace, key: entry.key })),
-    deletes: plan.mutation.deletes.map(entry => ({ namespace: entry.namespace, key: entry.key })),
-    rekeys: plan.mutation.rekeys.map(entry => ({
+    changed: puts.length + deletes.length + rekeys.length + aliasDeletes.length > 0,
+    puts: puts.map(entry => ({ namespace: entry.namespace, key: entry.key })),
+    deletes: deletes.map(entry => ({ namespace: entry.namespace, key: entry.key })),
+    rekeys: rekeys.map(entry => ({
       namespace: entry.namespace,
       fromKey: entry.fromKey,
       toKey: entry.toKey,
       retainFromAlias: entry.retainFromAlias,
     })),
-    aliasDeletes: plan.mutation.aliasDeletes.map(entry => ({ namespace: entry.namespace, key: entry.key })),
+    aliasDeletes: aliasDeletes.map(entry => ({ namespace: entry.namespace, key: entry.key })),
   }
 }

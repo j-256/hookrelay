@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from './configuration-client'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { subscriptionKvKey } from '../src/lib/subscription'
@@ -8,7 +7,7 @@ import {
   matchingGitHubRepositoryHooks,
   type GitHubRepositoryHook,
 } from './providers/github/repository-hooks'
-import { readRemoteKvSnapshot, type RemoteKvSnapshot } from './kv'
+import type { RemoteKvSnapshot } from './kv'
 import {
   archiveSubscription,
   captureSecretValues,
@@ -31,7 +30,8 @@ import {
   writePrivateText,
   writeText,
 } from './setup'
-import { parseRoutes, type Routes, type Sub } from './sync'
+import { parseRoutes, type ProviderSyncScope, type Routes, type Sub } from './sync'
+import { readProviderConfiguration } from './provider-configuration'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -53,7 +53,7 @@ export interface SubscriptionRetirementDependencies {
   writeText(path: string, text: string): Promise<void>
   writePrivateText(path: string, text: string): Promise<void>
   readKv(): Promise<RemoteKvSnapshot>
-  runSync(apply: boolean, routesPath?: string): Promise<void>
+  runSync(apply: boolean, routesPath?: string, scope?: ProviderSyncScope): Promise<void>
   confirm(question: string): Promise<boolean>
   listHooks(repo: string): Promise<GitHubRepositoryHook[]>
   deleteHook(repo: string, id: number): Promise<void>
@@ -67,7 +67,7 @@ const DEFAULT_DEPENDENCIES: SubscriptionRetirementDependencies = {
   readPrivateText: readPrivateOptionalText,
   writeText,
   writePrivateText,
-  readKv: readRemoteKvSnapshot,
+  readKv: () => readProviderConfiguration(),
   runSync,
   confirm,
   listHooks: listGitHubRepositoryHooks,
@@ -82,7 +82,7 @@ export function subscriptionRetirementUsage(): string {
     'usage: pnpm sub:retire <name> --manifest <file> [--routes <file>] [--dev-vars <file>] [--expected-slug-hash <hash>] [--finalize] [-y]',
     '',
     'phases:',
-    '  default     Disable the local subscription and preview or apply KV',
+    '  default     Disable the local subscription and preview or apply provider configuration',
     '  --finalize  Archive recovery data, remove owned resources, and clean safe secrets',
     '',
     'options:',
@@ -189,16 +189,16 @@ function assertRemoteDisabled(
   const value = remote.subs[key]
   if (value === undefined) {
     if (archive?.localRemoved || archive?.kvRemoved) return
-    throw new Error(`subscription ${subscription.name} is not present in production KV; apply the disable phase first`)
+    throw new Error(`subscription ${subscription.name} is not present in provider configuration; apply the disable phase first`)
   }
   let parsed: unknown
   try {
     parsed = JSON.parse(value)
   } catch {
-    throw new Error(`subscription ${subscription.name} has invalid production KV configuration`)
+    throw new Error(`subscription ${subscription.name} has invalid provider configuration`)
   }
   if (typeof parsed !== 'object' || parsed === null || (parsed as Record<string, unknown>).enabled !== false) {
-    throw new Error(`subscription ${subscription.name} is not disabled in production KV`)
+    throw new Error(`subscription ${subscription.name} is not disabled in provider configuration`)
   }
 }
 
@@ -239,12 +239,19 @@ async function prepareSubscriptionRetirement(
   await persistManifest(paths.manifest, manifest, dependencies)
   if (disabled.changed) await dependencies.writeText(paths.routes, disabled.routesText)
   dependencies.log(`${disabled.changed ? 'Disabled' : 'Already disabled'} subscription ${options.name} locally`)
-  await dependencies.runSync(false, paths.routes)
-  if (!options.yes && !(await dependencies.confirm(`Apply the disabled subscription ${options.name} to production KV?`))) {
-    dependencies.log('Production KV was not changed')
+  const scope: ProviderSyncScope = {
+    puts: [{
+      namespace: 'SUBS',
+      key: subscriptionKvKey(local.slugHash),
+      policyFields: ['enabled'],
+    }],
+  }
+  await dependencies.runSync(false, paths.routes, scope)
+  if (!options.yes && !(await dependencies.confirm(`Apply the disabled subscription ${options.name} to provider configuration?`))) {
+    dependencies.log('Production configuration was not changed')
     return 'cancelled'
   }
-  await dependencies.runSync(true, paths.routes)
+  await dependencies.runSync(true, paths.routes, scope)
   dependencies.log(`Applied disabled subscription ${options.name}`)
   return options.yes ? 'applied' : 'prepared'
 }
@@ -373,17 +380,20 @@ async function finalizeSubscriptionRetirement(
     manifest = updateArchive(manifest, options.name, { localRemoved: true })
     await persistManifest(paths.manifest, manifest, dependencies)
   }
-  await dependencies.runSync(false, paths.routes)
+  const scope: ProviderSyncScope = {
+    deletes: [{ namespace: 'SUBS', key: subscriptionKvKey(subscription.slugHash) }],
+  }
+  await dependencies.runSync(false, paths.routes, scope)
   if (!options.yes && !(await dependencies.confirm(`Finalize subscription retirement for ${options.name}?`))) {
     dependencies.log('Finalization cancelled; the disabled production route and recovery archive were retained')
     return 'cancelled'
   }
 
   manifest = await deletePlannedHook(manifest, options.name, subscription, paths.manifest, dependencies)
-  await dependencies.runSync(true, paths.routes)
+  await dependencies.runSync(true, paths.routes, scope)
   const verified = await dependencies.readKv()
   if (verified.subs[subscriptionKvKey(subscription.slugHash)] !== undefined) {
-    throw new Error(`subscription ${options.name} still exists in production KV after sync`)
+    throw new Error(`subscription ${options.name} still exists in provider configuration after sync`)
   }
   manifest = updateArchive(manifest, options.name, { kvRemoved: true })
   await persistManifest(paths.manifest, manifest, dependencies)
@@ -421,7 +431,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSubscriptionRetirementArgs(argv)
-  await requireLegacyConfiguration()
   await runSubscriptionRetirement(options)
 }
 

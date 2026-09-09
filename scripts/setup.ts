@@ -4,6 +4,7 @@ import { chmod, lstat, open, readFile, rename, unlink } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { createInterface } from 'node:readline/promises'
 import { parseEnv } from 'node:util'
+import type { ProviderSyncScope } from './sync'
 
 export interface SecretValue {
   name: string
@@ -29,6 +30,7 @@ const NODE_FILE_SYSTEM: AtomicFileSystem = { chmod, lstat, open, rename, unlink 
 export type ProductionResult = 'local-only' | 'previewed' | 'applied'
 
 export const WRANGLER_BULK_SECRET_LIMIT = 100
+export const PROVIDER_SYNC_SCOPE_ENV = 'HOOKRELAY_PROVIDER_SYNC_SCOPE'
 const PRIVATE_PROCESS_ENV = Object.freeze({
   WRANGLER_LOG_SANITIZE: 'true',
   WRANGLER_WRITE_LOGS: 'false',
@@ -40,6 +42,7 @@ interface ProcessOptions {
   captureStdout?: boolean
   privateOutput?: boolean
   privateInput?: boolean
+  environment?: Record<string, string>
 }
 
 export function envSegment(value: string): string {
@@ -252,7 +255,15 @@ export async function readSecret(prompt: string): Promise<string> {
 export async function runProcess(command: string, args: string[], options: ProcessOptions = {}): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
-      ...(options.privateOutput || options.privateInput ? { env: { ...process.env, ...PRIVATE_PROCESS_ENV } } : {}),
+      ...(options.privateOutput || options.privateInput || options.environment
+        ? {
+            env: {
+              ...process.env,
+              ...(options.privateOutput || options.privateInput ? PRIVATE_PROCESS_ENV : {}),
+              ...options.environment,
+            },
+          }
+        : {}),
       stdio: [
         options.input === undefined ? 'inherit' : 'pipe',
         options.privateOutput ? 'ignore' : options.captureStdout ? 'pipe' : options.privateInput ? 'ignore' : 'inherit',
@@ -344,32 +355,40 @@ export async function deleteWranglerSecretsBulk(
   return patchWranglerSecretsBulk(values, runner)
 }
 
-export async function runSync(apply: boolean, routesPath?: string): Promise<void> {
+export async function runSync(
+  apply: boolean,
+  routesPath?: string,
+  scope?: ProviderSyncScope,
+): Promise<void> {
   await runProcess('npx', [
     'tsx',
     'scripts/sync.ts',
     ...(routesPath ? ['--routes', routesPath] : []),
     ...(apply ? ['--yes'] : []),
-  ])
+  ], scope ? { environment: { [PROVIDER_SYNC_SCOPE_ENV]: JSON.stringify(scope) } } : {})
 }
 
-export async function prepareProduction(secrets: SecretValue | SecretValue[] | null, yes: boolean): Promise<ProductionResult> {
+export async function prepareProduction(
+  secrets: SecretValue | SecretValue[] | null,
+  yes: boolean,
+  scope?: ProviderSyncScope,
+): Promise<ProductionResult> {
   const secretList = secrets === null ? [] : Array.isArray(secrets) ? secrets : [secrets]
   const secretNames = secretList.map((secret) => secret.name).join(', ')
   const action = secretList.length > 0
-    ? `Set ${secretNames} in Wrangler and preview the production KV plan?`
-    : 'Preview the production KV plan?'
+    ? `Set ${secretNames} in Wrangler and preview the production configuration plan?`
+    : 'Preview the production configuration plan?'
   if (!yes && !(await confirm(action))) return 'local-only'
 
   if (secretList.length === 1) await putWranglerSecret(secretList[0]!)
   if (secretList.length > 1) await putWranglerSecretsBulk(secretList)
   if (yes) {
-    await runSync(true)
+    await runSync(true, undefined, scope)
     return 'applied'
   }
 
-  await runSync(false)
-  if (!(await confirm('Apply this production KV plan?'))) return 'previewed'
-  await runSync(true)
+  await runSync(false, undefined, scope)
+  if (!(await confirm('Apply this production configuration plan?'))) return 'previewed'
+  await runSync(true, undefined, scope)
   return 'applied'
 }

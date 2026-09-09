@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from './configuration-client'
 import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -182,7 +181,6 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSinkAddArgs(argv)
-  await requireLegacyConfiguration()
   const routesPath = resolve(ROUTES_FILE)
   const devVarsPath = resolve(DEV_VARS_FILE)
   const routesText = await readFile(routesPath, 'utf8')
@@ -205,11 +203,13 @@ async function main(): Promise<void> {
     console.log(`Save the generated signing secret as ${signingSecret!.name}=${signingSecret!.value}`)
   }
 
-  const production = await prepareProduction(prepared.secrets, options.yes)
+  const production = await prepareProduction(prepared.secrets, options.yes, {
+    puts: [{ namespace: 'SINKS', key: `sink:${prepared.sink.name}` }],
+  })
   if (production === 'local-only') {
-    console.log(`Production was not changed; install ${prepared.secrets.map((secret) => secret.name).join(', ')} in Wrangler, then run pnpm sync and pnpm sync -y`)
+    console.log(`Production was not changed; install ${prepared.secrets.map((secret) => secret.name).join(', ')} in Wrangler, then run pnpm sync --put-sink ${JSON.stringify(prepared.sink.name)} and add -y to apply`)
   } else if (production === 'previewed') {
-    console.log('The KV sink was not changed; run pnpm sync -y to apply it')
+    console.log(`The provider sink was not changed; run pnpm sync --put-sink ${JSON.stringify(prepared.sink.name)} -y to apply it`)
   }
 }
 

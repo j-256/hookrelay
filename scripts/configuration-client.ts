@@ -1,9 +1,7 @@
 import { readFile } from 'node:fs/promises'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { z } from 'zod'
-import {
-  CONFIGURATION_MODE, ConfigurationError, readConfigurationState, type ConfigurationQuery,
-} from '../src/configuration/authority'
+import { ConfigurationError, type ConfigurationQuery } from '../src/configuration/authority'
 
 const OPERATOR_QUERY_LIMITS = Object.freeze({ TIMEOUT_MS: 15000, RESPONSE_BYTES: 2 * 1024 * 1024 })
 export const CONFIGURATION_OPERATOR = Object.freeze({
@@ -77,11 +75,4 @@ export function createOperatorConfigurationQuery(
 
 export async function operatorConfigurationQuery(configPath = 'wrangler.jsonc'): Promise<ConfigurationQuery> {
   return createOperatorConfigurationQuery(configurationDatabaseId(await readFile(configPath, 'utf8')))
-}
-
-export async function requireLegacyConfiguration(query?: ConfigurationQuery): Promise<void> {
-  const state = await readConfigurationState(query ?? await operatorConfigurationQuery())
-  if (state.mode !== CONFIGURATION_MODE.LEGACY) {
-    throw new ConfigurationError('inactive', 'This routes.jsonc workflow is unavailable with the active provider authority; use pnpm configuration or the reviewed online policy editor')
-  }
 }

@@ -103,6 +103,53 @@ describe('storage-neutral provider configuration', () => {
     expect(repeated.mode === 'active' && repeated.review).toBeNull()
     expect(await applyProviderConfiguration(repeated, { query })).toBeNull()
     expect(await readConfigurationState(query)).toMatchObject({ revision: 3 })
+
+    const removeAlias = await planProviderConfiguration(result, {
+      aliasDeletes: [{ namespace: 'SUBS', key: KEY }],
+    }, { query, randomUuid: () => '10000000-0000-4000-8000-000000000098' })
+    await applyProviderConfiguration(removeAlias, { query })
+    const cleaned = await readProviderConfiguration({ query })
+    const completed = await planProviderConfiguration(cleaned, {
+      rekeys: [{
+        namespace: 'SUBS', fromKey: KEY, toKey: NEXT_KEY,
+        retainFromAlias: true, replaceTarget: true, allowMissingSourceIfTarget: true,
+      }],
+    }, { query, randomUuid: () => '10000000-0000-4000-8000-000000000097' })
+    expect(completed.mode === 'active' && completed.review).toBeNull()
+  })
+
+  it('keeps a sink resource identity while replacing its temporary rename target', async () => {
+    await activate()
+    let sequence = 20
+    const nextUuid = () => `00000000-0000-4000-8000-${String(sequence++).padStart(12, '0')}`
+    let snapshot = await readProviderConfiguration({ query })
+    const overlap = await planProviderConfiguration(snapshot, {
+      puts: [
+        { namespace: 'SINKS', key: 'sink:old-name', value: JSON.stringify({ type: 'ntfy', topic: 'same' }) },
+        { namespace: 'SINKS', key: 'sink:new-name', value: JSON.stringify({ type: 'ntfy', topic: 'same' }) },
+      ],
+    }, { query, randomUuid: nextUuid })
+    await applyProviderConfiguration(overlap, { query })
+    snapshot = await readProviderConfiguration({ query })
+    const oldResourceId = snapshot.entries.find(entry => entry.key === 'sink:old-name')!.resourceId
+    const temporaryResourceId = snapshot.entries.find(entry => entry.key === 'sink:new-name')!.resourceId
+
+    const renamed = await planProviderConfiguration(snapshot, {
+      rekeys: [{
+        namespace: 'SINKS',
+        fromKey: 'sink:old-name',
+        toKey: 'sink:new-name',
+        retainFromAlias: true,
+        replaceTarget: true,
+      }],
+    }, { query, randomUuid: nextUuid })
+    await applyProviderConfiguration(renamed, { query })
+
+    const result = await readProviderConfiguration({ query })
+    expect(result.entries.find(entry => entry.key === 'sink:new-name')).toMatchObject({ resourceId: oldResourceId })
+    expect(result.entries.some(entry => entry.resourceId === temporaryResourceId)).toBe(false)
+    expect(result.aliases).toContainEqual({ namespace: 'SINKS', key: 'sink:old-name', resourceId: oldResourceId })
+    expect(result.sinks['sink:old-name']).toEqual(result.sinks['sink:new-name'])
   })
 
   it('reconciles a receipt after the acceptance response is lost', async () => {
