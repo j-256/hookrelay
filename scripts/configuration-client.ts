@@ -6,6 +6,12 @@ import {
 } from '../src/configuration/authority'
 
 const OPERATOR_QUERY_LIMITS = Object.freeze({ TIMEOUT_MS: 15000, RESPONSE_BYTES: 2 * 1024 * 1024 })
+export const CONFIGURATION_OPERATOR = Object.freeze({
+  clientId: 'cloudflare-operator',
+  clientRevision: 1,
+  workspaceId: 'provider',
+  actorId: 'account-operator',
+})
 const databaseConfig = z.object({
   d1_databases: z.array(z.object({ binding: z.string(), database_id: z.uuid() })),
 })

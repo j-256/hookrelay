@@ -9,10 +9,11 @@ import {
 } from '../src/configuration/authority'
 import { applySubscriptionPolicy, readSubscriptionPolicy } from '../src/configuration/policy'
 import { OPERATIONS_FALLBACK_PREFIX } from '../src/lib/runtime-config'
+import { CONFIGURATION_OPERATOR } from './configuration-client'
 import { computePlan, parseRoutes } from './sync'
 import type { RemoteKvSnapshot } from './kv'
 
-export const CONFIGURATION_OPERATOR = Object.freeze({ clientId: 'cloudflare-operator', clientRevision: 1, workspaceId: 'provider', actorId: 'account-operator' })
+export { CONFIGURATION_OPERATOR } from './configuration-client'
 export const configurationExportSchema = z.object({
   version: z.literal(1), authorityId: authorityIdSchema, revision: z.number().int().nonnegative(),
   entries: z.array(configurationEntrySchema).max(CONFIGURATION_LIMITS.ENTRIES),
