@@ -5,7 +5,16 @@ import { planEventDeliveries } from '../../../src/ingest'
 import { hmacSha256Hex } from '../../../src/lib/hmac'
 import { subscriptionKvKey } from '../../../src/lib/subscription'
 import type { NormalizedEvent } from '../../../src/types'
-import { putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
+import type { RemoteKvSnapshot } from '../../../scripts/kv'
+import {
+  applyProviderConfiguration,
+  changeProviderConfiguration,
+  isActiveProviderConfiguration,
+  planProviderConfiguration,
+  providerConfigurationPlanSummary,
+  readProviderConfiguration,
+  type ProviderConfigurationPlan,
+} from '../../../scripts/provider-configuration'
 import {
   confirm,
   getDevVar,
@@ -19,7 +28,14 @@ import {
   writeText,
   type SecretValue,
 } from '../../../scripts/setup'
-import { computePlan, parseRoutes, type Routes, type Sub } from '../../../scripts/sync'
+import {
+  computePlan,
+  parseRoutes,
+  scopedProviderMutation,
+  type ProviderSyncScope,
+  type Routes,
+  type Sub,
+} from '../../../scripts/sync'
 import {
   parseManagedSubscriptionManifest,
   type ManagedSubscriptionManifest,
@@ -101,6 +117,7 @@ export interface ManagedSubscriptionDependencies {
   putSenderSecrets(configPath: string, secrets: readonly SecretValue[]): Promise<Set<string>>
   readKv(progress?: ProgressReporter): Promise<RemoteKvSnapshot>
   putKv(binding: string, key: string, value: string): Promise<void>
+  applyProviderPlan(plan: ProviderConfigurationPlan): Promise<void>
   confirm(question: string): Promise<boolean>
   fetch: Fetcher
 }
@@ -143,8 +160,13 @@ const DEFAULT_DEPENDENCIES: ManagedSubscriptionDependencies = {
   putReceiverSecrets: putWranglerSecretsBulk,
   listSenderSecrets: listConfigSecrets,
   putSenderSecrets: putConfigSecrets,
-  readKv: (progress) => readRemoteKvSnapshot(undefined, progress),
-  putKv: putRemoteKv,
+  readKv: (progress) => readProviderConfiguration({}, progress),
+  putKv: async (binding, key, value) => {
+    await changeProviderConfiguration({
+      puts: [{ namespace: binding as 'SUBS' | 'SINKS', key, value }],
+    })
+  },
+  applyProviderPlan: (plan) => applyProviderConfiguration(plan).then(() => undefined),
   confirm,
   fetch,
 }
@@ -301,12 +323,39 @@ function remoteRouteNameCollisions(
   return issues
 }
 
-function selectedPlanUpdates(
+function selectedProviderScope(
+  expected: ReadonlyMap<string, Sub>,
+  sinkNames: ReadonlySet<string>,
+): ProviderSyncScope {
+  return {
+    puts: [
+      ...[...expected.values()].map(route => ({
+        namespace: 'SUBS' as const,
+        key: subscriptionKvKey(route.slugHash),
+        policyFields: ['sinks', 'filter', 'sinkFilters'] as const,
+      })),
+      ...[...sinkNames].map(name => ({ namespace: 'SINKS' as const, key: `sink:${name}` })),
+    ],
+  }
+}
+
+async function selectedPlanUpdates(
   routes: Routes,
   remote: RemoteKvSnapshot,
   expected: ReadonlyMap<string, Sub>,
   sinkNames: ReadonlySet<string>,
-): { subscriptions: number; sinks: number } {
+): Promise<{ subscriptions: number; sinks: number }> {
+  if (isActiveProviderConfiguration(remote)) {
+    const plan = await planProviderConfiguration(
+      remote,
+      scopedProviderMutation(routes, remote, selectedProviderScope(expected, sinkNames)),
+    )
+    const summary = providerConfigurationPlanSummary(plan)
+    return {
+      subscriptions: summary.puts.filter(put => put.namespace === 'SUBS').length,
+      sinks: summary.puts.filter(put => put.namespace === 'SINKS').length,
+    }
+  }
   const plan = computePlan(routes, remote)
   const subscriptionKeys = new Set([...expected.values()].map((route) => subscriptionKvKey(route.slugHash)))
   const sinkKeys = new Set([...sinkNames].map((name) => `sink:${name}`))
@@ -372,7 +421,7 @@ export async function planManagedSubscriptions(
     if (!blockers.includes(message)) blockers.push(message)
   }
 
-  options.progress?.('Reading Hookrelay Worker secrets and production routes')
+  options.progress?.('Reading Hookrelay Worker secrets and provider routes')
   const [receiverSecrets, remote] = await Promise.all([
     dependencies.listReceiverSecrets(),
     dependencies.readKv(options.progress),
@@ -413,7 +462,7 @@ export async function planManagedSubscriptions(
     const projectedText = updateManagedRoutes(files.routesText, files.routes.subs, expected).routesText
     projectedRoutes = parseRoutes(projectedText)
   } catch {}
-  const remoteUpdates = selectedPlanUpdates(projectedRoutes, remote, expected, sinkNames)
+  const remoteUpdates = await selectedPlanUpdates(projectedRoutes, remote, expected, sinkNames)
 
   return {
     selected,
@@ -576,25 +625,40 @@ export async function applyManagedSubscriptions(
   }
 
   const remote = await dependencies.readKv(options.progress)
-  const puts = selectedRouteAndSinkPuts(files.routes, remote, expected, sinkNames)
-  for (const put of puts.subscriptions) await dependencies.putKv('SUBS', put.key, put.value)
-  for (const put of puts.sinks) await dependencies.putKv('SINKS', put.key, put.value)
+  let subscriptionRoutesWritten = 0
+  let sinkRoutesWritten = 0
+  if (isActiveProviderConfiguration(remote)) {
+    const providerPlan = await planProviderConfiguration(
+      remote,
+      scopedProviderMutation(files.routes, remote, selectedProviderScope(expected, sinkNames)),
+    )
+    const summary = providerConfigurationPlanSummary(providerPlan)
+    subscriptionRoutesWritten = summary.puts.filter(put => put.namespace === 'SUBS').length
+    sinkRoutesWritten = summary.puts.filter(put => put.namespace === 'SINKS').length
+    if (summary.changed) await dependencies.applyProviderPlan(providerPlan)
+  } else {
+    const puts = selectedRouteAndSinkPuts(files.routes, remote, expected, sinkNames)
+    for (const put of puts.subscriptions) await dependencies.putKv('SUBS', put.key, put.value)
+    for (const put of puts.sinks) await dependencies.putKv('SINKS', put.key, put.value)
+    subscriptionRoutesWritten = puts.subscriptions.length
+    sinkRoutesWritten = puts.sinks.length
+  }
 
-  const remaining = selectedRouteAndSinkPuts(
+  const remaining = await selectedPlanUpdates(
     files.routes,
     await dependencies.readKv(options.progress),
     expected,
     sinkNames,
   )
-  if (remaining.subscriptions.length > 0 || remaining.sinks.length > 0) {
-    throw new Error('production KV did not retain all managed subscription updates')
+  if (remaining.subscriptions > 0 || remaining.sinks > 0) {
+    throw new Error('provider configuration did not retain all managed subscription updates')
   }
   return {
     applied: true,
     receiverSecretsInstalled: receiverAdditions.length,
     senderSecretsInstalled,
-    subscriptionRoutesWritten: puts.subscriptions.length,
-    sinkRoutesWritten: puts.sinks.length,
+    subscriptionRoutesWritten,
+    sinkRoutesWritten,
   }
 }
 

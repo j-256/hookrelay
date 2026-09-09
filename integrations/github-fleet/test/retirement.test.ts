@@ -26,6 +26,10 @@ import { parseGitHubEventSelection } from '../../../scripts/providers/github/eve
 import type { GitHubRepositoryHook } from '../../../scripts/providers/github/repository-hooks'
 import { readPrivateOptionalText, writePrivateText, writeText } from '../../../scripts/setup'
 import { computePlan, parseRoutes } from '../../../scripts/sync'
+import type {
+  ProviderConfigurationPlan,
+  ProviderConfigurationSnapshot,
+} from '../../../scripts/provider-configuration'
 import { modeAwareFileSystem } from '../../../test/helpers/atomic-file-system'
 import type { AtomicFileSystem } from '../../../scripts/setup'
 
@@ -112,6 +116,57 @@ function applyPlan(
   for (const key of plan.sinkDeletes) delete remote.sinks[key]
 }
 
+function activeProvider(routesText: string): ProviderConfigurationSnapshot {
+  const desired = computePlan(parseRoutes(routesText), { subs: {}, sinks: {} })
+  let resource = 70
+  const nextResource = () => `00000000-0000-4000-8000-${String(resource++).padStart(12, '0')}`
+  const provider: ProviderConfigurationSnapshot = {
+    state: { authorityId: 'f'.repeat(32), revision: 1, mode: 'active' },
+    entries: [
+      ...desired.subPuts.map(entry => ({
+        namespace: 'SUBS' as const, ...entry, resourceId: nextResource(), retired: false,
+      })),
+      ...desired.sinkPuts.map(entry => ({
+        namespace: 'SINKS' as const, ...entry, resourceId: nextResource(), retired: false,
+      })),
+    ],
+    aliases: [],
+    subs: {},
+    sinks: {},
+  }
+  materializeActiveProvider(provider)
+  return provider
+}
+
+function materializeActiveProvider(provider: ProviderConfigurationSnapshot): void {
+  provider.subs = {}
+  provider.sinks = {}
+  for (const entry of provider.entries) {
+    provider[entry.namespace === 'SUBS' ? 'subs' : 'sinks'][entry.key] = entry.value
+  }
+}
+
+function applyActiveProviderPlan(
+  provider: ProviderConfigurationSnapshot,
+  plan: ProviderConfigurationPlan,
+): void {
+  if (plan.mode !== 'active') throw new Error('test provider accepts only active plans')
+  const change = plan.review?.change
+  if (!change) return
+  for (const deleted of change.deletes) {
+    provider.entries = provider.entries.filter(entry => (
+      entry.namespace !== deleted.namespace || entry.key !== deleted.key
+    ))
+  }
+  for (const put of change.puts) {
+    const index = provider.entries.findIndex(entry => entry.namespace === put.namespace && entry.key === put.key)
+    if (index === -1) provider.entries.push({ ...put })
+    else provider.entries[index] = { ...put }
+  }
+  provider.state.revision = change.expectedRevision + 1
+  materializeActiveProvider(provider)
+}
+
 function harness(
   directory: string,
   remote: { subs: Record<string, string>; sinks: Record<string, string> },
@@ -162,6 +217,9 @@ function harness(
       },
       deleteKv: async (binding, key) => {
         delete remote[binding === 'SUBS' ? 'subs' : 'sinks'][key]
+      },
+      applyProviderPlan: async () => {
+        throw new Error('the legacy test harness does not accept active provider plans')
       },
       listHooks: async () => [...hooks],
       deleteHook,
@@ -288,6 +346,51 @@ describe('GitHub fleet retirement', () => {
       })
       expect(test.deleteHook.mock.calls.filter((call) => call[1] === 1)).toHaveLength(1)
       expect(hooks).toEqual([])
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('preserves unowned D1 policy while disabling and resumes exact deletion', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const entry: GitHubFleetManifestRepository = { ...ENTRY, profiles: ['alerts'] }
+    const { directory, routesText } = await fixture(fileSystem, entry)
+    const provider = activeProvider(routesText)
+    const subscription = provider.entries.find(candidate => candidate.namespace === 'SUBS')!
+    const onlinePolicy = {
+      ...JSON.parse(subscription.value),
+      filter: { severities: { include: ['critical'] } },
+      sinkFilters: {
+        'discord:repo-alerts': { eventTypes: { exclude: ['issues.closed'] } },
+      },
+    }
+    subscription.value = JSON.stringify(onlinePolicy)
+    materializeActiveProvider(provider)
+    const hooks = [hook('alerts', 1, entry)]
+    const test = harness(
+      directory,
+      { subs: {}, sinks: {} },
+      hooks,
+      new Set([entry.hmac.name]),
+      fileSystem,
+      1,
+    )
+    test.dependencies.readKv = async () => structuredClone(provider)
+    test.dependencies.applyProviderPlan = async plan => { applyActiveProviderPlan(provider, plan) }
+    try {
+      await prepareGitHubFleetRetirement(options('prepare'), test.dependencies, directory)
+      await expect(applyGitHubFleetRetirement(options('apply'), test.dependencies, directory)).rejects.toThrow(/interruption/)
+      expect(JSON.parse(provider.subs[subscription.key]!)).toMatchObject({
+        enabled: false,
+        filter: onlinePolicy.filter,
+        sinkFilters: onlinePolicy.sinkFilters,
+      })
+
+      await expect(applyGitHubFleetRetirement(options('apply'), test.dependencies, directory)).resolves.toMatchObject({
+        deletedHooks: 1,
+        deletedRoutes: 1,
+      })
+      expect(provider.subs[subscription.key]).toBeUndefined()
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

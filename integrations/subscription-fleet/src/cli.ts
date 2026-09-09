@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from '../../../scripts/configuration-client'
 import {
   applyManagedSubscriptions,
   formatManagedSubscriptionPlan,
@@ -77,7 +76,6 @@ async function main(): Promise<void> {
     ...parseManagedSubscriptionArgs(argv),
     progress: (message) => console.error(`PROGRESS ${message}`),
   }
-  await requireLegacyConfiguration()
   if (options.phase === 'plan') {
     const plan = await planManagedSubscriptions(options)
     console.log(formatManagedSubscriptionPlan(plan))

@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import type { RemoteKvSnapshot } from '../../../scripts/kv'
-import { parseRoutes } from '../../../scripts/sync'
+import type {
+  ProviderConfigurationPlan,
+  ProviderConfigurationSnapshot,
+} from '../../../scripts/provider-configuration'
+import { computePlan, parseRoutes } from '../../../scripts/sync'
 import { subscriptionKvKey } from '../../../src/lib/subscription'
 import {
   applyManagedSubscriptions,
@@ -124,6 +128,9 @@ function harness(routeText = ROUTES): Harness {
     putKv: async (binding, key, value) => {
       remote[binding === 'SUBS' ? 'subs' : 'sinks'][key] = value
     },
+    applyProviderPlan: async () => {
+      throw new Error('the legacy test harness does not accept active provider plans')
+    },
     confirm: async () => true,
     fetch: async (input, init) => {
       requests.push(new Request(input, init))
@@ -141,6 +148,22 @@ function harness(routeText = ROUTES): Harness {
     senderInstalls,
     requests,
   }
+}
+
+function applyActiveProviderPlan(
+  provider: ProviderConfigurationSnapshot,
+  plan: ProviderConfigurationPlan,
+): void {
+  if (plan.mode !== 'active') throw new Error('test provider accepts only active plans')
+  const change = plan.review?.change
+  if (!change) return
+  for (const put of change.puts) {
+    const index = provider.entries.findIndex(entry => entry.namespace === put.namespace && entry.key === put.key)
+    if (index === -1) provider.entries.push({ ...put })
+    else provider.entries[index] = { ...put }
+    provider[put.namespace === 'SUBS' ? 'subs' : 'sinks'][put.key] = put.value
+  }
+  provider.state.revision = change.expectedRevision + 1
 }
 
 describe('managed subscription fleet', () => {
@@ -264,5 +287,49 @@ describe('managed subscription fleet', () => {
       'cloudflare-fleet: production slug hash is owned by another route',
       'cloudflare-fleet: production HMAC reference is used by another route',
     ]))
+  })
+
+  it('applies owned fleet fields while preserving active online enabled policy', async () => {
+    const state = harness()
+    await prepareManagedSubscriptions(options('prepare'), state.dependencies, PROJECT_ROOT)
+    const routes = parseRoutes(state.files.get(`${PROJECT_ROOT}/routes.jsonc`)!)
+    const desired = computePlan(routes, { subs: {}, sinks: {} })
+    const disabledRoutes = { ...routes, subs: routes.subs.map(subscription => ({ ...subscription, enabled: false })) }
+    const online = computePlan(disabledRoutes, { subs: {}, sinks: {} }).subPuts[0]!
+    online.value = JSON.stringify({
+      ...JSON.parse(online.value),
+      filter: { eventTypes: { include: ['stale-provider-event'] } },
+    })
+    const sink = desired.sinkPuts[0]!
+    const active: ProviderConfigurationSnapshot = {
+      state: { authorityId: 'd'.repeat(32), revision: 8, mode: 'active' },
+      entries: [
+        {
+          namespace: 'SUBS', key: online.key, value: online.value, retired: false,
+          resourceId: '00000000-0000-4000-8000-000000000041',
+        },
+        {
+          namespace: 'SINKS', key: sink.key, value: sink.value, retired: false,
+          resourceId: '00000000-0000-4000-8000-000000000042',
+        },
+      ],
+      aliases: [],
+      subs: { [online.key]: online.value },
+      sinks: { [sink.key]: sink.value },
+    }
+    state.dependencies.readKv = async () => structuredClone(active)
+    state.dependencies.applyProviderPlan = async plan => { applyActiveProviderPlan(active, plan) }
+
+    const plan = await planManagedSubscriptions(options('plan'), state.dependencies, PROJECT_ROOT)
+    expect(plan.blockers).toEqual([])
+    expect(plan.remoteSubscriptionUpdates).toBe(1)
+    expect(plan.remoteSinkUpdates).toBe(0)
+    await expect(applyManagedSubscriptions(options('apply'), state.dependencies, PROJECT_ROOT)).resolves.toMatchObject({
+      subscriptionRoutesWritten: 1,
+      sinkRoutesWritten: 0,
+    })
+    const applied = JSON.parse(active.subs[online.key]!)
+    expect(applied.enabled).toBe(false)
+    expect(applied.filter).toEqual(routes.subs[0]!.filter)
   })
 })

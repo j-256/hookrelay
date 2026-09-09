@@ -30,6 +30,10 @@ import { parseGitHubEventSelection } from '../../../scripts/providers/github/eve
 import type { GitHubRepositoryHook } from '../../../scripts/providers/github/repository-hooks'
 import { writePrivateText, type AtomicFileSystem, type SecretValue } from '../../../scripts/setup'
 import { computePlan, parseRoutes } from '../../../scripts/sync'
+import type {
+  ProviderConfigurationPlan,
+  ProviderConfigurationSnapshot,
+} from '../../../scripts/provider-configuration'
 
 const REPO = 'example-owner/example-plugin'
 const BASE_URL = 'https://hooks.example.com'
@@ -133,6 +137,84 @@ function fleetOptions(phase: 'apply' | 'verify', repositories: string[] = []): G
 
 function cloneKv(value: { subs: Record<string, string>; sinks: Record<string, string> }) {
   return { subs: { ...value.subs }, sinks: { ...value.sinks } }
+}
+
+function materializeActiveProvider(remote: ProviderConfigurationSnapshot): void {
+  const entries = new Map(remote.entries.map(entry => [entry.resourceId, entry]))
+  remote.subs = {}
+  remote.sinks = {}
+  for (const entry of remote.entries) {
+    remote[entry.namespace === 'SUBS' ? 'subs' : 'sinks'][entry.key] = entry.value
+  }
+  for (const alias of remote.aliases) {
+    const entry = entries.get(alias.resourceId)
+    if (!entry) throw new Error('test provider alias references a missing resource')
+    remote[alias.namespace === 'SUBS' ? 'subs' : 'sinks'][alias.key] = entry.value
+  }
+}
+
+function activeProvider(routes: ReturnType<typeof parseRoutes>): ProviderConfigurationSnapshot {
+  const desired = computePlan(routes, { subs: {}, sinks: {} })
+  let resource = 50
+  const nextResource = () => `00000000-0000-4000-8000-${String(resource++).padStart(12, '0')}`
+  const remote: ProviderConfigurationSnapshot = {
+    state: { authorityId: 'e'.repeat(32), revision: 1, mode: 'active' },
+    entries: [
+      ...desired.subPuts.map(entry => ({
+        namespace: 'SUBS' as const, ...entry, resourceId: nextResource(), retired: false,
+      })),
+      ...desired.sinkPuts.map(entry => ({
+        namespace: 'SINKS' as const, ...entry, resourceId: nextResource(), retired: false,
+      })),
+    ],
+    aliases: [],
+    subs: {},
+    sinks: {},
+  }
+  materializeActiveProvider(remote)
+  return remote
+}
+
+function applyActiveProviderPlan(
+  remote: ProviderConfigurationSnapshot,
+  plan: ProviderConfigurationPlan,
+): void {
+  if (plan.mode !== 'active') throw new Error('test provider accepts only active plans')
+  const change = plan.review?.change
+  if (!change) return
+  for (const deleted of change.aliasDeletes) {
+    remote.aliases = remote.aliases.filter(alias => (
+      alias.namespace !== deleted.namespace || alias.key !== deleted.key
+    ))
+  }
+  for (const deleted of change.deletes) {
+    const removed = remote.entries.find(entry => entry.namespace === deleted.namespace && entry.key === deleted.key)
+    remote.entries = remote.entries.filter(entry => (
+      entry.namespace !== deleted.namespace || entry.key !== deleted.key
+    ))
+    if (removed) remote.aliases = remote.aliases.filter(alias => alias.resourceId !== removed.resourceId)
+  }
+  for (const move of change.moves) {
+    const entry = remote.entries.find(candidate => (
+      candidate.namespace === move.namespace && candidate.key === move.fromKey
+    ))
+    if (!entry) throw new Error('test provider move source is missing')
+    entry.key = move.toKey
+  }
+  for (const put of change.puts) {
+    const index = remote.entries.findIndex(entry => entry.namespace === put.namespace && entry.key === put.key)
+    if (index === -1) remote.entries.push({ ...put })
+    else remote.entries[index] = { ...put }
+  }
+  for (const alias of change.aliasPuts) {
+    const index = remote.aliases.findIndex(candidate => (
+      candidate.namespace === alias.namespace && candidate.key === alias.key
+    ))
+    if (index === -1) remote.aliases.push({ ...alias })
+    else remote.aliases[index] = { ...alias }
+  }
+  remote.state.revision = change.expectedRevision + 1
+  materializeActiveProvider(remote)
 }
 
 async function acceptSignedRoute(
@@ -314,7 +396,7 @@ describe('GitHub fleet apply and verify', () => {
       hooks.push(hookFor(entry, REPO, 'activity', 3))
       const drifted = await verifyGitHubFleet(fleetOptions('verify', [REPO]), directory, dependencies)
       expect(drifted.issues.join('\n')).toMatch(/inactive profile still has.*GitHub hook/)
-      expect(drifted.issues.join('\n')).toMatch(/inactive profile still has a production KV route/)
+      expect(drifted.issues.join('\n')).toMatch(/inactive profile still has a provider route/)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }
@@ -654,6 +736,125 @@ describe('GitHub fleet apply and verify', () => {
         dependencies,
       )
       expect(verified).toMatchObject({ verifiedHooks: 3, issues: [] })
+    } finally {
+      await rm(directory, { recursive: true, force: true })
+    }
+  })
+
+  it('moves an active D1 route identity through slug rotation without exposing a stale route', async () => {
+    const fileSystem = modeAwareFileSystem()
+    const previousEntry: GitHubFleetManifestRepository = {
+      ...manifestEntry(REPO, 'd1-slug'),
+      profiles: ['activity'],
+    }
+    const rotatedEntry: GitHubFleetManifestRepository = {
+      ...previousEntry,
+      slugs: { ...previousEntry.slugs, activity: 'd1replacementactivity0' },
+      slugRotation: {
+        preparedAt: '2026-09-09T12:00:00.000Z',
+        profiles: ['activity'],
+        previousSlugs: { activity: previousEntry.slugs.activity },
+      },
+    }
+    const manifest: GitHubFleetManifest = {
+      version: 4,
+      repositories: { [REPO]: rotatedEntry },
+      retiredRepositories: {},
+    }
+    const directory = await writeProject(manifest, fileSystem)
+    try {
+      const previousManifest: GitHubFleetManifest = {
+        version: 3,
+        repositories: { [REPO]: previousEntry },
+        retiredRepositories: {},
+      }
+      const previousRoutes = parseRoutes(JSON.stringify({
+        baseUrl: BASE_URL,
+        subs: await subscriptionsFor(previousManifest),
+        sinks: [
+          { name: 'discord:repo-activity', type: 'discord', urlEnv: 'SINK_ACTIVITY' },
+          { name: 'discord:github-stars', type: 'discord', urlEnv: 'SINK_STARS' },
+          { name: 'discord:repo-alerts', type: 'discord', urlEnv: 'SINK_ALERTS' },
+        ],
+      }))
+      const remote = activeProvider(previousRoutes)
+      const previousSubscription = previousRoutes.subs[0]!
+      const previousKey = subscriptionKvKey(previousSubscription.slugHash)
+      const previousProviderEntry = remote.entries.find(entry => entry.key === previousKey)!
+      const previousResourceId = previousProviderEntry.resourceId
+      const onlinePolicy = {
+        ...JSON.parse(previousProviderEntry.value),
+        enabled: false,
+        sinkFilters: {
+          'discord:repo-activity': { severities: { include: ['critical'] } },
+        },
+      }
+      previousProviderEntry.value = JSON.stringify(onlinePolicy)
+      materializeActiveProvider(remote)
+      const currentRoutes = parseRoutes(await readFile(join(directory, 'routes.jsonc'), 'utf8'))
+      const replacementKey = subscriptionKvKey(currentRoutes.subs[0]!.slugHash)
+      const hooks = [hookFor(previousEntry, REPO, 'activity', 1)]
+      const secrets = new Set([previousEntry.hmac.name, 'SINK_ACTIVITY', 'SINK_STARS', 'SINK_ALERTS'])
+      const readKv = async () => structuredClone(remote)
+      const listHooks = async () => [...hooks]
+      const planDependencies: GitHubFleetDependencies = {
+        discover: async () => ({ repositories: [{ nameWithOwner: REPO, path: `/repo/${REPO}`, isFork: false }], exclusions: [], blockers: [] }),
+        listHooks,
+        listSecrets: async () => new Set(secrets),
+        readKv,
+        fileSystem,
+      }
+      const updateHook = vi.fn(async (
+        _repo: string,
+        hookId: number,
+        url: string,
+        events: readonly string[],
+      ) => {
+        expect(remote.subs[previousKey]).toBeDefined()
+        expect(remote.subs[replacementKey]).toBeDefined()
+        expect(JSON.parse(remote.subs[replacementKey]!)).toMatchObject({
+          enabled: false,
+          sinkFilters: onlinePolicy.sinkFilters,
+        })
+        const hook = hooks.find(candidate => candidate.id === hookId)!
+        hook.events = [...events]
+        hook.config = { url, content_type: 'json', insecure_ssl: '0' }
+      })
+      const dependencies: GitHubFleetReconcileDependencies = {
+        planDependencies,
+        listHooks,
+        createHook: async () => { throw new Error('must not create a second hook') },
+        updateHook,
+        pingHook: async () => ({ id: 'ping-guid', event: 'ping', statusCode: 200, deliveredAt: null }),
+        listSecrets: async () => new Set(secrets),
+        putSecrets: async () => new Set(secrets),
+        readKv,
+        putKv: async () => { throw new Error('active mode must not write KV') },
+        deleteKv: async () => { throw new Error('active mode must not delete KV') },
+        applyProviderPlan: async plan => { applyActiveProviderPlan(remote, plan) },
+        fetch: async (input, init) => {
+          const slug = new URL(String(input)).pathname.split('/').pop()!
+          const key = subscriptionKvKey(await hashSubscriptionSlug(slug))
+          if (remote.subs[key] === undefined) return new Response('', { status: 404 })
+          return acceptSignedRoute(input, init)
+        },
+        sleep: async () => undefined,
+        routeGraceMs: 0,
+      }
+
+      await expect(applyGitHubFleet({
+        ...fleetOptions('apply', [REPO]),
+        rotateSlugs: ['activity'],
+      }, directory, dependencies)).resolves.toMatchObject({ rotatedSubscriptions: 1 })
+      expect(updateHook).toHaveBeenCalledOnce()
+      expect(remote.subs[previousKey]).toBeUndefined()
+      expect(remote.subs[replacementKey]).toBeDefined()
+      expect(remote.entries.find(entry => entry.key === replacementKey)).toMatchObject({ resourceId: previousResourceId })
+      expect(JSON.parse(remote.subs[replacementKey]!)).toMatchObject({
+        enabled: false,
+        sinkFilters: onlinePolicy.sinkFilters,
+      })
+      expect(remote.aliases.some(alias => alias.key === previousKey)).toBe(false)
     } finally {
       await rm(directory, { recursive: true, force: true })
     }

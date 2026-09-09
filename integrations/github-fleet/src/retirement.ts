@@ -30,7 +30,16 @@ import {
   matchingGitHubRepositoryHooks,
   type GitHubRepositoryHook,
 } from '../../../scripts/providers/github/repository-hooks'
-import { deleteRemoteKv, putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
+import type { RemoteKvSnapshot } from '../../../scripts/kv'
+import {
+  applyProviderConfiguration,
+  changeProviderConfiguration,
+  isActiveProviderConfiguration,
+  planProviderConfiguration,
+  providerConfigurationPlanSummary,
+  readProviderConfiguration,
+  type ProviderConfigurationPlan,
+} from '../../../scripts/provider-configuration'
 import { disableSubscription, removeSubscription } from '../../../scripts/retirement-routes'
 import { routeReferencesSecret } from '../../../scripts/retirement-manifest'
 import {
@@ -43,7 +52,14 @@ import {
   writePrivateText,
   writeText,
 } from '../../../scripts/setup'
-import { computePlan, parseRoutes, type Routes, type Sub } from '../../../scripts/sync'
+import {
+  computePlan,
+  parseRoutes,
+  scopedProviderMutation,
+  type ProviderSyncScope,
+  type Routes,
+  type Sub,
+} from '../../../scripts/sync'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -91,6 +107,7 @@ export interface GitHubFleetRetirementDependencies {
   readKv(progress?: GitHubFleetProgress): Promise<RemoteKvSnapshot>
   putKv(binding: string, key: string, value: string): Promise<void>
   deleteKv(binding: string, key: string): Promise<void>
+  applyProviderPlan(plan: ProviderConfigurationPlan): Promise<void>
   listHooks(repo: string): Promise<GitHubRepositoryHook[]>
   deleteHook(repo: string, id: number): Promise<void>
   listSecrets(): Promise<Set<string>>
@@ -112,9 +129,14 @@ const DEFAULT_DEPENDENCIES: GitHubFleetRetirementDependencies = {
   readPrivateText: readPrivateOptionalText,
   writeText,
   writePrivateText,
-  readKv: (progress) => readRemoteKvSnapshot(undefined, progress),
-  putKv: putRemoteKv,
-  deleteKv: deleteRemoteKv,
+  readKv: (progress) => readProviderConfiguration({}, progress),
+  putKv: async (binding, key, value) => {
+    await changeProviderConfiguration({ puts: [{ namespace: binding as 'SUBS' | 'SINKS', key, value }] })
+  },
+  deleteKv: async (binding, key) => {
+    await changeProviderConfiguration({ deletes: [{ namespace: binding as 'SUBS' | 'SINKS', key }] })
+  },
+  applyProviderPlan: (plan) => applyProviderConfiguration(plan).then(() => undefined),
   listHooks: listGitHubRepositoryHooks,
   deleteHook: deleteGitHubRepositoryHook,
   listSecrets: listWranglerSecrets,
@@ -279,7 +301,7 @@ export async function planGitHubFleetRetirement(
   const hooksToDelete: string[] = []
   const routesToDelete: string[] = []
   const secretsToDelete: string[] = []
-  options.progress?.('Reading Worker secrets and remote routes')
+  options.progress?.('Reading Worker secrets and provider routes')
   const [remote, secretNames] = await Promise.all([dependencies.readKv(options.progress), dependencies.listSecrets()])
   const selectedRouteNames = new Set(selected.flatMap((repo) => (
     repositoryProfiles(files.manifest, repo).map((profile) => githubFleetSubscriptionName(repo, profile))
@@ -319,7 +341,7 @@ export async function planGitHubFleetRetirement(
       }
       const remoteValue = remote.subs[subscriptionKvKey(desired[profile].slugHash)]
       if (remoteValue === undefined && entry.state !== 'retiring') {
-        blockers.push(`${name}: production KV route is missing`)
+        blockers.push(`${name}: provider route is missing`)
       }
     }
     try {
@@ -430,8 +452,35 @@ async function syncDisabledRoutes(
     }
   }
   const desiredRoutes = { ...routes, subs: subscriptions }
-  progress?.('Reading remote routes before retirement synchronization')
-  const plan = computePlan(desiredRoutes, await dependencies.readKv(progress))
+  progress?.('Reading provider routes before retirement synchronization')
+  const current = await dependencies.readKv(progress)
+  if (isActiveProviderConfiguration(current)) {
+    const scope: ProviderSyncScope = {
+      puts: [...keys].map(key => ({
+        namespace: 'SUBS' as const,
+        key,
+        policyFields: ['enabled'],
+      })),
+    }
+    const providerPlan = await planProviderConfiguration(
+      current,
+      scopedProviderMutation(desiredRoutes, current, scope),
+    )
+    const summary = providerConfigurationPlanSummary(providerPlan)
+    if (summary.changed) await dependencies.applyProviderPlan(providerPlan)
+    progress?.('Verifying disabled provider routes')
+    const observed = await dependencies.readKv(progress)
+    if (!isActiveProviderConfiguration(observed)) {
+      throw new Error('provider configuration authority changed during retirement synchronization')
+    }
+    const remaining = providerConfigurationPlanSummary(await planProviderConfiguration(
+      observed,
+      scopedProviderMutation(desiredRoutes, observed, scope),
+    ))
+    if (remaining.changed) throw new Error('provider configuration did not retain every disabled fleet route')
+    return
+  }
+  const plan = computePlan(desiredRoutes, current)
   const puts = plan.subPuts.filter((entry) => keys.has(entry.key))
   for (const [index, put] of puts.entries()) {
     progress?.(`Disabling remote route ${index + 1}/${puts.length}`)
@@ -440,7 +489,7 @@ async function syncDisabledRoutes(
   progress?.('Verifying disabled remote routes')
   const verification = computePlan(desiredRoutes, await dependencies.readKv(progress))
   if (verification.subPuts.some((entry) => keys.has(entry.key))) {
-    throw new Error('production KV did not retain every disabled fleet route')
+    throw new Error('provider configuration did not retain every disabled fleet route')
   }
 }
 
@@ -567,16 +616,31 @@ async function deleteRemoteRoutes(
     const entry = updated.repositories[repo]
     if (!entry || entry.state !== 'retiring' || !entry.retirement || entry.retirement.kvRemoved) continue
     const desired = await desiredSubscriptions(repo, entry)
-    for (const profile of githubFleetManifestProfiles(entry)) {
-      index += 1
-      progress?.(`Deleting remote route ${index}/${total}`)
-      await dependencies.deleteKv('SUBS', subscriptionKvKey(desired[profile].slugHash))
+    const profiles = githubFleetManifestProfiles(entry)
+    const keys = profiles.map(profile => subscriptionKvKey(desired[profile].slugHash))
+    const current = await dependencies.readKv(progress)
+    if (isActiveProviderConfiguration(current)) {
+      const providerPlan = await planProviderConfiguration(current, {
+        deletes: keys.map(key => ({ namespace: 'SUBS', key })),
+      })
+      const summary = providerConfigurationPlanSummary(providerPlan)
+      if (summary.changed) {
+        progress?.(`Deleting ${summary.deletes.length} provider route(s) for ${repo}`)
+        await dependencies.applyProviderPlan(providerPlan)
+      }
+      index += profiles.length
+    } else {
+      for (const key of keys) {
+        index += 1
+        progress?.(`Deleting remote route ${index}/${total}`)
+        await dependencies.deleteKv('SUBS', key)
+      }
     }
     progress?.('Verifying deleted remote routes')
     const remote = await dependencies.readKv(progress)
-    for (const profile of githubFleetManifestProfiles(entry)) {
-      if (remote.subs[subscriptionKvKey(desired[profile].slugHash)] !== undefined) {
-        throw new Error(`${githubFleetSubscriptionName(repo, profile)}: production KV route still exists after deletion`)
+    for (const [profileIndex, profile] of profiles.entries()) {
+      if (remote.subs[keys[profileIndex]!] !== undefined) {
+        throw new Error(`${githubFleetSubscriptionName(repo, profile)}: provider route still exists after deletion`)
       }
     }
     updated = updateGitHubFleetRepositoryRetirement(updated, repo, { kvRemoved: true })
@@ -724,7 +788,7 @@ export async function verifyGitHubFleetRetirement(
         issues.push(`${name}: local route still exists`)
       }
       if (remote.subs[subscriptionKvKey(desired[profile].slugHash)] !== undefined) {
-        issues.push(`${name}: production KV route still exists`)
+        issues.push(`${name}: provider route still exists`)
       }
       const matches = await matchingGitHubRepositoryHooks(hooks, desired[profile].slugHash)
       if (matches.length > 0) issues.push(`${name}: matching GitHub hook still exists`)

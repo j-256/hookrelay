@@ -33,7 +33,13 @@ import {
   requireMatchingGitHubRepositoryHook,
   type GitHubRepositoryHook,
 } from '../../../scripts/providers/github/repository-hooks'
-import { readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
+import type { RemoteKvSnapshot } from '../../../scripts/kv'
+import {
+  isActiveProviderConfiguration,
+  planProviderConfiguration,
+  providerConfigurationPlanSummary,
+  readProviderConfiguration,
+} from '../../../scripts/provider-configuration'
 import {
   addDevVar,
   getDevVar,
@@ -46,7 +52,7 @@ import {
   writeText,
   type AtomicFileSystem,
 } from '../../../scripts/setup'
-import { computePlan, parseRoutes, type Routes, type Sub } from '../../../scripts/sync'
+import { computePlan, parseRoutes, scopedProviderMutation, type Routes, type Sub } from '../../../scripts/sync'
 
 const ROUTES_FILE = 'routes.jsonc'
 const DEV_VARS_FILE = '.dev.vars'
@@ -120,7 +126,7 @@ const DEFAULT_DEPENDENCIES: GitHubFleetDependencies = {
   discover: discoverGitHubFleet,
   listHooks: listGitHubRepositoryHooks,
   listSecrets: listWranglerSecrets,
-  readKv: (progress) => readRemoteKvSnapshot(undefined, progress),
+  readKv: (progress) => readProviderConfiguration({}, progress),
 }
 
 interface FleetLocalState {
@@ -612,28 +618,55 @@ export async function planGitHubFleet(
     for (const profile of inactiveRepositoryProfiles(entry)) {
       const desired = await buildGitHubFleetSubscription(repo, profile, githubFleetManifestValues(entry))
       if (remoteKv.subs[subscriptionKvKey(desired.slugHash)] !== undefined) {
-        blockers.push(`${desired.name}: inactive profile still has a production KV route`)
+        blockers.push(`${desired.name}: inactive profile still has a provider route`)
       }
     }
   }
 
-  const kvPlan = computePlan(state.routes, remoteKv)
   const subscriptionNamesByKey = new Map<string, string>()
+  const policySourceKeys = new Map<string, string>()
   const subscriptionsByName = routeMap(state.routes)
   for (const repo of plannedRepositoryNames(state)) {
     for (const profile of plannedRepositoryProfiles(state, options, repo)) {
       const name = githubFleetSubscriptionName(repo, profile)
       const subscription = subscriptionsByName.get(name)
-      if (subscription) subscriptionNamesByKey.set(subscriptionKvKey(subscription.slugHash), name)
+      if (subscription) {
+        const key = subscriptionKvKey(subscription.slugHash)
+        subscriptionNamesByKey.set(key, name)
+        const previousSlug = state.manifest.repositories[repo]?.slugRotation?.previousSlugs[profile]
+        if (previousSlug) policySourceKeys.set(key, subscriptionKvKey(await hashSubscriptionSlug(previousSlug)))
+      }
     }
   }
   const sinkKeys = new Set([...plannedProfiles].map((profile) => `sink:${GITHUB_FLEET_PROFILES[profile].sink}`))
-  const remoteRouteDrift = kvPlan.subPuts.flatMap((put) => {
+  const scopedSummary = isActiveProviderConfiguration(remoteKv)
+    ? providerConfigurationPlanSummary(await planProviderConfiguration(
+        remoteKv,
+        scopedProviderMutation(state.routes, remoteKv, {
+          puts: [
+            ...[...subscriptionNamesByKey].map(([key]) => ({
+              namespace: 'SUBS' as const,
+              key,
+              policyFields: ['sinks', 'filter'] as const,
+              ...(policySourceKeys.get(key) ? { policySourceKey: policySourceKeys.get(key)! } : {}),
+            })),
+            ...[...sinkKeys].map(key => ({ namespace: 'SINKS' as const, key })),
+          ],
+        }),
+      ))
+    : null
+  const kvPlan = scopedSummary ? null : computePlan(state.routes, remoteKv)
+  const plannedPuts = scopedSummary?.puts ?? [
+    ...kvPlan!.subPuts.map(put => ({ namespace: 'SUBS' as const, key: put.key })),
+    ...kvPlan!.sinkPuts.map(put => ({ namespace: 'SINKS' as const, key: put.key })),
+  ]
+  const remoteRouteDrift = plannedPuts.flatMap((put) => {
     const name = subscriptionNamesByKey.get(put.key)
-    return name ? [`production KV differs for ${name}`] : []
-  }).concat(kvPlan.sinkPuts
-    .filter((put) => sinkKeys.has(put.key))
-    .map((put) => `production KV differs for ${put.key}`))
+    if (name) return [`provider configuration differs for ${name}`]
+    return put.namespace === 'SINKS' && sinkKeys.has(put.key)
+      ? [`provider configuration differs for ${put.key}`]
+      : []
+  })
   return {
     discovered: state.discovery.repositories.map((repo) => repo.nameWithOwner),
     selected: selectedNames,
@@ -650,8 +683,8 @@ export async function planGitHubFleet(
     hookAdditions: hookAdditions.sort(),
     routeDrift: routeDrift.sort(),
     remoteRouteDrift: remoteRouteDrift.sort(),
-    remoteKvPuts: kvPlan.subPuts.length + kvPlan.sinkPuts.length,
-    remoteKvDeletes: kvPlan.subDeletes.length + kvPlan.sinkDeletes.length,
+    remoteKvPuts: scopedSummary?.puts.length ?? kvPlan!.subPuts.length + kvPlan!.sinkPuts.length,
+    remoteKvDeletes: scopedSummary?.deletes.length ?? kvPlan!.subDeletes.length + kvPlan!.sinkDeletes.length,
     hmacRotations: options.rotateHmac ? selectedNames : [],
     slugRotations: slugRotationNames.sort(),
     capacity,
@@ -797,8 +830,8 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
     `GitHub hook additions: ${plan.hookAdditions.length}`,
     `HMAC rotations: ${plan.hmacRotations.length}`,
     `Subscription slug rotations: ${plan.slugRotations.length}`,
-    `Production KV puts: ${plan.remoteKvPuts}`,
-    `Production KV deletes: ${plan.remoteKvDeletes}`,
+    `Provider puts: ${plan.remoteKvPuts}`,
+    `Provider deletes: ${plan.remoteKvDeletes}`,
     `Worker capacity: ${plan.capacity.projected}/${plan.capacity.limit}`,
   ]
   for (const exclusion of plan.exclusions) lines.push(`EXCLUDE ${exclusion.child}: ${exclusion.reason}`)

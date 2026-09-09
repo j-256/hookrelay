@@ -1,4 +1,3 @@
-import { requireLegacyConfiguration } from '../../../scripts/configuration-client'
 import {
   formatGitHubFleetPlan,
   planGitHubFleet,
@@ -133,7 +132,6 @@ async function main(): Promise<void> {
     ...parseGitHubFleetArgs(argv),
     progress: (message) => console.error(`PROGRESS ${message}`),
   }
-  await requireLegacyConfiguration()
   if (options.retire) {
     const {
       applyGitHubFleetRetirement,

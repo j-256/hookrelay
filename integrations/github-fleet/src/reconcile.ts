@@ -33,7 +33,17 @@ import {
   updateGitHubRepositoryHook,
   type GitHubRepositoryHook,
 } from '../../../scripts/providers/github/repository-hooks'
-import { deleteRemoteKv, putRemoteKv, readRemoteKvSnapshot, type RemoteKvSnapshot } from '../../../scripts/kv'
+import type { RemoteKvSnapshot } from '../../../scripts/kv'
+import {
+  applyProviderConfiguration,
+  changeProviderConfiguration,
+  isActiveProviderConfiguration,
+  planProviderConfiguration,
+  providerConfigurationPlanSummary,
+  readProviderConfiguration,
+  type ProviderConfigurationMutation,
+  type ProviderConfigurationPlan,
+} from '../../../scripts/provider-configuration'
 import {
   confirm,
   listWranglerSecrets,
@@ -42,7 +52,15 @@ import {
   writePrivateText,
   type SecretValue,
 } from '../../../scripts/setup'
-import { computePlan, parseRoutes, type Routes, type Sub } from '../../../scripts/sync'
+import {
+  computePlan,
+  mergeSubscriptionPolicy,
+  parseRoutes,
+  scopedProviderMutation,
+  type ProviderSyncScope,
+  type Routes,
+  type Sub,
+} from '../../../scripts/sync'
 
 export const ROUTE_PROPAGATION_TIMEOUT_MS = 90_000
 export const ROUTE_PROBE_INTERVAL_MS = 2_000
@@ -70,6 +88,7 @@ export interface GitHubFleetReconcileDependencies {
   readKv?: (progress?: GitHubFleetProgress) => Promise<RemoteKvSnapshot>
   putKv?: (binding: string, key: string, value: string) => Promise<void>
   deleteKv?: (binding: string, key: string) => Promise<void>
+  applyProviderPlan?: (plan: ProviderConfigurationPlan) => Promise<void>
   routeTimeoutMs?: number
   routeIntervalMs?: number
   routeGraceMs?: number
@@ -106,6 +125,7 @@ interface ResolvedDependencies {
   readKv: (progress?: GitHubFleetProgress) => Promise<RemoteKvSnapshot>
   putKv: (binding: string, key: string, value: string) => Promise<void>
   deleteKv: (binding: string, key: string) => Promise<void>
+  applyProviderPlan: (plan: ProviderConfigurationPlan) => Promise<void>
   routeTimeoutMs: number
   routeIntervalMs: number
   routeGraceMs: number
@@ -148,9 +168,14 @@ function resolvedDependencies(input: GitHubFleetReconcileDependencies): Resolved
     pingHook: input.pingHook ?? pingAndVerifyGitHubRepositoryHook,
     listSecrets: input.listSecrets ?? listWranglerSecrets,
     putSecrets: input.putSecrets ?? ((secrets) => putWranglerSecretsBulk(secrets)),
-    readKv: input.readKv ?? ((progress) => readRemoteKvSnapshot(undefined, progress)),
-    putKv: input.putKv ?? putRemoteKv,
-    deleteKv: input.deleteKv ?? deleteRemoteKv,
+    readKv: input.readKv ?? ((progress) => readProviderConfiguration({}, progress)),
+    putKv: input.putKv ?? (async (binding, key, value) => {
+      await changeProviderConfiguration({ puts: [{ namespace: binding as 'SUBS' | 'SINKS', key, value }] })
+    }),
+    deleteKv: input.deleteKv ?? (async (binding, key) => {
+      await changeProviderConfiguration({ deletes: [{ namespace: binding as 'SUBS' | 'SINKS', key }] })
+    }),
+    applyProviderPlan: input.applyProviderPlan ?? ((plan) => applyProviderConfiguration(plan).then(() => undefined)),
     routeTimeoutMs: input.routeTimeoutMs ?? ROUTE_PROPAGATION_TIMEOUT_MS,
     routeIntervalMs: input.routeIntervalMs ?? ROUTE_PROBE_INTERVAL_MS,
     routeGraceMs: input.routeGraceMs ?? ROUTE_PROPAGATION_GRACE_MS,
@@ -227,11 +252,41 @@ async function syncSubscriptionRoutes(
   sinkNames: readonly string[],
   dependencies: ResolvedDependencies,
   progress?: GitHubFleetProgress,
+  policySourceKeys: ReadonlyMap<string, string> = new Map(),
 ): Promise<void> {
   const keys = targetSubscriptionKeys(routes, names)
   const sinkKeys = new Set(sinkNames.map((name) => `sink:${name}`))
   progress?.('Reading remote routes before synchronization')
   const current = await dependencies.readKv(progress)
+  if (isActiveProviderConfiguration(current)) {
+    const scope: ProviderSyncScope = {
+      puts: [
+        ...names.map(name => ({
+          namespace: 'SUBS' as const,
+          key: subscriptionKvKey(namedSubscription(routes, name).slugHash),
+          policyFields: ['sinks', 'filter'] as const,
+          ...(policySourceKeys.get(name) ? { policySourceKey: policySourceKeys.get(name)! } : {}),
+        })),
+        ...sinkNames.map(name => ({ namespace: 'SINKS' as const, key: `sink:${name}` })),
+      ],
+    }
+    const mutation = scopedProviderMutation(routes, current, scope)
+    const providerPlan = await planProviderConfiguration(current, mutation)
+    const summary = providerConfigurationPlanSummary(providerPlan)
+    if (summary.changed) {
+      progress?.(`Writing ${summary.puts.length} provider route update(s)`)
+      await dependencies.applyProviderPlan(providerPlan)
+    }
+    progress?.('Verifying provider route synchronization')
+    const observed = await dependencies.readKv(progress)
+    if (!isActiveProviderConfiguration(observed)) throw new Error('provider configuration authority changed during synchronization')
+    const remaining = providerConfigurationPlanSummary(await planProviderConfiguration(
+      observed,
+      scopedProviderMutation(routes, observed, scope),
+    ))
+    if (remaining.changed) throw new Error(`provider configuration did not retain ${remaining.puts.length} route update(s)`)
+    return
+  }
   const plan = computePlan(routes, current)
   const subscriptionPuts = plan.subPuts.filter((entry) => keys.has(entry.key))
   for (const [index, put] of subscriptionPuts.entries()) {
@@ -246,10 +301,10 @@ async function syncSubscriptionRoutes(
   progress?.('Verifying remote route synchronization')
   const verified = computePlan(routes, await dependencies.readKv(progress))
   const remaining = verified.subPuts.filter((entry) => keys.has(entry.key))
-  if (remaining.length > 0) throw new Error(`central KV did not retain ${remaining.length} subscription updates`)
+  if (remaining.length > 0) throw new Error(`provider configuration did not retain ${remaining.length} subscription updates`)
   const remainingSinks = verified.sinkPuts.filter((entry) => sinkKeys.has(entry.key))
   if (remainingSinks.length > 0) {
-    throw new Error(`central KV did not retain ${remainingSinks.length} sink updates`)
+    throw new Error(`provider configuration did not retain ${remainingSinks.length} sink updates`)
   }
 }
 
@@ -505,7 +560,18 @@ export async function applyGitHubFleet(
   const sinkNames = [...new Set(selected.flatMap((repo) => (
     repositoryProfiles(files.manifest, repo).map((profile) => GITHUB_FLEET_PROFILES[profile].sink)
   )))]
-  await syncSubscriptionRoutes(files.routes, subscriptionNames, sinkNames, dependencies, options.progress)
+  const rotationPolicySources = new Map(await Promise.all(rotations.map(async rotation => [
+    rotation.name,
+    subscriptionKvKey(await hashSubscriptionSlug(rotation.previousSlug)),
+  ] as const)))
+  await syncSubscriptionRoutes(
+    files.routes,
+    subscriptionNames,
+    sinkNames,
+    dependencies,
+    options.progress,
+    rotationPolicySources,
+  )
   const hooks = selected.flatMap((repo) => (
     repositoryProfiles(files.manifest, repo).map((profile) => desiredHook(files.routes, files.manifest, repo, profile))
   ))
@@ -542,22 +608,64 @@ export async function applyGitHubFleet(
       }
     }))
     const oldKeys = previousHooks.map((hook) => subscriptionKvKey(hook.slugHash))
-    for (const [index, key] of oldKeys.entries()) {
-      options.progress?.(`Deleting previous subscription route ${index + 1}/${oldKeys.length}`)
-      await dependencies.deleteKv('SUBS', key)
+    const currentKeys = rotations.map((rotation) => (
+      subscriptionKvKey(namedSubscription(files.routes, rotation.name).slugHash)
+    ))
+    let remote = await dependencies.readKv(options.progress)
+    if (isActiveProviderConfiguration(remote)) {
+      const rekeyMutation: ProviderConfigurationMutation = {
+        rekeys: rotations.map((rotation, index) => {
+          const fromKey = oldKeys[index]!
+          const toKey = currentKeys[index]!
+          const targetValue = remote.subs[toKey]
+          if (targetValue === undefined) {
+            throw new Error(`replacement provider route is missing before identity canonicalization: ${rotation.name}`)
+          }
+          const sourceValue = remote.subs[fromKey]
+          return {
+            namespace: 'SUBS',
+            fromKey,
+            toKey,
+            retainFromAlias: true,
+            replaceTarget: true,
+            allowMissingSourceIfTarget: true,
+            value: sourceValue === undefined
+              ? targetValue
+              : mergeSubscriptionPolicy(sourceValue, targetValue, ['sinks', 'filter']),
+          }
+        }),
+      }
+      const rekeyPlan = await planProviderConfiguration(remote, rekeyMutation)
+      if (providerConfigurationPlanSummary(rekeyPlan).changed) {
+        options.progress?.(`Canonicalizing ${rotations.length} rotated subscription identity record(s)`)
+        await dependencies.applyProviderPlan(rekeyPlan)
+      }
+      remote = await dependencies.readKv(options.progress)
+      if (!isActiveProviderConfiguration(remote) || currentKeys.some(key => remote.subs[key] === undefined)) {
+        throw new Error('one or more replacement subscription routes disappeared during identity canonicalization')
+      }
+      const aliasPlan = await planProviderConfiguration(remote, {
+        aliasDeletes: oldKeys.map(key => ({ namespace: 'SUBS', key })),
+      })
+      if (providerConfigurationPlanSummary(aliasPlan).changed) {
+        options.progress?.(`Removing ${oldKeys.length} previous subscription route alias(es)`)
+        await dependencies.applyProviderPlan(aliasPlan)
+      }
+    } else {
+      for (const [index, key] of oldKeys.entries()) {
+        options.progress?.(`Deleting previous subscription route ${index + 1}/${oldKeys.length}`)
+        await dependencies.deleteKv('SUBS', key)
+      }
     }
     for (const [index, hook] of previousHooks.entries()) {
       options.progress?.(`Verifying previous subscription route retirement ${index + 1}/${previousHooks.length}`)
       await waitForRouteStatus(hook, 404, dependencies, hook.secret)
     }
-    options.progress?.('Verifying central subscription route cleanup')
-    const remote = await dependencies.readKv(options.progress)
+    options.progress?.('Verifying provider subscription route cleanup')
+    remote = await dependencies.readKv(options.progress)
     if (oldKeys.some((key) => remote.subs[key] !== undefined)) {
       throw new Error('one or more previous subscription routes remain after cleanup')
     }
-    const currentKeys = rotations.map((rotation) => (
-      subscriptionKvKey(namedSubscription(files.routes, rotation.name).slugHash)
-    ))
     if (currentKeys.some((key) => remote.subs[key] === undefined)) {
       throw new Error('one or more replacement subscription routes disappeared during cleanup')
     }
