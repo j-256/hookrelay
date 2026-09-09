@@ -1,8 +1,9 @@
 import { applyD1Migrations, env } from 'cloudflare:test'
 import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
 import {
-  acceptConfigurationChange, configurationQuery, readConfigurationEntries, readConfigurationReceipt,
-  readConfigurationState, readRuntimeConfiguration, type ConfigurationChange, type ConfigurationQuery,
+  acceptConfigurationChange, configurationQuery, readConfigurationAliases, readConfigurationEntries,
+  readConfigurationReceipt, readConfigurationState, readRuntimeConfiguration,
+  type ConfigurationChange, type ConfigurationQuery,
 } from '../../src/configuration/authority'
 
 const KEY = `sub:sha256:${'c'.repeat(64)}`
@@ -44,6 +45,83 @@ describe('shared configuration authority', () => {
     expect(await readConfigurationEntries(query)).toEqual([
       { namespace: 'SUBS', key: KEY, resourceId: RESOURCE, retired: false, value: JSON.stringify({ name: 'renamed' }) },
     ])
+  })
+
+  it('rekeys one stable resource while both route generations overlap', async () => {
+    const replacementKey = `sub:sha256:${'d'.repeat(64)}`
+    const temporaryResource = '00000000-0000-4000-8000-000000000003'
+    await acceptConfigurationChange(query, await candidate())
+    const state = await readConfigurationState(query)
+    await acceptConfigurationChange(query, {
+      ...owner,
+      authorityId: state.authorityId,
+      operationId: crypto.randomUUID(),
+      expectedRevision: state.revision,
+      kind: 'lifecycle',
+      resourceId: temporaryResource,
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      puts: [{
+        namespace: 'SUBS', key: replacementKey, resourceId: temporaryResource,
+        value: JSON.stringify({ name: PRIVATE }),
+      }],
+      deletes: [],
+    })
+    expect(await readRuntimeConfiguration(env, 'SUBS', KEY)).toContain(PRIVATE)
+    expect(await readRuntimeConfiguration(env, 'SUBS', replacementKey)).toContain(PRIVATE)
+
+    const overlapping = await readConfigurationState(query)
+    await acceptConfigurationChange(query, {
+      ...owner,
+      authorityId: overlapping.authorityId,
+      operationId: crypto.randomUUID(),
+      expectedRevision: overlapping.revision,
+      kind: 'lifecycle',
+      resourceId: RESOURCE,
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      puts: [],
+      deletes: [{ namespace: 'SUBS', key: replacementKey }],
+      moves: [{ namespace: 'SUBS', fromKey: KEY, toKey: replacementKey }],
+      aliasPuts: [{ namespace: 'SUBS', key: KEY, resourceId: RESOURCE }],
+      aliasDeletes: [],
+    })
+
+    expect(await readConfigurationEntries(query)).toEqual([{
+      namespace: 'SUBS', key: replacementKey, resourceId: RESOURCE, retired: false,
+      value: JSON.stringify({ name: PRIVATE }),
+    }])
+    expect(await readConfigurationAliases(query)).toEqual([{
+      namespace: 'SUBS', key: KEY, resourceId: RESOURCE,
+    }])
+    expect(await readRuntimeConfiguration(env, 'SUBS', KEY)).toContain(PRIVATE)
+    expect(await readRuntimeConfiguration(env, 'SUBS', replacementKey)).toContain(PRIVATE)
+  })
+
+  it('rejects aliases that shadow canonical keys or reference missing resources', async () => {
+    await acceptConfigurationChange(query, await candidate())
+    const state = await readConfigurationState(query)
+    const base = {
+      ...owner,
+      authorityId: state.authorityId,
+      expectedRevision: state.revision,
+      kind: 'lifecycle' as const,
+      resourceId: RESOURCE,
+      expiresAt: new Date(Date.now() + 60000).toISOString(),
+      puts: [],
+      deletes: [],
+    }
+    await expect(acceptConfigurationChange(query, {
+      ...base,
+      operationId: crypto.randomUUID(),
+      aliasPuts: [{ namespace: 'SUBS', key: KEY, resourceId: RESOURCE }],
+    })).rejects.toMatchObject({ code: 'conflict' })
+    await expect(acceptConfigurationChange(query, {
+      ...base,
+      operationId: crypto.randomUUID(),
+      aliasPuts: [{
+        namespace: 'SUBS', key: `sub:sha256:${'f'.repeat(64)}`,
+        resourceId: '00000000-0000-4000-8000-000000000099',
+      }],
+    })).rejects.toMatchObject({ code: 'conflict' })
   })
 
   it('reconciles a lost acceptance response through the same immutable receipt', async () => {

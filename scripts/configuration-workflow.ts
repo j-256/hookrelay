@@ -1,9 +1,11 @@
 import { z } from 'zod'
 import {
   CONFIGURATION_LIMITS, CONFIGURATION_MODE, ConfigurationError, acceptConfigurationChange,
-  authorityIdSchema, canonicalConfiguration, configurationDigest, configurationEntrySchema,
-  readConfigurationEntries, readConfigurationReceipt, readConfigurationState, validateConfigurationChange,
+  authorityIdSchema, canonicalConfiguration, configurationAliasSchema, configurationDigest,
+  configurationEntrySchema, readConfigurationAliases, readConfigurationEntries,
+  readConfigurationReceipt, readConfigurationState, validateConfigurationChange,
   type ConfigurationChange, type ConfigurationEntry, type ConfigurationQuery,
+  type ValidatedConfigurationChange,
 } from '../src/configuration/authority'
 import { applySubscriptionPolicy, readSubscriptionPolicy } from '../src/configuration/policy'
 import { OPERATIONS_FALLBACK_PREFIX } from '../src/lib/runtime-config'
@@ -14,6 +16,7 @@ export const CONFIGURATION_OPERATOR = Object.freeze({ clientId: 'cloudflare-oper
 export const configurationExportSchema = z.object({
   version: z.literal(1), authorityId: authorityIdSchema, revision: z.number().int().nonnegative(),
   entries: z.array(configurationEntrySchema).max(CONFIGURATION_LIMITS.ENTRIES),
+  aliases: z.array(configurationAliasSchema).max(CONFIGURATION_LIMITS.ALIASES).default([]),
 }).strict()
 export type ConfigurationExport = z.infer<typeof configurationExportSchema>
 function configurationValue(value: string): unknown {
@@ -29,19 +32,24 @@ const reviewSchema = z.object({
 export interface OperatorConfigurationReview {
   version: 1
   before: ConfigurationExport
-  change: ConfigurationChange
+  change: ValidatedConfigurationChange
   legacySnapshot: RemoteKvSnapshot | null
   fingerprint: string
 }
 
 export async function exportConfiguration(query: ConfigurationQuery): Promise<ConfigurationExport> {
   const state = await readConfigurationState(query)
-  const entries = await readConfigurationEntries(query)
+  const [entries, aliases] = await Promise.all([
+    readConfigurationEntries(query),
+    readConfigurationAliases(query),
+  ])
   const observed = await readConfigurationState(query)
   if (state.authorityId !== observed.authorityId || state.revision !== observed.revision || state.mode !== observed.mode) {
     throw new ConfigurationError('conflict', 'Configuration changed during export; retry the read')
   }
-  return configurationExportSchema.parse({ version: 1, authorityId: state.authorityId, revision: state.revision, entries })
+  return configurationExportSchema.parse({
+    version: 1, authorityId: state.authorityId, revision: state.revision, entries, aliases,
+  })
 }
 
 function normalizedSnapshot(snapshot: RemoteKvSnapshot): RemoteKvSnapshot {
@@ -62,11 +70,12 @@ async function sealReview(before: ConfigurationExport, change: ConfigurationChan
   return { ...content, fingerprint: await configurationDigest(content) }
 }
 
-function baseChange(before: ConfigurationExport, kind: ConfigurationChange['kind']): ConfigurationChange {
+function baseChange(before: ConfigurationExport, kind: ConfigurationChange['kind']): ValidatedConfigurationChange {
   return {
     ...CONFIGURATION_OPERATOR, authorityId: before.authorityId, expectedRevision: before.revision,
     operationId: crypto.randomUUID(), resourceId: null, kind,
-    expiresAt: new Date(Date.now() + CONFIGURATION_LIMITS.REVIEW_TTL_MS).toISOString(), puts: [], deletes: [],
+    expiresAt: new Date(Date.now() + CONFIGURATION_LIMITS.REVIEW_TTL_MS).toISOString(),
+    puts: [], deletes: [], moves: [], aliasPuts: [], aliasDeletes: [],
   }
 }
 
@@ -169,7 +178,10 @@ export async function applyConfigurationReview(
   } else {
     if (validated.change.deletes.length) throw new ConfigurationError('validation', 'Policy imports cannot retire resources')
     const replacements = new Map(validated.change.puts.map(entry => [entry.resourceId, entry]))
-    const candidate = { ...validated.before, entries: validated.before.entries.map(entry => replacements.get(entry.resourceId) ?? entry) }
+    const candidate = {
+      ...validated.before,
+      entries: validated.before.entries.map(entry => replacements.get(entry.resourceId) ?? entry),
+    }
     const verified = await reviewConfigurationImport(query, candidate)
     const semanticEntries = (entries: ConfigurationEntry[]) => entries.map(entry => ({ ...entry, value: configurationValue(entry.value) }))
     if (canonicalConfiguration(verified.before) !== canonicalConfiguration(validated.before) ||
@@ -181,10 +193,13 @@ export async function applyConfigurationReview(
 }
 
 export function configurationReviewSummary(review: OperatorConfigurationReview) {
+  const changedResourceIds = new Set<string>(review.change.puts.map(entry => entry.resourceId))
   return {
     operationId: review.change.operationId, kind: review.change.kind,
     authorityId: review.change.authorityId, expectedRevision: review.change.expectedRevision,
-    changedResourceIds: review.change.puts.map(entry => entry.resourceId), expiresAt: review.change.expiresAt,
+    changedResourceIds: [...changedResourceIds], expiresAt: review.change.expiresAt,
+    movedResources: review.change.moves.length,
+    aliasesChanged: review.change.aliasPuts.length + review.change.aliasDeletes.length,
     policyChanges: review.change.kind === 'import' ? review.change.puts.map(entry => ({
       resourceId: entry.resourceId,
       before: readSubscriptionPolicy(review.before.entries.find(previous => previous.resourceId === entry.resourceId)!).policy,
