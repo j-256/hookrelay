@@ -1,13 +1,15 @@
-# Not a monorepo -- this file exists only for allowBuilds (native build approvals).
-# pnpm 10+ requires a `packages` field whenever pnpm-workspace.yaml is present, or
-# `pnpm install --frozen-lockfile` fails with "packages field missing or empty"
-# (which breaks Cloudflare Workers Builds). Empty list = no workspace packages.
+# Not a monorepo -- this file exists only for allowBuilds (native build approvals)
+# pnpm 10+ requires a `packages` field whenever pnpm-workspace.yaml is present
+# The empty list keeps Cloudflare Workers Builds working without workspace packages
 packages: []
 
 allowBuilds:
   esbuild: true
   sharp: true
   workerd: true
+
+overrides:
+  sharp: 0.35.4
 
 minimumReleaseAgeExclude:
   - '@cloudflare/vitest-pool-workers@0.21.2'
