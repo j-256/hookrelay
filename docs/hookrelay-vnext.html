@@ -940,8 +940,8 @@
             <h3>Drain first. Archive before deletion. Resume safely.</h3>
             <p>Subscriptions, sinks, and GitHub fleet repositories gain explicit staged retirement backed by private recovery manifests and persistent phase markers.</p>
             <ul class="clean-list">
-              <li>Subscriptions disable before exact hook, KV, and unshared secret cleanup</li>
-              <li>Sinks remain in <code>retiredSinks</code> and KV until subscription and delivery references clear</li>
+              <li>Subscriptions disable before exact hook, provider-route, and unshared secret cleanup</li>
+              <li>Sinks remain in <code>retiredSinks</code> and provider configuration until subscription and delivery references clear</li>
               <li>GitHub fleet manifests record lifecycle state and resumable phase markers</li>
               <li>Verification checks absence without GitHub pings; partial reruns converge</li>
             </ul>
@@ -972,7 +972,7 @@
         <div class="operator-grid">
           <div class="operator-card">
             <h3>Generic interoperability</h3>
-            <p>Both setup commands write and validate local state first, then offer separate prompts for Worker secrets and production KV.</p>
+            <p>Both setup commands write and validate local state first, then offer separate prompts for Worker secrets and the selected production configuration authority.</p>
             <div class="command-list">
               <div class="command">
                 <code class="command-code">pnpm sink:add automation webhook</code>
@@ -993,7 +993,7 @@
           </div>
           <div class="operator-card">
             <h3>Retention</h3>
-            <p>R2 lifecycle configuration and runtime KV are separate surfaces. Plan and verify are read-only; only the explicitly confirmed commands write production state.</p>
+            <p>R2 lifecycle configuration and runtime provider configuration are separate surfaces. Synchronize the exact retention resource first; only explicitly confirmed commands write production state.</p>
             <div class="command-list">
               <div class="command">
                 <code class="command-code">pnpm retention plan</code>
@@ -1013,12 +1013,12 @@
               <div class="command">
                 <code class="command-code">pnpm sync</code>
                 <span class="command-badge" data-kind="read">Read only</span>
-                <p>Validates routes and referenced secrets, then compares <code>routes.jsonc</code> with production KV and prints the desired-state plan without applying it.</p>
+                <p>Validates routes and referenced secrets, then compares <code>routes.jsonc</code> with legacy KV or active D1 and prints the desired-state plan without applying it.</p>
               </div>
               <div class="command">
-                <code class="command-code">pnpm sync -y</code>
+                <code class="command-code">pnpm sync --put-retention -y</code>
                 <span class="command-badge" data-kind="write">Production write</span>
-                <p>Applies the KV plan, making runtime D1 retention configuration active and removing remote route or sink entries that are absent from the complete local desired state.</p>
+                <p>Applies only the selected retention resource. Complete unscoped apply remains available in legacy KV mode; active D1 requires exact resource selection.</p>
               </div>
             </div>
           </div>
@@ -1029,12 +1029,12 @@
               <div class="command">
                 <code class="command-code">pnpm sub:retire &lt;name&gt; --manifest &lt;private-file&gt;</code>
                 <span class="command-badge" data-kind="stage">Stage + confirm</span>
-                <p>Disables the subscription in local desired state, previews the normal KV plan, and asks before applying the disabled route to production.</p>
+                <p>Disables the subscription in local desired state, previews its exact provider change, and asks before applying only the <code>enabled</code> policy.</p>
               </div>
               <div class="command">
                 <code class="command-code">pnpm sub:retire &lt;name&gt; --manifest &lt;private-file&gt; --finalize</code>
                 <span class="command-badge" data-kind="write">Guarded cleanup</span>
-                <p>Requires the production route to be disabled, archives its configuration and recoverable authentication, removes only a matching owned GitHub hook and KV route, and cleans only unshared secrets.</p>
+                <p>Requires the production route to be disabled, archives its configuration and recoverable authentication, removes only a matching owned GitHub hook and provider route, and cleans only unshared secrets.</p>
               </div>
               <div class="command">
                 <code class="command-code">pnpm sink:retire &lt;name&gt; --manifest &lt;private-file&gt;</code>
@@ -1044,7 +1044,7 @@
               <div class="command">
                 <code class="command-code">pnpm sink:retire &lt;name&gt; --manifest &lt;private-file&gt; --finalize</code>
                 <span class="command-badge" data-kind="write">Guarded cleanup</span>
-                <p>Proves through D1 that no unfinished delivery references the sink, archives its recoverable values, removes its local and KV definition, and cleans only unshared secrets.</p>
+                <p>Proves through D1 that no unfinished delivery references the sink, archives its recoverable values, removes its local and provider definition, and cleans only unshared secrets.</p>
               </div>
             </div>
           </div>
@@ -1059,7 +1059,7 @@
 
         <div class="rollout">
           <div class="rollout-mark">!</div>
-          <p><strong>Deployment boundary:</strong> apply <code>migrations/0004_vnext_foundations.sql</code> before deploying Worker code that uses filtered decisions, operational signals, or maintenance state. Production retention and retirement remain separate, explicit operator actions.</p>
+          <p><strong>Deployment boundary:</strong> apply migrations through <code>migrations/0007_configuration_lifecycle.sql</code> before deploying the active-capable operator surface. Production authority activation, retention, and retirement remain separate, explicit operator actions.</p>
         </div>
       </div>
     </section>

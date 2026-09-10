@@ -19,7 +19,7 @@ pnpm subscription:fleet verify --manifest <private-manifest> --subscription <nam
 pnpm sync
 ```
 
-`plan` is read-only. `prepare` writes only local recovery-derived configuration. Inspect and checkpoint the private manifest and hash-only route configuration before production mutation. `apply` writes only missing Hookrelay and sender Worker secrets plus selected Hookrelay KV entries. `verify` sends an authenticated CloudEvent whose type must be filtered from every configured sink.
+`plan` is read-only. `prepare` writes only local recovery-derived configuration. Inspect and checkpoint the private manifest and hash-only route configuration before production mutation. `apply` writes only missing Hookrelay and sender Worker secrets plus selected Hookrelay provider entries. Active D1 writes own selected subscriptions' `sinks`, `filter`, and `sinkFilters` fields while preserving online `enabled` policy. `verify` sends an authenticated CloudEvent whose type must be filtered from every configured sink.
 
 ## Secret boundary
 
@@ -29,4 +29,4 @@ Sender credentials travel to Wrangler through stdin. Plans and diagnostics may i
 
 ## Verification
 
-Cover strict manifest parsing, route identity, secret-free plans, unsafe file rejection, selected KV writes, sender secret installation, and authenticated filtered verification in `test/`. Run `pnpm typecheck` and `pnpm test` before considering changes complete. Operational additions also require the documented post-prepare plan, production verification, and final `pnpm sync` comparison.
+Cover strict manifest parsing, route identity, secret-free plans, unsafe file rejection, selected provider writes in both authority modes, sender secret installation, and authenticated filtered verification in `test/`. Run `pnpm typecheck` and `pnpm test` before considering changes complete. Operational additions also require the documented post-prepare plan, production verification, and final `pnpm sync` comparison.

@@ -2,7 +2,7 @@
 
 Run `pnpm commands` for a one-screen reference to routine setup, sync, development, and deployment commands.
 
-Hookrelay is a small, provider-agnostic webhook notification gateway for Cloudflare Workers. Add adapters for new webhook senders, receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Routing starts in KV and can move to a separately activated [provider-owned D1 configuration authority](docs/configuration-authority.md). Inbound bearer credentials are represented by hashes, and recoverable credentials live in Wrangler secrets.
+Hookrelay is a small, provider-agnostic webhook notification gateway for Cloudflare Workers. Add adapters for new webhook senders, receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Provider configuration uses KV in legacy mode or a separately activated [provider-owned D1 configuration authority](docs/configuration-authority.md). Hookrelay's commands manage either authority; an external dashboard is an additional policy client, not the exclusive control plane. Inbound bearer credentials are represented by hashes, and recoverable credentials live in Wrangler secrets.
 
 ![The Hookrelay admin events dashboard showing normalized webhook events and independent sink-delivery states](docs/screenshots/cover.png)
 
@@ -77,11 +77,11 @@ Steps:
    Then in the Cloudflare dashboard, attach the Worker to a custom domain (`hooks.example.com`). The route is managed in the dashboard rather than in `wrangler.jsonc`, so no hostname is committed to source (`workers_dev` is `false` to keep the Worker off `*.workers.dev`).
 
    This repository deploys automatically through GitHub Actions after typechecking and tests pass on a push to `main`. In your fork's **Settings -> Secrets and variables -> Actions**, add `CLOUDFLARE_API_TOKEN` as a repository secret and `CLOUDFLARE_ACCOUNT_ID` as a repository variable. The deployment token needs Workers Scripts Write plus Queues Read and Write access for the target account because Wrangler reads the queue inventory before reconciling the configured consumers. The token is exposed only to the dependent deployment step, not to dependency installation, typechecking, or tests. Keep Cloudflare Workers Builds disconnected to avoid duplicate deployments, and apply new D1 migrations before merging code that depends on them.
-7. Add a sink. The command reads the Discord webhook URL without echoing it, stores it in `.dev.vars`, adds the secret reference to `routes.jsonc`, and offers to install the Wrangler secret and sync KV:
+7. Add a sink. The command reads the Discord webhook URL without echoing it, stores it in `.dev.vars`, adds the secret reference to `routes.jsonc`, and offers to install the Wrangler secret and sync the selected provider authority:
    ```sh
    pnpm sink:add discord discord
    ```
-8. Add subscriptions. Each command writes the hash-only route locally, prints the raw slug under a password-manager key, and offers to install any sender secret and sync KV. GitHub's non-manual event selections create the repository webhook only after the route is live:
+8. Add subscriptions. Each command writes the hash-only route locally, prints the raw slug under a password-manager key, and offers to install any sender secret and sync the selected provider authority. GitHub's non-manual event selections create the repository webhook only after the route is live:
    ```sh
    pnpm sub:add claude-status statuspage --fallback-url https://status.claude.com/
    pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events activity,alerts
@@ -108,8 +108,8 @@ hookrelay separates configuration by sensitivity. The guiding rule: **nothing se
 
 | Key | What it is |
 | --- | --- |
-| `kv_namespaces[].id` (`SUBS`, `SINKS`) | KV namespaces holding subscription and sink config |
-| `d1_databases[].database_id` | D1 database storing the event log and subscription hashes |
+| `kv_namespaces[].id` (`SUBS`, `SINKS`) | KV namespaces holding legacy configuration and bounded operational fallback records |
+| `d1_databases[].database_id` | D1 database storing the event log and, after explicit activation, authoritative provider configuration |
 | `r2_buckets[].bucket_name` | R2 bucket for raw payloads (bound by name, so there is no id to set) |
 | `queues` | Producer and consumer bindings for per-sink delivery and its dead-letter queue |
 | `triggers.crons` | Five-minute recovery sweep for delivery rows that could not be published to the queue |
@@ -119,7 +119,7 @@ hookrelay separates configuration by sensitivity. The guiding rule: **nothing se
 
 ### Cost guardrails and Free compatibility
 
-Hookrelay applies a 2,000-request-per-minute source-class budget before hashing the slug or reading KV. Registered source types each receive one counter, while unregistered source names share an `unknown` counter so a scanner cannot evade the guardrail by varying the path. The log event omits the bearer path. After a subscription resolves and is enabled, a separate 1,200-request-per-minute subscription budget runs before the body is read, authenticated, stored in D1 or R2, or published to a queue. A refusal returns `429` with `Retry-After: 60`. A third one-per-minute binding coalesces each subscription's durable `ingress-rate-limited` operational signal so the diagnostic path cannot perform one D1 write per rejected request.
+Hookrelay applies a 2,000-request-per-minute source-class budget before hashing the slug or reading provider configuration. Registered source types each receive one counter, while unregistered source names share an `unknown` counter so a scanner cannot evade the guardrail by varying the path. The log event omits the bearer path. After a subscription resolves and is enabled, a separate 1,200-request-per-minute subscription budget runs before the body is read, authenticated, stored in D1 or R2, or published to a queue. A refusal returns `429` with `Retry-After: 60`. A third one-per-minute binding coalesces each subscription's durable `ingress-rate-limited` operational signal so the diagnostic path cannot perform one D1 write per rejected request.
 
 Production D1 observations for the 30 days ending 2026-09-07 recorded a maximum of 547 events for an entire source-minute and 530 events for one subscription-minute. The configured budgets therefore preserve at least about 3.7 times and 2.3 times those respective global observed peaks before Cloudflare's per-location behavior adds further permissiveness. Rate Limiting bindings are intentionally eventually consistent and maintain independent counters in each Cloudflare location, so distributed traffic and counter propagation can exceed these thresholds. They are denial-of-wallet guardrails, not exact quotas or monthly spending caps. Namespace IDs must remain unique within one account; change the checked-in example values if another Worker already uses them. See [Workers Rate Limiting bindings](https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/), verified 2026-09-07.
 
@@ -151,21 +151,25 @@ Set with `npx wrangler secret put <NAME>`. Wrangler lists their names but does n
 
 The names are a convention, not a requirement – whatever you put in `routes.jsonc` (`auth.secretEnv`, a sink's `tokenEnv` or `urlEnv`) must match a secret name you have set. `pnpm sync` validates that every referenced secret exists before it writes anything.
 
-### 4. KV via `routes.jsonc` – synced with `pnpm sync`
+### 4. Provider configuration via `routes.jsonc` – reconciled with `pnpm sync`
 
-In legacy configuration mode, `routes.jsonc` is your subscription config. It contains a hash of each incoming slug, never the raw slug. It remains **gitignored** because some sink types, such as an unreserved ntfy topic, can still place bearer credentials there. `pnpm sync` validates the file and writes it into the `SUBS`/`SINKS` KV namespaces. The runtime checks the provider authority before reading KV; an active D1 authority never falls back to KV. See [configuration authority](docs/configuration-authority.md) for explicit migration, supported online policy controls and recovery.
+`routes.jsonc` is Hookrelay's local provider topology in both authority modes. It contains a hash of each incoming slug, never the raw slug. It remains **gitignored** because some sink types, such as an unreserved ntfy topic, can still place bearer credentials there. `pnpm sync` validates the file, reads the authority mode and revision, and compares it with the authoritative configuration. The runtime reads `SUBS`/`SINKS` KV in legacy mode and indexed D1 entries in active mode; active D1 never falls back to configuration in KV.
 
-KV writes pass values through an owner-only temporary file, never a command argument. The write subprocess suppresses both output streams, disables Wrangler log files and telemetry, and forces log sanitization. The temporary file is removed after success or failure. A failed command reports an unverified write outcome: inspect remote configuration before retrying, because a lost response does not prove the write failed.
+In legacy mode, `pnpm sync -y` retains its complete desired-state behavior, including deletion of remote entries absent from the file. In active mode, plain `pnpm sync` remains the complete comparison but `pnpm sync -y` refuses an unscoped write. Guided lifecycle and fleet commands submit exact revision-checked D1 changes for the resources and policy fields they own. A manual `--put-sub <name>` selection explicitly applies that subscription's complete local configuration, including policy; `--put-sink <name>`, `--put-retention`, and `--put-operations` select their exact resources. Selecting omitted retention or operations configuration explicitly deletes that singleton resource. Add `-y` only after reviewing the scoped plan.
 
-Private KV reads capture values only in process memory while suppressing child diagnostics and Wrangler log files. Secret installation uses the same protected subprocess settings with values supplied through stdin.
+For an existing active subscription, ordinary lifecycle reconciliation preserves the online `enabled`, `sinks`, `filter`, and `sinkFilters` policy fields unless that workflow explicitly owns a field. Subscription retirement owns `enabled`; a sink switch owns `sinks` and `sinkFilters`; GitHub event-profile reconciliation owns `filter`; the fleet integrations document their narrower ownership. This lets Hookrelay keep lifecycle, credentials, provider hooks, and local recovery under operator control while a dashboard such as Maintainer HQ remains a policy-only client of the same authority.
+
+Legacy KV writes pass values through an owner-only temporary file, never a command argument. The write subprocess suppresses both output streams, disables Wrangler log files and telemetry, and forces log sanitization. Active D1 changes use one bounded compare-and-swap transaction and a retained receipt. If an active response is lost, the command checks that receipt before reporting an uncertain outcome; rerun the same staged lifecycle command rather than reconstructing values.
+
+Private provider reads capture values only in process memory. Legacy Wrangler reads suppress child diagnostics and log files, while active reads use the parameterized D1 API. Secret installation uses protected subprocess settings with values supplied through stdin. See [configuration authority](docs/configuration-authority.md) for migration, alias, policy, and recovery details.
 
 | Field | What it is |
 | --- | --- |
-| `baseUrl` | Optional public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. Without it, the command discovers the single production custom domain attached to the Worker through Cloudflare's API and saves the result here. This local setup value is not written to KV. |
-| `emailBaseAddress` | Base address for Cloudflare Email Routing, such as `relay@mail.example.com`. `pnpm sub:add` appends a private plus-address route token. This local setup value is not written to KV. |
+| `baseUrl` | Optional public Worker origin used by `pnpm sub:add` to construct provider webhook URLs. Without it, the command discovers the single production custom domain attached to the Worker through Cloudflare's API and saves the result here. This local setup value is not written to runtime provider configuration. |
+| `emailBaseAddress` | Base address for Cloudflare Email Routing, such as `relay@mail.example.com`. `pnpm sub:add` appends a private plus-address route token. This local setup value is not written to runtime provider configuration. |
 | `operations` | Optional `{ sinks, alertCooldownMinutes, staleDeliveryMinutes }` configuration for proactive health alerts. Every named alert sink must exist in `sinks[]`; alert delivery bypasses subscription fanout and skips a sink implicated by the signal. |
 | `retention` | Optional `{ r2Days?, d1Days? }` lifecycle configuration. At least one lifetime must be present. |
-| `subs[].slugHash` | Lowercase SHA-256 digest of the private slug. The Worker hashes the incoming path segment and uses `sub:sha256:<slugHash>` for KV lookup; neither KV nor this file needs the raw slug. Generate it with `pnpm sub:add` rather than choosing a low-entropy slug. |
+| `subs[].slugHash` | Lowercase SHA-256 digest of the private slug. The Worker hashes the incoming path segment and uses `sub:sha256:<slugHash>` for provider lookup; neither provider storage nor this file needs the raw slug. Generate it with `pnpm sub:add` rather than choosing a low-entropy slug. |
 | `subs[].source` | Source name (`statuspage`, `github`, `cloudflare-notifications`, `uptime`, `cloudevents`, `email`). |
 | `subs[].sinks` | Names of sinks (from `sinks[]`) to fan out to. |
 | `subs[].auth` | Optional `{ scheme, secretEnv, alternateSecretEnvs? }` for signature or secret verification on top of the slug. GitHub uses `github-sha256`; structured CloudEvents use `hookrelay-sha256`. Alternate secret references allow staged HMAC rotation. |
@@ -174,7 +178,7 @@ Private KV reads capture values only in process memory while suppressing child d
 | `subs[].email.primaryLinkLabels` | Exact, case-insensitive visible labels allowed to select one email deep link, such as `View incident`. Every email URL is removed from sink-visible text, and zero or multiple distinct matching targets fail closed to `fallbackUrl`. |
 | `subs[].filter` | Optional subscription-wide delivery filter over normalized event types and severities. Event-type `include` and `exclude` accept lowercase exact values, including URI-shaped CloudEvent types such as `urn:service:problem:v1`, plus `*` or trailing wildcards such as `pull_request.*`; severity values are `debug`, `info`, `warning`, `error`, and `critical`. Exclusion wins within each dimension and every configured dimension must pass. |
 | `subs[].sinkFilters` | Optional per-sink filters keyed by names present in `subs[].sinks`. The subscription filter runs first, then each selected sink's filter, so one event can be delivered to one destination and deliberately filtered from another. |
-| `subs[].setup` | Local-only provider setup metadata, including a GitHub repository and event profile names. `pnpm sync` validates it but does not write it to KV. |
+| `subs[].setup` | Local-only provider setup metadata, including a GitHub repository and event profile names. `pnpm sync` validates it but does not write it to runtime configuration. |
 | `sinks[].type: ntfy` -> `topic` | **Bearer secret for unreserved topics.** Anyone who knows an unreserved topic can read its notifications. Use a long random topic and treat it like a password. |
 | `sinks[].type: ntfy` -> `server` | Optional. Base URL of a self-hosted ntfy server; defaults to `https://ntfy.sh`. |
 | `sinks[].type: ntfy` -> `tokenEnv` | Optional Wrangler secret name containing an ntfy access token. Strongly recommended for Cloudflare Workers so publishes use the account's quota instead of a shared anonymous egress-IP quota. Authentication does not make an unreserved topic private. |
@@ -191,23 +195,23 @@ Incoming HTTP slugs, email plus-route tokens, and Discord webhook URLs are beare
 1. Read and validate gitignored `routes.jsonc` and `.dev.vars`. `sink:add` reads the destination URL through concealed input. `sub:add` generates its private values and resolves the HTTP origin or email base address for the selected source.
 2. Write the local desired state. Routing and hash-only subscription data go to `routes.jsonc`; Worker-readable secrets go to `.dev.vars`, which is kept at mode `600`. The commands do not populate Miniflare's local KV.
 3. Print anything that belongs in your password manager. In particular, the raw incoming slug is not added to `.dev.vars`, because the Worker only needs its hash.
-4. Ask before changing production. Approval installs any new Wrangler secret, then runs `pnpm sync` to compare `routes.jsonc` with remote Worker KV.
-5. Ask whether to apply that plan. Approval runs `pnpm sync -y` to update remote KV.
+4. Ask before changing production. Approval installs any new Wrangler secret, then runs a scoped `pnpm sync` comparison for the selected provider resource.
+5. Ask whether to apply that plan. Approval writes only that exact resource to legacy KV or active D1.
 6. For a non-manual GitHub selection, ask whether to create the repository webhook. This only happens after the remote sender secret and subscription route are live.
 
-If every prompt is approved, no later sync is needed. Declining a production prompt or encountering a remote error leaves the completed local files in place. Install any deferred Wrangler secret, preview with `pnpm sync`, and apply with `pnpm sync -y`. Those commands finish Worker state only; if automatic GitHub hook creation was skipped, create the hook manually from the fields printed by `sub:add`. Passing `-y` or `--yes` skips the approvals but keeps the same local-first order.
+If every prompt is approved, no later sync is needed. Declining a production prompt or encountering a remote error leaves the completed local files in place. Install any deferred Wrangler secret, preview the named resource with `pnpm sync --put-sink <name>` or `pnpm sync --put-sub <name>`, then add `-y` to apply it. Those commands finish Worker state only; if automatic GitHub hook creation was skipped, create the hook manually from the fields printed by `sub:add`. Passing `-y` or `--yes` skips the approvals but keeps the same local-first order.
 
 ## Adding a sink
 
-`pnpm sink:add <name> discord` is the guided Discord path. It reads the webhook URL from concealed input, validates that it is a Discord webhook, derives `SINK_<NAME>_URL`, appends a sink containing only that secret reference to `routes.jsonc`, and mirrors the URL into the gitignored `.dev.vars`. It then offers to install the same value as a Wrangler secret, preview the KV plan, and apply it.
+`pnpm sink:add <name> discord` is the guided Discord path. It reads the webhook URL from concealed input, validates that it is a Discord webhook, derives `SINK_<NAME>_URL`, appends a sink containing only that secret reference to `routes.jsonc`, and mirrors the URL into the gitignored `.dev.vars`. It then offers to install the same value as a Wrangler secret, preview the exact provider change, and apply it.
 
 Discord descriptions preserve supported Markdown while turning embedded HTML structure into readable text. Long descriptions end at a readable boundary with an explicit continuation notice, and selecting a linked embed title opens the complete source event.
 
-`pnpm sink:add <name> webhook` adds a generic signed destination. It reads a public HTTPS endpoint without echoing it, generates a separate HMAC key, writes both values only to `.dev.vars`, stores their secret names in `routes.jsonc`, and offers one bulk Wrangler installation before KV sync. Save the endpoint under `SINK_<NAME>_URL` and the generated signing key under `SINK_<NAME>_SIGNING_SECRET` when the command prints the password-manager handoff.
+`pnpm sink:add <name> webhook` adds a generic signed destination. It reads a public HTTPS endpoint without echoing it, generates a separate HMAC key, writes both values only to `.dev.vars`, stores their secret names in `routes.jsonc`, and offers one bulk Wrangler installation before provider synchronization. Save the endpoint under `SINK_<NAME>_URL` and the generated signing key under `SINK_<NAME>_SIGNING_SECRET` when the command prints the password-manager handoff.
 
 The sink name is a stable routing label, not a description of what feeds it. `discord` is a sensible first name. If several Discord destinations exist, names such as `discord-personal` and `discord-builds` produce independent `SINK_DISCORD_PERSONAL_URL` and `SINK_DISCORD_BUILDS_URL` secrets. Subscriptions refer to these names and remain independent of the sink implementation.
 
-The command refuses to replace an existing sink or secret. A raw destination URL never enters `routes.jsonc`, KV, process arguments, or command output. Save it in your password manager under the derived key printed by the command.
+The command refuses to replace an existing sink or secret. A raw destination URL never enters `routes.jsonc`, provider configuration, process arguments, or command output. Save it in your password manager under the derived key printed by the command.
 
 Pass `-y` or `--yes` to skip the production confirmation prompts. The URL is still read through concealed input when interactive, or from stdin for automation.
 
@@ -225,9 +229,9 @@ The prepare phase copies convention-derived local credentials such as `SINK_DISC
 
 The switch phase verifies both remote sink aliases and the new secret before changing every subscription reference to the new name. The old alias remains deployed and uses the new secret, so already queued deliveries and historical admin retries continue to work.
 
-The finalize phase explicitly deletes the obsolete local and Wrangler secret. It does not delete the old sink alias because doing so would break historical retries. Custom secret names that do not follow the `SINK_<NAME>_<CONCEPT>` convention remain unchanged.
+The finalize phase explicitly deletes the obsolete local and Wrangler secret. With active D1 it atomically moves the original stable resource identity to the new name, retains the old runtime name as a D1 alias for queued and historical retries, and removes the temporary duplicate name from `routes.jsonc`. Legacy KV retains both equivalent local entries because it has no separate alias record. Custom secret names that do not follow the `SINK_<NAME>_<CONCEPT>` convention remain unchanged.
 
-Each phase accepts `-y` or `--yes` to apply its production changes without confirmation. Run the phases separately and let the prepare change propagate before switching subscription routes because [Workers KV reads are eventually consistent](https://developers.cloudflare.com/kv/concepts/how-kv-works/).
+Each phase accepts `-y` or `--yes` to apply its production changes without confirmation. Run the phases separately. In legacy mode, let the prepare change propagate before switching subscription routes because [Workers KV reads are eventually consistent](https://developers.cloudflare.com/kv/concepts/how-kv-works/); active D1 changes are revisioned and atomic, while the command retains the same explicit phase and verification boundaries.
 
 ### Renaming a sink secret reference
 
@@ -238,13 +242,13 @@ pnpm sink:secret:rename discord SINK_DISCORD_URL SINK_DISCORD_SERVICE_STATUS_URL
 pnpm sink:secret:rename discord SINK_DISCORD_URL SINK_DISCORD_SERVICE_STATUS_URL --finalize
 ```
 
-The prepare phase copies the value from `.dev.vars`, installs the new Wrangler secret, and then syncs the selected sink's KV config to reference it. The old secret remains available while cached copies of the previous KV value expire, so queued messages carrying the unchanged sink name can dispatch through either configuration.
+The prepare phase copies the value from `.dev.vars`, installs the new Wrangler secret, and then syncs the selected sink configuration to reference it. The old secret remains available through the explicit verification boundary, including while cached legacy KV values expire, so queued messages carrying the unchanged sink name can dispatch safely.
 
-After the KV change has propagated, the explicit finalize phase verifies that production matches the new local sink config and that no route references the old secret before deleting it from Wrangler and `.dev.vars`. Sink names, subscription routes, queued delivery identities, and historical retry links do not change.
+The explicit finalize phase verifies that provider configuration matches the new local sink config and that no route references the old secret before deleting it from Wrangler and `.dev.vars`. Sink names, subscription routes, queued delivery identities, and historical retry links do not change.
 
 ## Adding a subscription
 
-`routes.jsonc` is the complete desired state for subscriptions and sinks. Keep every existing entry when adding one: `pnpm sync -y` removes remote KV entries that are absent from the file.
+In legacy mode, `routes.jsonc` is the complete desired state for subscriptions and sinks, so keep every existing entry when adding one because `pnpm sync -y` removes absent KV entries. In active mode it remains the complete topology comparison, but ordinary scoped commands preserve online policy they do not own and an unscoped `pnpm sync -y` is rejected.
 
 Run the guided command after the destination sink exists:
 
@@ -291,7 +295,7 @@ The `--events` value accepts comma-separated profiles. Profiles compose by set u
 
 The base URL resolves from an explicit `--base-url`, then the value already saved in `routes.jsonc`, then the single production custom domain attached to the Worker named in `wrangler.jsonc`. Automatic discovery uses `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; an absent or ambiguous domain produces an error asking for `--base-url`.
 
-With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and KV route are live.
+With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and provider route are live.
 
 ## Provider-specific setup
 
@@ -316,7 +320,7 @@ CloudEvents ingress accepts only `POST` requests with `application/cloudevents+j
 
 The webhook sink sends `application/cloudevents+json` without following redirects. Its `Idempotency-Key` and `X-Hookrelay-Delivery-Id` remain stable for the same persisted event and sink across automatic or manual retries. `X-Hookrelay-Event-Id` identifies the persisted event, while the envelope data includes the current delivery generation and attempt. `X-Hookrelay-Signature-256` is HMAC-SHA256 over the exact outbound body using `signingSecretEnv`; receivers should verify the bytes before parsing JSON and deduplicate on the idempotency key.
 
-For staged ingress-key rotation, add the next Wrangler secret name to `auth.alternateSecretEnvs`, sync it, switch senders, then remove the old reference. Hookrelay tries every available referenced key without exposing which one matched.
+For staged ingress-key rotation, add the next Wrangler secret name to `auth.alternateSecretEnvs`, apply the exact subscription with `pnpm sync --put-sub <name>`, switch senders, then remove the old reference and apply the same exact subscription again. Hookrelay tries every available referenced key without exposing which one matched.
 
 ### Forwarding email notifications
 
@@ -347,7 +351,7 @@ pnpm sub:add service-status email --email-base relay@mail.example.com \
   --fallback-url https://status.example.com/
 ```
 
-If the identity is not documented, omit the allowlist. `View raw` in `/admin/events` exposes the original headers when troubleshooting, while the normalized R2 object records the envelope sender. Add filters only after confirming every legitimate identity, then run `pnpm sync` and `pnpm sync -y`. The allowlist is a noise filter, not cryptographic authentication: the documented [Email Worker message interface](https://developers.cloudflare.com/email-service/api/route-emails/email-handler/) exposes envelope fields, headers, and raw MIME, but no verified SPF or DKIM result.
+If the identity is not documented, omit the allowlist. `View raw` in `/admin/events` exposes the original headers when troubleshooting, while the normalized R2 object records the envelope sender. Add filters only after confirming every legitimate identity, then preview with `pnpm sync --put-sub <name>` and add `-y` to apply that explicit local policy. The allowlist is a noise filter, not cryptographic authentication: the documented [Email Worker message interface](https://developers.cloudflare.com/email-service/api/route-emails/email-handler/) exposes envelope fields, headers, and raw MIME, but no verified SPF or DKIM result.
 
 Treat each generated address as a bearer route. Cloudflare preserves the full plus address in Email Routing activity logs, and Hookrelay's protected raw MIME contains the recipient plus any confirmation or unsubscribe links. Hookrelay does not copy the route token into D1, normalized R2 objects, queue messages, or its own logs. Unselected email targets remain only in protected raw MIME; one explicitly labeled primary target or the public fallback may enter normalized storage and sinks. Restrict access to the Cloudflare account, R2 bucket, admin page, and destination sink accordingly.
 
@@ -359,7 +363,7 @@ Use the saved subscription name to replace an existing webhook's event selection
 pnpm github:events github:example-owner/example-repo --events recommended,stars
 ```
 
-The command updates only `setup.github.eventProfiles` in local `routes.jsonc`, preserving its comments, then finds the exact repository hook by hashing each Hookrelay URL slug and comparing it with the subscription's saved `slugHash`. It previews the GitHub change and asks before applying it; pass `-y` or `--yes` to skip that confirmation. Neither the private URL nor its slug is printed.
+The command updates only `setup.github.eventProfiles` in local `routes.jsonc`, preserving its comments, applies the selected subscription's compiled `filter` field to provider configuration, then finds the exact repository hook by hashing each Hookrelay URL slug and comparing it with the subscription's saved `slugHash`. It changes GitHub only after the provider filter is accepted, previews the GitHub change, and asks before applying it; pass `-y` or `--yes` to skip confirmations. Neither the private URL nor its slug is printed.
 
 If you edit `eventProfiles` in `routes.jsonc` yourself, omit `--events` to reconcile that saved selection:
 
@@ -381,15 +385,15 @@ pnpm sink:retire <sink> --manifest <file>
 pnpm sink:retire <sink> --manifest <file> --finalize
 ```
 
-The first subscription phase disables the local route, previews the normal KV plan, and asks before applying it; `-y` applies without prompts. Finalization requires the production route to be disabled, archives the full hash-only subscription configuration and locally recoverable auth values before destructive work, records and removes only a matching Hookrelay-owned GitHub hook when present, removes the route, syncs its KV deletion, and deletes auth secrets only when no remaining route references them. Missing local values are recorded as unavailable and their remote secrets are retained rather than becoming unrecoverable.
+The first subscription phase disables the local route, previews an exact provider change that owns only `enabled`, and asks before applying it; `-y` applies without prompts. Finalization requires the production route to be disabled, archives the full hash-only subscription configuration and locally recoverable auth values before destructive work, records and removes only a matching Hookrelay-owned GitHub hook when present, removes the route, deletes that exact provider entry, and deletes auth secrets only when no remaining route references them. Missing local values are recorded as unavailable and their remote secrets are retained rather than becoming unrecoverable.
 
-The first sink phase requires no enabled subscription or operations alert to reference the sink, moves its definition from `sinks` to `retiredSinks`, and keeps that definition in production KV. Disabled subscriptions may continue to reference the staged sink while their own retirements are completed. Sink finalization uses the parameterized [D1 query API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/) to prove that no `pending`, `queued`, `processing`, `retrying`, or `exhausted` delivery row names the sink. It then archives the sink and recoverable values, removes the retired definition and production KV entry, and deletes only unshared sink secrets. The read-only D1 check uses `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and the `EVENTS_DB` database ID from `wrangler.jsonc`; the token needs D1 Read permission.
+The first sink phase requires no enabled subscription or operations alert to reference the sink, moves its definition from `sinks` to `retiredSinks`, and keeps that definition in provider configuration with retired lifecycle state in active D1. Disabled subscriptions may continue to reference the staged sink while their own retirements are completed. Sink finalization uses the parameterized [D1 query API](https://developers.cloudflare.com/api/resources/d1/subresources/database/methods/query/) to prove that no `pending`, `queued`, `processing`, `retrying`, or `exhausted` delivery row names the sink. It then archives the sink and recoverable values, removes the retired definition and exact provider entry, and deletes only unshared sink secrets. The read-only D1 check uses `CLOUDFLARE_ACCOUNT_ID`, `CLOUDFLARE_API_TOKEN`, and the `EVENTS_DB` database ID from `wrangler.jsonc`; the token needs D1 Read permission.
 
-Both finalizers write recovery data before provider, KV, or secret deletion and persist phase markers after each successful boundary. A cancelled or interrupted finalization can leave the local desired state advanced while the disabled production resource remains safe; rerun the identical command to continue. Manifests and logs never print raw slugs or secret values.
+Both finalizers write recovery data before provider configuration or secret deletion and persist phase markers after each successful boundary. A cancelled or interrupted finalization can leave the local desired state advanced while the disabled production resource remains safe; rerun the identical command to continue. Existing manifest fields retain their versioned names across authority modes for recovery compatibility. Manifests and logs never print raw slugs or secret values.
 
-Higher-level operators that own Hookrelay's deployment files may pass `--routes <file>` and `--dev-vars <file>` to `sub:retire`; the selected route path is also used by each sync preview and apply. Pass `--expected-slug-hash <hash>` when another control plane owns the raw route slug so a same-named but differently owned route or archive is rejected before mutation. `pnpm sync --routes <file>` provides the corresponding read-only or `-y` reconciliation for an explicit hash-only route file.
+Higher-level operators that own Hookrelay's deployment files may pass `--routes <file>` and `--dev-vars <file>` to `sub:retire`; the selected route path is also used by each scoped sync preview and apply. Pass `--expected-slug-hash <hash>` when another control plane owns the raw route slug so a same-named but differently owned route or archive is rejected before mutation. `pnpm sync --routes <file>` provides the corresponding read-only comparison for an explicit hash-only route file; complete active changes through the owning lifecycle command or an exact `--put-*` selection.
 
-`pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, KV, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
+`pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, provider configuration, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.
 
@@ -397,7 +401,7 @@ Statuspage incident and scheduled-maintenance updates use the same `statuspage` 
 
 [`integrations/github-fleet`](integrations/github-fleet/README.md) contains the repository-fleet tooling used to dogfood Hookrelay across many GitHub repositories. It manages repository discovery, hooks, per-repository HMACs, event-profile selections, HMAC and bearer-path rotation, reconciliation, retirement, and verification. It is not required by the Hookrelay runtime or by ordinary GitHub subscriptions.
 
-[`integrations/subscription-fleet`](integrations/subscription-fleet/README.md) reconciles externally managed, non-repository signed CloudEvents subscriptions. A private manifest supplies recovery values and optional Cloudflare Worker sender-secret targets; the integration prepares hash-only routes, applies selected Worker secrets and KV entries, and verifies authentication with a sink-filtered event. It is not required by ordinary CloudEvents subscriptions.
+[`integrations/subscription-fleet`](integrations/subscription-fleet/README.md) reconciles externally managed, non-repository signed CloudEvents subscriptions. A private manifest supplies recovery values and optional Cloudflare Worker sender-secret targets; the integration prepares hash-only routes, applies selected Worker secrets and provider entries, and verifies authentication with a sink-filtered event. It is not required by ordinary CloudEvents subscriptions.
 
 ## Durable delivery
 
@@ -425,21 +429,22 @@ The [scoped management API](docs/management.md) provides a versioned, credential
 
 ## Retention
 
-Retention is disabled by omission. Add `retention.r2Days` to manage raw and normalized objects under the `events/` R2 prefix, add `retention.d1Days` to prune persisted event metadata, or configure both. Removing `d1Days` stops D1 pruning after KV sync. Removing `r2Days` makes absence of Hookrelay's managed lifecycle rule the desired state, so a confirmed `pnpm retention apply` removes only that rule and stops future managed R2 expiration. Neither disablement path deletes data directly.
+Retention is disabled by omission. Add `retention.r2Days` to manage raw and normalized objects under the `events/` R2 prefix, add `retention.d1Days` to prune persisted event metadata, or configure both. Removing `d1Days` stops D1 pruning after provider synchronization. Removing `r2Days` makes absence of Hookrelay's managed lifecycle rule the desired state, so a confirmed `pnpm retention apply` removes only that rule and stops future managed R2 expiration. Neither disablement path deletes data directly.
 
 The R2 lifecycle workflow reads the `EVENTS_RAW` bucket name from `wrangler.jsonc`, the desired lifetime from `routes.jsonc`, and Cloudflare credentials from `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`. The token needs the [Workers R2 Storage Write permission](https://developers.cloudflare.com/r2/buckets/object-lifecycles/). Credentials remain in environment headers and never enter command arguments or plan output.
 
 ```sh
+pnpm sync --put-retention
+pnpm sync --put-retention -y
 pnpm retention plan
 pnpm retention apply
 pnpm retention verify
 pnpm sync
-pnpm sync -y
 ```
 
-`plan` performs only a lifecycle GET. `apply` asks before its production PUT unless `-y` is supplied, preserves every unrelated lifecycle rule value-for-value, and adds, replaces, or removes only the stable `hookrelay-events-retention` rule. With `r2Days` configured, `verify` requires that rule to be enabled, scoped to `events/`, age-based, and exactly equal to the configured lifetime. Without `r2Days`, it requires the managed rule to be absent. Cloudflare applies lifecycle expiration asynchronously, so an applied rule does not imply that every older object disappears immediately.
+Every retention phase first requires the selected provider retention value to match `routes.jsonc`; it refuses before any R2 request when provider synchronization is incomplete. `plan` otherwise performs only a lifecycle GET. `apply` asks before its production PUT unless `-y` is supplied, preserves every unrelated lifecycle rule value-for-value, and adds, replaces, or removes only the stable `hookrelay-events-retention` rule. With `r2Days` configured, `verify` requires that rule to be enabled, scoped to `events/`, age-based, and exactly equal to the configured lifetime. Without `r2Days`, it requires the managed rule to be absent. Cloudflare applies lifecycle expiration asynchronously, so an applied rule does not imply that every older object disappears immediately.
 
-After the retention configuration reaches runtime KV through `pnpm sync -y`, scheduled maintenance claims at most one D1 pruning pass per day. Each pass selects a bounded oldest-first event batch, deletes those events, relies on the event foreign key to cascade delivery rows, and records the last successful cutoff and event count in `maintenance_state`. A failed pass creates the same fixed-code signal or KV fallback used by operational health.
+After retention configuration reaches the selected runtime authority, scheduled maintenance claims at most one D1 pruning pass per day. Each pass selects a bounded oldest-first event batch, deletes those events, relies on the event foreign key to cascade delivery rows, and records the last successful cutoff and event count in `maintenance_state`. A failed pass creates the same fixed-code signal or KV fallback used by operational health.
 
 The admin raw endpoint reports `410 expired` only when a missing object's event is older than configured `r2Days`. If R2 retention is omitted or runtime configuration cannot be read, a missing object remains a `502` storage failure rather than being assumed expired.
 
@@ -604,7 +609,7 @@ The repository separates runtime code, operator tooling, and optional integratio
 
 Key runtime files:
 
-- `src/router.ts` – request pipeline (slug parse, KV lookup, verify, parse, persist, enqueue)
+- `src/router.ts` – request pipeline (slug parse, provider lookup, verify, parse, persist, enqueue)
 - `src/email.ts` – MIME parsing, sender filtering, email normalization, and routing
 - `src/ingest.ts` – shared durable persistence and delivery preparation for HTTP and email
 - `src/delivery.ts` – D1 outbox, queue consumers, retries, dead-letter handling, and manual redrive

@@ -1,12 +1,12 @@
 # Optional managed subscription fleet integration
 
-This directory contains additive operations tooling for non-repository systems that send signed structured CloudEvents to Hookrelay. It lets an external fleet controller own recoverable subscription credentials while Hookrelay remains responsible for hash-only routes, Worker secrets, production KV, and end-to-end authentication checks.
+This directory contains additive operations tooling for non-repository systems that send signed structured CloudEvents to Hookrelay. It lets an external fleet controller own recoverable subscription credentials while Hookrelay remains responsible for hash-only routes, Worker secrets, provider configuration, and end-to-end authentication checks.
 
 The integration is optional. Ordinary CloudEvents subscriptions can continue to use `pnpm sub:add` and `pnpm cloudevents:send`.
 
 ## Prerequisites
 
-This integration operates only in legacy KV configuration mode. Its CLI checks the provider authority before entering a workflow and requires D1 Read permission plus the repository's configuration-authority migration. Active-authority enrollment and reconciliation are unavailable through this integration; do not activate while depending on these phases. See [provider-owned configuration](../../docs/configuration-authority.md) for the activation and recovery boundary.
+This integration supports legacy KV and active D1 provider configuration. Every phase reads the authority mode and revision. Active enrollment and reconciliation use exact revision-bound D1 changes without granting lifecycle or credential authority to an online policy client. Apply migrations through `0007_configuration_lifecycle.sql` before deploying this version. Reads require D1 Read, active changes require D1 Write, and legacy changes require the corresponding KV permissions. See [provider-owned configuration](../../docs/configuration-authority.md) for activation and recovery boundaries.
 
 Run every command from the Hookrelay repository root. Before managing a subscription, provide:
 
@@ -75,14 +75,14 @@ pnpm sync
 
 Use `-m, --manifest` and repeatable `-s, --subscription` as equivalent forms. The long names remain canonical in operational runbooks so every phase can be copied with an identical explicit selection.
 
-`plan` is read-only. It validates recovery data, route identity, sink references, private file modes, local and remote secret names, sender secret names, and selected KV differences. Its output contains secret environment names but no raw values or full webhook URLs.
+`plan` is read-only. It validates recovery data, route identity, sink references, private file modes, local and remote secret names, sender secret names, and selected provider differences. Its output contains secret environment names but no raw values or full webhook URLs.
 
 `prepare` writes the selected hash-only routes to `routes.jsonc` and missing matching HMAC values to `.dev.vars`. It refuses a conflicting local HMAC. Inspect and checkpoint those local changes, then rerun the same plan.
 
-`apply` confirms before production mutation unless `-y` is supplied. It installs only missing selected HMACs in the Hookrelay Worker, installs only missing URL and HMAC secrets in configured sender Workers, and writes only selected subscription and sink KV entries. Secret values travel to Wrangler through stdin. Existing secrets are never overwritten.
+`apply` confirms before production mutation unless `-y` is supplied. It installs only missing selected HMACs in the Hookrelay Worker, installs only missing URL and HMAC secrets in configured sender Workers, and writes only selected subscription and sink provider entries. In active mode it owns selected subscriptions' `sinks`, `filter`, and `sinkFilters` fields while preserving online `enabled` policy. Secret values travel to Wrangler through stdin. Existing secrets are never overwritten.
 
 `verify` first requires the same plan to be converged. It then sends a fresh signed structured CloudEvent through each private route and requires HTTP 200. The stable verification type is `urn:hookrelay:subscription-fleet:verification:v1`; planning refuses a subscription whose filters would deliver that type to any sink. The event is still persisted as a filtered delivery decision, proving authentication and ingress without notifying operators.
 
-Finish with `pnpm sync` as an independent desired-state comparison. Workers KV propagation can be asynchronous, so rerun `verify` if an immediately applied route has not reached the public edge yet.
+Finish with `pnpm sync` as an independent desired-state comparison. Legacy Workers KV propagation can be asynchronous; in either mode, rerun `verify` if an immediately applied route is not yet observable through the public Worker.
 
 The workflow is additive and resumable. It does not prune routes, delete or rotate secrets, or retire subscriptions. After interruption, rerun the same phase with the same manifest and selections.
