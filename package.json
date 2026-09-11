@@ -35,12 +35,12 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
-    "@types/node": "^26.4.0",
+    "@types/node": "^26.5.0",
     "jsonc-parser": "^3.3.1",
     "tsx": "^4.23.13",
     "typescript": "^7.0.2",
-    "vitest": "^4.1.11",
-    "wrangler": "^4.127.1",
+    "vitest": "^5.0.0",
+    "wrangler": "^4.129.1",
     "zod": "^4.5.4"
   },
   "dependencies": {
