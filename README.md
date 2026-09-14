@@ -617,6 +617,10 @@ Key runtime files:
 - `src/fanout.ts` – validation and dispatch for one sink attempt
 - `src/registry.ts` – the only place where adapters and sinks are wired in
 
+## Project cover automation
+
+The cover renders the actual admin event handler and styles against an in-memory event/delivery fixture. It uses no operator configuration, remote database, or live webhook content. Install the capture tooling with `npm ci --prefix tools/cover` and `npm exec --prefix tools/cover -- playwright install chromium`, then run `npm run capture:cover`. Use `-- --output FILE` to write a review image elsewhere. CI captures during source verification and retains the image as an artifact. Successful main builds publish a changed `docs/screenshots/cover.png` with an image-only commit; pull requests render without publishing, and superseded revisions skip publication.
+
 ## License
 
 MIT. See LICENSE.

@@ -31,7 +31,8 @@
     "release:check": "tsx scripts/release-check.ts",
     "preversion": "[ \"$(git branch --show-current)\" = main ] || { echo 'Error: npm version must be run on main'; exit 1; } && pnpm release:check && npm run typecheck && npm test",
     "postversion": "git push --atomic origin main v$npm_package_version",
-    "retag": "tsx scripts/retag.ts"
+    "retag": "tsx scripts/retag.ts",
+    "capture:cover": "node --import tsx tools/cover/capture.mjs"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",

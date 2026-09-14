@@ -1,6 +1,7 @@
 name: ci
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
   pull_request:
@@ -25,6 +26,17 @@ jobs:
       - run: pnpm typecheck
       - run: pnpm test
 
+      - run: npm ci --prefix tools/cover
+      - run: npm exec --prefix tools/cover -- playwright install --with-deps chromium
+      - run: npm run capture:cover
+      - name: Retain generated project cover
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
+        with:
+          name: project-cover
+          path: docs/screenshots/cover.png
+          if-no-files-found: error
+          retention-days: 7
+
   deploy:
     name: deploy production
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -47,3 +59,38 @@ jobs:
         env:
           CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+
+  publish-cover:
+    name: Publish project cover
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.test.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
+    needs: [test, deploy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
+        with:
+          name: project-cover
+          path: ${{ runner.temp }}/project-cover
+      - name: Commit changed cover from this build
+        env:
+          COVER_ARTIFACT: ${{ runner.temp }}/project-cover/cover.png
+        run: |
+          set -eu
+          git fetch origin main
+          if [ "$(git rev-parse origin/main)" != "$GITHUB_SHA" ]; then
+            echo "A newer source commit superseded this cover; its build owns publication."
+            exit 0
+          fi
+          cp "$COVER_ARTIFACT" docs/screenshots/cover.png
+          if git diff --quiet -- docs/screenshots/cover.png; then
+            echo "Project cover is unchanged."
+            exit 0
+          fi
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add -- docs/screenshots/cover.png
+          git commit -m 'docs: refresh generated project cover' -- docs/screenshots/cover.png
+          git push origin HEAD:main
