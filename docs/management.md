@@ -1,18 +1,18 @@
 # Scoped management API
 
-Hookrelay owns subscriptions, sinks, delivery state, and the queue engine. An operator control plane can inspect selected metadata, review one exhausted delivery for retry, and optionally edit a bounded policy surface through `POST /admin/api/v1`. Policy access can enable or disable an existing subscription, select existing sinks, and change delivery filters. It cannot create, retire, rename, rotate credentials, manage upstream hooks, expose raw events, or confer access to HTML administration. Hookrelay's local commands remain the lifecycle management surface. Keep public ingress behind the deployment's admin Access policy; a Worker service binding can call it directly with its own scoped credential.
+Hookrelay owns subscriptions, sinks, delivery state, and the queue engine. Any authorized operator client, including a dashboard backend, CLI tool or MCP service, can inspect selected metadata, review one exhausted delivery for retry, and optionally edit a bounded policy surface through `POST /admin/api/v1`. Policy access can enable or disable an existing subscription, select existing sinks, and change delivery filters. It cannot create, retire, rename, rotate credentials, manage upstream hooks, expose raw events, or confer access to HTML administration. A separate `provision` grant enables [reviewed GitHub hook setup](github-setup.md), which creates a subscription using existing destinations and installs its upstream hook. Hookrelay's local commands own the remaining lifecycle operations. Keep public ingress behind the deployment's admin Access policy; a Worker service binding can call it directly with its own scoped credential.
 
 ## Credentials and caller identity
 
 The `MANAGEMENT_CREDENTIALS` Worker secret contains a JSON array of records with `id`, positive integer `revision`, `tokenHash`, `expiresAt`, `workspaceIds`, and `capabilities`. Generate a random 32-byte value, encode it as unpadded base64url, and prefix it with `hkr_`. Store only its lowercase SHA-256 hexadecimal digest in Hookrelay's catalog. Keep the actual token in the calling control plane's secret store and send it as `Authorization: Bearer <token>`. Never put values in URLs, command arguments, logs, or tracked files. Bounds are defined in `src/management/contract.ts` and `src/management/access.ts`.
 
-Every credential requires `read`; add `retry` only when the caller is authorized to review and accept retries, and add `configure` only for reviewed subscription policy changes. The caller must authenticate its own users and supply their stable `actorId` and authorized `workspaceId` in each command input. These are assertions by a trusted machine client, not a replacement for the control plane's user authorization. Browser users must not receive the machine credential. Workspace scope is an allowlist for the Hookrelay instance's metadata, not row-level segregation of subscriptions inside that instance. Do not enroll the same instance into unrelated tenants unless they are entitled to see its complete operator metadata.
+Every credential requires `read`; add `retry` only when the caller is authorized to review and accept retries, add `configure` only for reviewed subscription policy changes, and add `provision` only for reviewed GitHub hook setup. The caller must authenticate its own users and supply their stable `actorId` and authorized `workspaceId` in each command input. These are assertions by a trusted machine client, not a replacement for the control plane's user authorization. Browser users must not receive the machine credential. Workspace scope is an allowlist for the Hookrelay instance's metadata, not row-level segregation of subscriptions inside that instance. Do not enroll the same instance into unrelated tenants unless they are entitled to see its complete operator metadata.
 
 IDs and token digests must be unique. Removing a catalog entry, advancing its revision, or expiring it invalidates new calls and old unaccepted reviews. Accepted receipts remain bound to the original client revision, workspace, and actor; retain a restricted recovery path before rotating away that identity during an unresolved operation. The HTML test bypass is never honored by the management endpoint. Cloudflare Access context is not inherited by downstream service-binding calls; management authentication is independent of it.
 
 ## Contract
 
-Send `{ "command": "snapshot", "input": { "workspaceId": "example", "actorId": "operator" } }`. Inputs are strict and bounded. Successful responses contain `version: 1`, the credential's `capabilities`, and `result`; failures contain a fixed `error.code` and safe `error.message`. Responses are never cached. Request bodies have an explicit byte ceiling and deadline.
+Send `{ "command": "snapshot", "input": { "workspaceId": "example", "actorId": "operator" } }`. Inputs are strict and bounded. Successful responses contain `version: 1`, the credential's `read`/`retry` capabilities, and `result`; failures contain a fixed `error.code` and safe `error.message`. Responses are never cached. Request bodies have an explicit byte ceiling and deadline.
 
 | Command | Additional input | Result |
 | --- | --- | --- |
@@ -30,6 +30,11 @@ Send `{ "command": "snapshot", "input": { "workspaceId": "example", "actorId": "
 | `configuration_policy_plan` | Authority `revision`, `resourceId`, `planId`, and exact policy | Expiring before/after policy review |
 | `configuration_policy_apply` | `planId` | Durable policy acceptance receipt, or a conflict requiring a new review |
 | `configuration_policy_get` | `planId` | Original policy review or receipt for reconciliation |
+| `github_setup_configuration` | None | Setup availability and missing prerequisite |
+| `github_setup_plan` | `planId`, authority ID/revision, nullable `resourceId`, name, repository, events, sinks | Expiring setup or installation review |
+| `github_setup_apply` | `planId` | Durable routing and installation progress |
+| `github_setup_get` | `planId` | Saved review and read-only reconciliation of uncertain installation |
+| `github_setup_status` | `resourceId` | Separate routing, installation and sampled delivery evidence |
 
 Delivery metadata includes the event and sink identity, subscription and source names, generation, status, attempts, fixed filtering reason, received time, update time, and successful delivery time. It excludes provider titles, bodies, URLs, raw storage keys, route hashes, authentication configuration, sink definitions, and exception text. Malformed metadata fails closed with `metadata_invalid`; a failed read is not an empty or healthy instance.
 

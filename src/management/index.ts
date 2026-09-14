@@ -1,3 +1,4 @@
+import { readGitHubSetupConfiguration, planGitHubSetup, applyGitHubSetup, getGitHubSetup, readGitHubSetupStatus } from './github-setup'
 import { z } from 'zod'
 import type { Env } from '../index'
 import { ConfigurationError } from '../configuration/authority'
@@ -26,6 +27,11 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
     authorizeManagement(principal, context.workspaceId, ['retry_plan', 'retry_apply'].includes(envelope.command))
     let result: unknown
     switch (envelope.command) {
+      case 'github_setup_configuration': result = await readGitHubSetupConfiguration(env, principal); break
+      case 'github_setup_plan': result = await planGitHubSetup(env, principal, managementInputs.github_setup_plan.parse(envelope.input)); break
+      case 'github_setup_apply': result = await applyGitHubSetup(env, principal, managementInputs.github_setup_apply.parse(envelope.input)); break
+      case 'github_setup_get': result = await getGitHubSetup(env, principal, managementInputs.github_setup_get.parse(envelope.input)); break
+      case 'github_setup_status': result = await readGitHubSetupStatus(env, managementInputs.github_setup_status.parse(envelope.input).resourceId); break
       case 'snapshot': result = await readSnapshot(env); break
       case 'subscriptions':
         result = await readSubscriptions(env, managementInputs.subscriptions.parse(envelope.input).cursor)
@@ -69,7 +75,7 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
     }
     return managementResponse({
       version: MANAGEMENT_VERSION,
-      capabilities: principal.capabilities.filter(capability => capability !== 'configure'),
+      capabilities: principal.capabilities.filter(capability => capability === 'read' || capability === 'retry'),
       result,
     })
   } catch (error) {

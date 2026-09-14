@@ -1,6 +1,7 @@
 import { z } from 'zod'
 import { authorityIdSchema } from '../configuration/authority'
 import { subscriptionPolicySchema } from '../configuration/policy'
+import { githubSetupEvents, githubSetupRepository } from '../lib/github-setup'
 
 export const MANAGEMENT_PATH = '/admin/api/v1'
 export const MANAGEMENT_VERSION = 1
@@ -54,6 +55,16 @@ export const managementInputs = {
   }).strict(),
   configuration_policy_apply: context.extend({ planId: z.uuid() }).strict(),
   configuration_policy_get: context.extend({ planId: z.uuid() }).strict(),
+  github_setup_configuration: context,
+  github_setup_plan: context.extend({
+    planId: z.uuid(), authorityId: authorityIdSchema, revision: z.number().int().nonnegative(),
+    resourceId: z.uuid().nullable(), name: managementName, repository: githubSetupRepository,
+    events: githubSetupEvents, sinks: z.array(managementName).min(1).max(25)
+      .refine(values => new Set(values).size === values.length),
+  }).strict(),
+  github_setup_apply: context.extend({ planId: z.uuid() }).strict(),
+  github_setup_get: context.extend({ planId: z.uuid() }).strict(),
+  github_setup_status: context.extend({ resourceId: z.uuid() }).strict(),
 } as const
 export const managementEnvelope = z.object({
   command: z.enum(Object.keys(managementInputs) as [keyof typeof managementInputs]),

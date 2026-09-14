@@ -1,3 +1,4 @@
+import { pruneGitHubSetupReviews } from './management/github-setup'
 import './registry'
 import { handleAdminEvents, handleAdminRaw, handleAdminRetry } from './admin/events'
 import { handleAdminBulkRetry } from './admin/bulk-retry'
@@ -33,6 +34,9 @@ export interface Env {
   CF_ACCESS_TEAM_DOMAIN: string
   CF_ACCESS_AUD: string
   MANAGEMENT_CREDENTIALS?: string
+  HOOK_SETUP_KEY?: string
+  HOOK_SETUP_GITHUB_TOKEN?: string
+  HOOK_SETUP_ORIGIN?: string
   /** JSON binding injected by tests via cloudflareTest() miniflare.bindings */
   TEST_MIGRATIONS?: { name: string; queries: string[] }[]
   /** Set to '1' in test env to bypass CF Access JWT verification; never set in production */
@@ -127,6 +131,7 @@ export default {
     }
     try {
       await pruneManagementReceipts(env)
+      await pruneGitHubSetupReviews(env)
       await pruneConfigurationReviews(env)
     } catch {
       console.log(JSON.stringify({ level: 'warn', msg: 'management.receipts.prune_deferred' }))

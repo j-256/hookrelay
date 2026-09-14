@@ -1,3 +1,4 @@
+import { readGitHubSetupConfiguration } from './github-setup'
 import { z } from 'zod'
 import type { Env } from '../index'
 import {
@@ -35,7 +36,7 @@ export async function readConfiguration(env: Env, principal: ManagementPrincipal
   const state = await readConfigurationState(configurationQuery(env.EVENTS_DB))
   return {
     ...state, canConfigure: state.mode === CONFIGURATION_MODE.ACTIVE && principal.capabilities.includes('configure'),
-    supported: { policy: true, create: false, retire: false }, observedAt: new Date().toISOString(),
+    supported: { policy: true, create: (await readGitHubSetupConfiguration(env, principal)).canCreate, retire: false }, observedAt: new Date().toISOString(),
   }
 }
 
@@ -212,6 +213,7 @@ export async function pruneConfigurationReviews(env: Env): Promise<void> {
     sql: `DELETE FROM configuration_receipts WHERE id IN (
       SELECT id FROM configuration_receipts AS receipt WHERE accepted_at < ?
         AND NOT EXISTS (SELECT 1 FROM configuration_policy_reviews WHERE id = receipt.id)
+        AND NOT EXISTS (SELECT 1 FROM github_setup_reviews WHERE id = receipt.id)
       ORDER BY accepted_at LIMIT ?
     )`, params: [cutoff, CONFIGURATION_LIMITS.PRUNE_BATCH],
   })

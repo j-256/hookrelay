@@ -1,3 +1,4 @@
+import { deriveGitHubSetupSecret } from '../lib/github-setup'
 import type { Adapter } from '.'
 import { hmacSha256Hex, timingSafeEqualHex } from '../lib/hmac'
 import type { Env } from '../index'
@@ -475,7 +476,10 @@ const adapter: Adapter = {
       .filter((secret): secret is string => secret !== undefined)
     if (secrets.length === 0) throw new Error(`secret not set: ${secretEnvs.join(', ')}`)
 
-    const expectedSignatures = await Promise.all(secrets.map((secret) => hmacSha256Hex(secret, raw)))
+    const signingSecrets = sub.auth.derivationId
+      ? await Promise.all(secrets.map(secret => deriveGitHubSetupSecret(secret, sub.auth!.derivationId!, 'signature')))
+      : secrets
+    const expectedSignatures = await Promise.all(signingSecrets.map((secret) => hmacSha256Hex(secret, raw)))
     let signatureMatches = false
     for (const expected of expectedSignatures) {
       signatureMatches = timingSafeEqualHex(expected, provided) || signatureMatches

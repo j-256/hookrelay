@@ -27,6 +27,7 @@ export interface SubAuth {
   scheme: string
   secretEnv: string
   alternateSecretEnvs?: string[]
+  derivationId?: string
 }
 
 export interface EmailSubscriptionConfig {
@@ -61,6 +62,13 @@ export interface Subscription {
   email?: EmailSubscriptionConfig
   filter?: SubscriptionFilter
   sinkFilters?: Record<string, EventFilter>
+  githubSetup?: {
+    resourceId: string
+    repository: string
+    events: string[]
+    origin: string
+    keyDigest: string
+  }
 }
 
 export type DeliveryStatus =

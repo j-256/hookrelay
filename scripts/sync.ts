@@ -1,3 +1,4 @@
+import { githubSetupMetadata } from '../src/lib/github-setup'
 import { parse as parseJsonc, ParseError } from 'jsonc-parser'
 import { z } from 'zod'
 import { readFile } from 'node:fs/promises'
@@ -81,6 +82,7 @@ export const subSchema = z
         scheme: z.string().min(1),
         secretEnv: z.string().min(1),
         alternateSecretEnvs: z.array(z.string().min(1)).min(1).optional(),
+        derivationId: z.uuid().optional(),
       })
       .nullable()
       .optional()
@@ -94,6 +96,7 @@ export const subSchema = z
       .optional(),
     filter: eventFilterSchema.optional(),
     sinkFilters: z.record(z.string().min(1), eventFilterSchema).optional(),
+    githubSetup: githubSetupMetadata.optional(),
     setup: z
       .object({
         github: z
@@ -727,6 +730,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
         : {}),
       ...(runtimeFilter ? { filter: runtimeFilter } : {}),
       ...(sub.sinkFilters ? { sinkFilters: sub.sinkFilters } : {}),
+      ...(sub.githubSetup ? { githubSetup: sub.githubSetup } : {}),
     })
     const existing = current.subs[key]
     const existingCanon = existing != null ? canonicalizeJson(existing) : null

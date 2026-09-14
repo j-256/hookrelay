@@ -4,7 +4,7 @@ Hookrelay can own runtime configuration in D1 so online policy edits and provide
 
 ## Supported controls
 
-The online policy surface controls an existing subscription's enabled state, selection of existing destinations, and subscription-level or per-destination event filters. Creation, retirement, renaming, authentication changes, secret installation and upstream webhook configuration remain unavailable through that credential-restricted surface. Hookrelay's local lifecycle commands and optional fleet integrations continue to own those operations in both legacy and active modes. Disabling a subscription through policy does not delete its GitHub webhook.
+The online policy surface controls an existing subscription's enabled state, selection of existing destinations, and subscription-level or per-destination event filters. The `configure` grant does not permit creation, retirement, renaming, authentication changes, secret installation or upstream webhook configuration. A separate `provision` grant enables [reviewed GitHub setup](github-setup.md) in active mode. Hookrelay's local lifecycle commands and optional fleet integrations own the remaining lifecycle operations in both legacy and active modes. Disabling a subscription through policy does not delete its GitHub webhook.
 
 An accepted receipt proves configuration acceptance, not notification delivery. Previously recorded per-sink decisions and queue generations remain unchanged. Signature verification, ingress limits, persistence and retries still apply. Retired destinations remain available for accepted deliveries, but an enabled policy cannot select them.
 
@@ -32,9 +32,11 @@ The `/admin/api/v1` envelope remains compatible. Top-level capabilities continue
 
 Reviews bind actor, workspace, credential identity/revision, target, exact policy, authority revision and expiry. Permission removal, changed credentials, stale state or altered input prevent a new apply. After response loss, read the same plan ID instead of creating another operation. Acceptance does not publish a queue message or send a notification.
 
+The separate [GitHub setup contract](github-setup.md) requires `provision` and creates one reviewed subscription using existing destinations. It uses the same revisioned D1 authority as policy and local lifecycle commands. Installation intent is stored before calling GitHub.
+
 ## Operator workflow
 
-Run `pnpm configuration --help` from the deployment checkout for exports, migration, policy imports, and receipt recovery. Results and safe policy comparisons go to stdout; diagnostics and confirmations use stderr. The account-level Cloudflare credential authenticates direct D1 access. It is not installed in HQ. Receipts identify this authority as `cloudflare-operator` / `account-operator`, not as a verified individual human.
+Run `pnpm configuration --help` from the deployment checkout for exports, migration, policy imports, and receipt recovery. Results and safe policy comparisons go to stdout; diagnostics and confirmations use stderr. The account-level Cloudflare credential authenticates direct D1 access. Keep it in provider operations; management API clients use their own scoped credentials. Receipts identify this authority as `cloudflare-operator` / `account-operator`, not as a verified individual human.
 
 Private versioned exports and reviews support migration and recovery, not ordinary dashboard editing. Files must be regular non-symlinks with mode `0600`. Output paths must be new files in an owner-controlled directory. Never commit them. Reviews retain the private pre-change configuration; preserve them independently of database receipt retention. Wrangler secrets and retirement manifests keep their separate custody and recovery roles.
 
@@ -48,13 +50,13 @@ pnpm configuration receipt --operation <review-operation-uuid>
 
 Keep exported authority identity, revision and resource IDs. Imports support policy changes only, not lifecycle operations, credentials or other settings. Reconcile a stale draft explicitly against a fresh export; never automatically stamp a newer revision onto it. Apply revalidates supported changes against the saved baseline and actual authority. A review fingerprint detects changed content; it is not authorization for arbitrary edits.
 
-The ordinary Hookrelay commands remain the lifecycle management surface after activation: `sink:add`, `sub:add`, subscription and sink retirement, sink and secret rename, GitHub event profiles, retention, GitHub Fleet, and managed subscription fleet all read the selected authority. In active mode they submit only their named resources through revision-bound lifecycle changes. Existing online subscription policy is preserved unless the phase explicitly owns the relevant field, so a stale local file cannot overwrite an unrelated HQ edit.
+The ordinary Hookrelay commands remain the lifecycle management surface after activation: `sink:add`, `sub:add`, subscription and sink retirement, sink and secret rename, GitHub event profiles, retention, GitHub Fleet, and managed subscription fleet all read the selected authority. In active mode they submit only their named resources through revision-bound lifecycle changes. Existing online subscription policy is preserved unless the phase explicitly owns the relevant field, so a stale local file cannot overwrite an unrelated management client edit.
 
 Plain `pnpm sync` is a read-only whole-topology comparison in active mode. It ignores runtime aliases when comparing canonical resources and reports lifecycle-state drift. An unscoped active `pnpm sync -y` is rejected. Use the owning lifecycle command for its narrow policy ownership. An explicit `--put-sub <name>` applies that subscription's complete local configuration, including all policy fields; `--put-sink`, `--put-retention`, and `--put-operations` select their exact resources. Selecting omitted retention or operations configuration explicitly deletes that singleton resource. Legacy mode retains the complete `pnpm sync -y` behavior.
 
 ## Activation and recovery
 
-Apply repository D1 migrations through `0007_configuration_lifecycle.sql` before deploying this runtime or using its operator commands. The authority migration creates an inactive authority without copying or removing configuration, while the lifecycle migration adds aliases and lifecycle receipts required by active-capable commands. Provider reads require D1 Read permission. Active apply needs D1 Write, and legacy synchronization or migration reads also need the matching KV permission.
+Apply repository D1 migrations through `0008_github_setup.sql` before deploying this runtime or using its operator commands. The authority migration creates an inactive authority without copying or removing configuration, while the lifecycle migration adds aliases and lifecycle receipts required by active-capable commands. Provider reads require D1 Read permission. Active apply needs D1 Write, and legacy synchronization or migration reads also need the matching KV permission.
 
 Before activation, settle or explicitly account for staged retirement, rename, rotation and dependent operator workflows. Preserve private recovery manifests and a provider database backup. Deploy this active-capable command implementation before relying on any workflow after cutover, and ensure older checkouts cannot resume configuration writes. Do not activate merely because policy editing is implemented.
 

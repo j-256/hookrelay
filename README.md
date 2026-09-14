@@ -157,7 +157,7 @@ The names are a convention, not a requirement – whatever you put in `routes.js
 
 In legacy mode, `pnpm sync -y` retains its complete desired-state behavior, including deletion of remote entries absent from the file. In active mode, plain `pnpm sync` remains the complete comparison but `pnpm sync -y` refuses an unscoped write. Guided lifecycle and fleet commands submit exact revision-checked D1 changes for the resources and policy fields they own. A manual `--put-sub <name>` selection explicitly applies that subscription's complete local configuration, including policy; `--put-sink <name>`, `--put-retention`, and `--put-operations` select their exact resources. Selecting omitted retention or operations configuration explicitly deletes that singleton resource. Add `-y` only after reviewing the scoped plan.
 
-For an existing active subscription, ordinary lifecycle reconciliation preserves the online `enabled`, `sinks`, `filter`, and `sinkFilters` policy fields unless that workflow explicitly owns a field. Subscription retirement owns `enabled`; a sink switch owns `sinks` and `sinkFilters`; GitHub event-profile reconciliation owns `filter`; the fleet integrations document their narrower ownership. This lets Hookrelay keep lifecycle, credentials, provider hooks, and local recovery under operator control while a dashboard such as Maintainer HQ remains a policy-only client of the same authority.
+For an existing active subscription, ordinary lifecycle reconciliation preserves the online `enabled`, `sinks`, `filter`, and `sinkFilters` policy fields unless that workflow explicitly owns a field. Subscription retirement owns `enabled`; a sink switch owns `sinks` and `sinkFilters`; GitHub event-profile reconciliation owns `filter`; the fleet integrations document their narrower ownership. Online clients use that same authority for policy edits and, with the separate `provision` grant, [reviewed GitHub subscription creation and hook installation](docs/github-setup.md).
 
 Legacy KV writes pass values through an owner-only temporary file, never a command argument. The write subprocess suppresses both output streams, disables Wrangler log files and telemetry, and forces log sanitization. Active D1 changes use one bounded compare-and-swap transaction and a retained receipt. If an active response is lost, the command checks that receipt before reporting an uncertain outcome; rerun the same staged lifecycle command rather than reconstructing values.
 
@@ -425,7 +425,7 @@ The Access-protected `/admin/health` page shows delivery totals, the oldest acti
 
 ## Scoped management
 
-The [scoped management API](docs/management.md) provides a versioned, credential-restricted contract for operator dashboards: bounded redacted reads, exact-state retry reviews, and durable reconciliation receipts. It does not replace route configuration authority or grant raw-event access.
+The [scoped management API](docs/management.md) provides a versioned, credential-restricted contract for operator clients, including dashboard backends, CLI tools and MCP services: bounded redacted reads, exact-state retry reviews, and durable reconciliation receipts. Its separately granted [GitHub setup flow](docs/github-setup.md) lets any authorized client create reviewed subscriptions and install their upstream webhooks using the same provider configuration authority. Maintainer HQ is one integration of this shared contract. Raw-event access remains separate.
 
 ## Retention
 
