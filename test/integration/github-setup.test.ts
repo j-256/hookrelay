@@ -75,7 +75,7 @@ beforeEach(async () => {
   })
   vi.spyOn(globalThis, 'fetch').mockImplementation(async (url, init) => {
     expect(String(url)).toMatch(
-      /^https:\/\/api.github.com\/repos\/owner\/repo\/hooks/,
+      /^https:\/\/api\.github\.com\/repos\/owner\/repo\/hooks/,
     )
     expect(init?.redirect).toBe('manual')
     requests.push({
