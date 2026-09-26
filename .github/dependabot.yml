@@ -11,6 +11,10 @@ updates:
       all-dependencies:
         patterns:
           - "*"
+    ignore:
+      # Cloudflare workers test pool requires Vitest 4
+      - dependency-name: vitest
+        versions: ["5.x"]
     commit-message:
       prefix: "chore"
       include: "scope"
