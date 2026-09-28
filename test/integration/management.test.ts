@@ -242,6 +242,47 @@ describe('bounded, redacted metadata', () => {
     expect(filtered.scanned).toBe(MANAGEMENT_LIMITS.PAGE_SIZE)
   })
 
+  it('summarizes older unresolved signals independently of recent history', async () => {
+    const count = MANAGEMENT_LIMITS.PAGE_SIZE + 4
+    await env.EVENTS_DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM n WHERE i<?)
+       INSERT INTO operational_signals(fingerprint,code,severity,summary,first_seen_at,last_seen_at,occurrences)
+       SELECT printf('%064x',i),'ingress-persistence-rejected','critical','Synthetic',?,?,2 FROM n`,
+    ).bind(count, TIMESTAMP, TIMESTAMP).run()
+    await env.EVENTS_DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 100 UNION ALL SELECT i+1 FROM n WHERE i<100+?)
+       INSERT INTO operational_signals(fingerprint,code,severity,summary,first_seen_at,last_seen_at,occurrences,resolved_at)
+       SELECT printf('%064x',i),'retention-prune-rejected','error','Synthetic',?,?,1,? FROM n`,
+    ).bind(count, TIMESTAMP, '2026-06-07T12:00:00.000Z', '2026-06-07T12:00:00.000Z').run()
+    const snapshot = await result('snapshot')
+    expect(snapshot.signals.truncated).toBe(true)
+    expect(snapshot.signals.items.every(signal => signal.resolvedAt)).toBe(true)
+    expect(snapshot.signals.unresolved).toEqual([{
+      code: 'ingress-persistence-rejected', records: count, occurrences: count * 2, critical: true, lastSeenAt: TIMESTAMP,
+    }])
+    const plan = await env.EVENTS_DB.prepare(`EXPLAIN QUERY PLAN SELECT code,COUNT(*) FROM operational_signals
+      WHERE resolved_at IS NULL AND severity IN ('warning','error','critical') GROUP BY code`).all()
+    expect(JSON.stringify(plan.results)).toContain('operational_signals_open_summary')
+    await env.EVENTS_DB.prepare('UPDATE operational_signals SET resolved_at=?').bind(TIMESTAMP).run()
+    expect((await result('snapshot')).signals.unresolved).toEqual([])
+  })
+
+  it('rejects unknown unresolved signal codes instead of silently dropping them', async () => {
+    await env.EVENTS_DB.prepare(`INSERT INTO operational_signals(fingerprint,code,severity,summary,first_seen_at,last_seen_at,occurrences)
+      VALUES(?,'unknown-code','error','Synthetic',?,?,1)`).bind('a'.repeat(64), TIMESTAMP, TIMESTAMP).run()
+    expect((await call('snapshot')).status).toBe(502)
+  })
+
+  it('keeps acknowledged exhaustion separate from successful delivery in the sample', async () => {
+    await env.EVENTS_DB.prepare("UPDATE deliveries SET resolved_at=?,resolution_reason='obsolete' WHERE event_id=?").bind(TIMESTAMP, EVENT).run()
+    const snapshot = await result('snapshot')
+    expect(snapshot.deliveries.totals.exhausted).toBe(1)
+    expect(snapshot.deliveries.totals.delivered).toBe(0)
+    expect(snapshot.deliveries.acknowledgedExhausted).toBe(1)
+    expect((await result('deliveries', { status: 'exhausted' })).items).toHaveLength(0)
+    expect((await result('delivery', delivery)).resolvedAt).toBe(TIMESTAMP)
+  })
+
   it('caps health work and marks the retained delivery sample incomplete', async () => {
     await env.EVENTS_DB.prepare(
       `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?)

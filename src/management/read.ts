@@ -147,33 +147,48 @@ const signalSchema = z.object({
 })
 
 export async function readSnapshot(env: Env) {
-  const [sample, signals, retention] = await Promise.all([
+  const [sample, signals, retentionRows, unresolvedRows] = await env.EVENTS_DB.batch([
     env.EVENTS_DB.prepare(
-      `SELECT status FROM deliveries
+      `SELECT status, resolved_at AS resolvedAt FROM deliveries
        ORDER BY updated_at DESC, event_id DESC, sink_name DESC LIMIT ?`,
-    ).bind(MANAGEMENT_LIMITS.HEALTH_SAMPLE + 1).all<{ status: string }>(),
+    ).bind(MANAGEMENT_LIMITS.HEALTH_SAMPLE + 1),
     env.EVENTS_DB.prepare(
       `SELECT code, severity, first_seen_at AS firstSeenAt, last_seen_at AS lastSeenAt,
               occurrences, resolved_at AS resolvedAt
        FROM operational_signals ORDER BY last_seen_at DESC LIMIT ?`,
-    ).bind(MANAGEMENT_LIMITS.PAGE_SIZE + 1).all(),
+    ).bind(MANAGEMENT_LIMITS.PAGE_SIZE + 1),
     env.EVENTS_DB.prepare(
       "SELECT updated_at FROM maintenance_state WHERE key = 'retention:last-success'",
-    ).first<{ updated_at: string }>(),
+    ),
+    env.EVENTS_DB.prepare(
+      `SELECT code, COUNT(*) AS records, SUM(occurrences) AS occurrences,
+              MAX(severity = 'critical') AS critical, MAX(last_seen_at) AS lastSeenAt
+       FROM operational_signals WHERE resolved_at IS NULL AND severity IN ('warning','error','critical')
+       GROUP BY code ORDER BY code LIMIT ?`,
+    ).bind(OPERATIONAL_SIGNAL_CODES.length + 1),
   ])
-  const rows = metadata(z.array(z.object({ status: z.enum(DELIVERY_STATES) })), sample.results)
+  const rows = metadata(z.array(z.object({ status: z.enum(DELIVERY_STATES), resolvedAt: timestamp.nullable() })), sample!.results)
   const totals = Object.fromEntries(DELIVERY_STATES.map(state => [state, 0])) as Record<typeof DELIVERY_STATES[number], number>
   for (const row of rows.slice(0, MANAGEMENT_LIMITS.HEALTH_SAMPLE)) totals[row.status] += 1
-  const signalRows = metadata(z.array(signalSchema), signals.results)
+  const signalRows = metadata(z.array(signalSchema), signals!.results)
+  const unresolved = metadata(z.array(z.object({
+    code: z.enum(OPERATIONAL_SIGNAL_CODES), records: z.number().int().positive(),
+    occurrences: z.number().int().positive(), critical: z.union([z.literal(0), z.literal(1)]).transform(Boolean),
+    lastSeenAt: timestamp,
+  })).max(OPERATIONAL_SIGNAL_CODES.length), unresolvedRows!.results)
+  const retention = retentionRows!.results[0] as { updated_at: unknown } | undefined
   return {
     observedAt: new Date().toISOString(),
     deliveries: {
       totals, sampled: Math.min(rows.length, MANAGEMENT_LIMITS.HEALTH_SAMPLE),
       limit: MANAGEMENT_LIMITS.HEALTH_SAMPLE, truncated: rows.length > MANAGEMENT_LIMITS.HEALTH_SAMPLE,
+      acknowledgedExhausted: rows.slice(0, MANAGEMENT_LIMITS.HEALTH_SAMPLE)
+        .filter(row => row.status === 'exhausted' && row.resolvedAt).length,
     },
     signals: {
       items: signalRows.slice(0, MANAGEMENT_LIMITS.PAGE_SIZE),
       truncated: signalRows.length > MANAGEMENT_LIMITS.PAGE_SIZE,
+      unresolved,
     },
     lastRetentionAt: retention ? metadata(timestamp, retention.updated_at) : null,
   }
