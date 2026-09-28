@@ -415,6 +415,8 @@ Delivery is at least once. The D1 claim and lease suppress ordinary duplicate qu
 
 ## Operational health
 
+Use `pnpm operations --help` for [reviewed operational dispositions](docs/management.md#operational-dispositions). This workflow records why historical signals or exhausted deliveries were acknowledged, preserves their failed state and history, and never sends a notification. The CLI and scoped management API share the same exact-state review and receipt implementation.
+
 Hookrelay records actionable known-route ingress failures, coalesced subscription rate-limit refusals, exhausted deliveries, and stale active deliveries as fixed-code operational signals. Signal summaries are selected from constants, aggregate by a secret-free fingerprint, and never contain request paths, slugs, payloads, exception text, source addresses, or sink credentials. Unknown routes remain unrecorded so internet scanning cannot create health data.
 
 If D1 is temporarily unavailable while a signal is being recorded, the Worker writes a compact fixed-field record with an expiration under `ops-fallback:` in the `SUBS` namespace. Scheduled maintenance imports and deletes those records after D1 recovers. `pnpm sync` preserves fallback keys while reconciling subscriptions and the special operations configuration key.

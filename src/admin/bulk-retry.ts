@@ -22,7 +22,7 @@ function exhaustedWhere(filters: Filters): { clause: string; binds: unknown[] } 
   const eventWhere = buildEventWhere(filters)
   return {
     clause: eventWhere.clause + (eventWhere.clause ? ' AND ' : ' WHERE ') +
-      "deliveries.status = 'exhausted'",
+      "deliveries.status = 'exhausted' AND deliveries.resolved_at IS NULL",
     binds: eventWhere.binds,
   }
 }

@@ -656,9 +656,9 @@ export async function redriveDelivery(
   const timestamp = nowIso()
   const reset = await env.EVENTS_DB.prepare(
     `UPDATE deliveries
-     SET status = 'pending', last_error = NULL, updated_at = ?,
+     SET status = 'pending', last_error = NULL, updated_at = ?, resolved_at = NULL, resolution_reason = NULL,
          delivered_at = NULL, lease_until = NULL
-     WHERE event_id = ? AND sink_name = ? AND generation = ? AND status = ?`,
+     WHERE event_id = ? AND sink_name = ? AND generation = ? AND status = ? AND resolved_at IS NULL`,
   )
     .bind(timestamp, eventId, sinkName, row.generation, row.status)
     .run()

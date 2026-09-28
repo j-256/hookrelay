@@ -17,6 +17,10 @@ Send `{ "command": "snapshot", "input": { "workspaceId": "example", "actorId": "
 | Command | Additional input | Result |
 | --- | --- | --- |
 | `snapshot` | None | Observed time, bounded delivery totals with sample size and truncation, recent fixed-code signals, last successful retention time |
+| `signals` | Optional `resolved` (false, true, or null) and nullable `cursor` | A bounded page of redacted signal identities, occurrence state, and recorded dispositions |
+| `resolution_plan` | `planId`, exact `targets`, `reason`, and `note` | Expiring review of operational dispositions; requires `resolve` |
+| `resolution_apply` | `planId` | Atomic disposition and durable audit receipt; requires `resolve` |
+| `resolution_get` | `planId` | Original review or receipt for the same client revision, workspace, and actor |
 | `subscriptions` | Optional nullable `cursor` | Names, source types, enabled state, sink names, continuation, disappeared-record count, observed time |
 | `deliveries` | Optional nullable `status`, `subscription`, `cursor` | Selected delivery metadata, scanned candidate count, continuation, observed time |
 | `delivery` | `eventId`, `sinkName` | Exact delivery metadata and reviewed state fields |
@@ -53,6 +57,20 @@ An accepted receipt means that retry intent is durable, not that a sink has rece
 Retries use provider-owned sink configuration at execution time, which can change independently of the review. Existing at-least-once delivery guarantees still apply: a sink can receive a duplicate if it accepts a message before success is durably recorded. Raw event retention can expire after a successful availability check. The API does not freeze payload retention or sink configuration and cannot guarantee delivery.
 
 Receipts are retained independently of event foreign keys and pruned in bounded scheduled batches after the configured receipt lifetime. After expiry, use retained operator audit records and delivery state; the provider is not an indefinite audit archive. A fresh review of a later failure is a separate deliberate action.
+
+## Operational dispositions
+
+The separate `resolve` credential grant permits reviewed acknowledgement of retained signals and exhausted deliveries. Neither `retry` nor `configure` implies this grant. Resolution never sends a message, deletes an event, changes retention, or marks a failed delivery successful. An acknowledged delivery remains exhausted in individual and unfiltered history with `resolvedAt` and `resolutionReason`; the exhausted attention filter excludes it. An explicit later retry starts a new generation and clears that acknowledgement.
+
+Review up to 25 unique targets, bounded to 12 KiB of serialized review input. Signal targets are `{kind: "signal", fingerprint, lastSeenAt, occurrences}`; delivery targets are `{kind: "delivery", eventId, sinkName, generation, updatedAt}`. Copy these values from metadata. Choose `recovered`, `obsolete`, or `accepted-loss` and supply a short printable ASCII note without credentials, payloads, or private URLs. `recovered` records the operator's assessment; it does not reconstruct missing delivery evidence. Resolve related signals explicitly as their own targets.
+
+Reviews expire after five minutes and bind the exact client revision, workspace, actor, inputs, and observed state. Apply is atomic across the selected targets and its receipt. A recurrence, intervening retry, competing resolution, or expired review rejects the whole batch. New occurrences reopen resolved signals. Delivery acknowledgement advances the generation so stale queue messages and earlier retry reviews cannot revive it. Repeating an accepted plan returns its original receipt without resolving a new occurrence.
+
+The provider operator CLI uses the same implementation with its explicit Cloudflare account-operator identity: `pnpm operations signals`, `pnpm operations plan -i <private-input>`, `pnpm operations apply -p <plan-id>`, and `pnpm operations receipt -p <plan-id>`. Use `pnpm operations --help` for input schemas and credential requirements. Inspect each returned review before apply. Lost responses require receipt reconciliation, not a replacement review identity.
+
+Accepted disposition receipts are retained independently of events and signal recurrence. Expired unaccepted reviews use the existing bounded maintenance cleanup. Retained accepted receipts consume D1 storage: the serialized input ceiling alone permits up to approximately 12 MiB per thousand accepted reviews, plus row and index overhead. Operators must account for this audit history in their D1 storage budget and exports. This operation adds no queue, R2, or notification effects.
+
+Apply the additive operational-resolution migration before using the commands. Clients with strict response schemas must accept the optional delivery disposition fields and `resolve` capability before granting resolution access or deploying the provider response changes. Preserve accepted audit receipts across code rollback.
 
 ## Deployment and operating limits
 

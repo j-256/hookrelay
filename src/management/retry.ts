@@ -128,7 +128,8 @@ export async function applyRetry(env: Env, principal: ManagementPrincipal, input
     ).bind(timestamp, writeId, plan.id, principal.id, principal.revision, input.workspaceId, input.actorId, timestamp),
     env.EVENTS_DB.prepare(
       `UPDATE deliveries SET status = 'pending', generation = generation + 1,
-         last_error = NULL, updated_at = ?, delivered_at = NULL, lease_until = NULL
+         last_error = NULL, updated_at = ?, delivered_at = NULL, lease_until = NULL,
+         resolved_at = NULL, resolution_reason = NULL
        WHERE event_id = ? AND sink_name = ? AND generation = ? AND updated_at = ? AND status = 'exhausted'
          AND EXISTS (SELECT 1 FROM management_retry_plans WHERE id = ? AND write_id = ?)`,
     ).bind(timestamp, plan.event_id, plan.sink_name, plan.expected_generation, plan.expected_updated_at, plan.id, writeId),
@@ -159,6 +160,12 @@ export async function pruneManagementReceipts(env: Env): Promise<void> {
   await env.EVENTS_DB.prepare(
     `DELETE FROM management_retry_plans WHERE id IN (
        SELECT id FROM management_retry_plans WHERE expires_at < ? ORDER BY expires_at LIMIT ?
+     )`,
+  ).bind(cutoff, MANAGEMENT_LIMITS.PRUNE_BATCH).run()
+  await env.EVENTS_DB.prepare(
+    `DELETE FROM operational_resolution_reviews WHERE id IN (
+       SELECT id FROM operational_resolution_reviews WHERE applied_at IS NULL AND expires_at < ?
+       ORDER BY expires_at LIMIT ?
      )`,
   ).bind(cutoff, MANAGEMENT_LIMITS.PRUNE_BATCH).run()
 }

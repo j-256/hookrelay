@@ -17,6 +17,7 @@
     "cloudevents:send": "tsx scripts/cloudevents-send.ts",
     "sync": "tsx scripts/sync.ts",
     "configuration": "tsx scripts/configuration.ts",
+    "operations": "tsx scripts/operations.ts",
     "retention": "tsx scripts/retention.ts",
     "github:fleet": "tsx integrations/github-fleet/src/cli.ts",
     "subscription:fleet": "tsx integrations/subscription-fleet/src/cli.ts",

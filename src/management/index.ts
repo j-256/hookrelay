@@ -1,8 +1,9 @@
 import { readGitHubSetupConfiguration, planGitHubSetup, applyGitHubSetup, getGitHubSetup, readGitHubSetupStatus } from './github-setup'
 import { z } from 'zod'
 import type { Env } from '../index'
-import { ConfigurationError } from '../configuration/authority'
-import { authenticateManagement, authorizeManagement } from './access'
+import { ConfigurationError, configurationQuery } from '../configuration/authority'
+import { authenticateManagement, authorizeManagement, authorizeResolution } from './access'
+import { applyOperationalResolution, planOperationalResolution, readOperationalResolution, readOperationalSignals } from '../operational-review'
 import {
   MANAGEMENT_VERSION, ManagementError, managementEnvelope, managementInputs,
   managementResponse, readManagementBody,
@@ -27,6 +28,29 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
     authorizeManagement(principal, context.workspaceId, ['retry_plan', 'retry_apply'].includes(envelope.command))
     let result: unknown
     switch (envelope.command) {
+      case 'signals': {
+        const { cursor, resolved } = managementInputs.signals.parse(envelope.input)
+        result = await readOperationalSignals(configurationQuery(env.EVENTS_DB), { cursor, resolved })
+        break
+      }
+      case 'resolution_plan':
+      case 'resolution_apply':
+      case 'resolution_get': {
+        const owner = { clientId: principal.id, clientRevision: principal.revision, workspaceId: context.workspaceId, actorId: context.actorId }
+        const query = configurationQuery(env.EVENTS_DB)
+        if (envelope.command === 'resolution_get') {
+          result = await readOperationalResolution(query, owner, managementInputs.resolution_get.parse(envelope.input).planId)
+        } else {
+          authorizeResolution(principal, context.workspaceId)
+          if (envelope.command === 'resolution_plan') {
+            const { workspaceId: _workspace, actorId: _actor, ...input } = managementInputs.resolution_plan.parse(envelope.input)
+            result = await planOperationalResolution(query, owner, input)
+          } else {
+            result = await applyOperationalResolution(query, owner, managementInputs.resolution_apply.parse(envelope.input).planId)
+          }
+        }
+        break
+      }
       case 'github_setup_configuration': result = await readGitHubSetupConfiguration(env, principal); break
       case 'github_setup_plan': result = await planGitHubSetup(env, principal, managementInputs.github_setup_plan.parse(envelope.input)); break
       case 'github_setup_apply': result = await applyGitHubSetup(env, principal, managementInputs.github_setup_apply.parse(envelope.input)); break
@@ -75,7 +99,7 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
     }
     return managementResponse({
       version: MANAGEMENT_VERSION,
-      capabilities: principal.capabilities.filter(capability => capability === 'read' || capability === 'retry'),
+      capabilities: principal.capabilities.filter(capability => capability === 'read' || capability === 'retry' || capability === 'resolve'),
       result,
     })
   } catch (error) {

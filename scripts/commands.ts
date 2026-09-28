@@ -9,6 +9,8 @@ export function commandReference(): string {
     'Hookrelay quick reference',
     '',
     'Provider-owned configuration',
+    '  pnpm operations --help',
+    '      Inspect signals and review audited dispositions without sending messages',
     '  pnpm configuration --help',
     '      Read authority state, export privately, review policy imports, and reconcile receipts',
     '      Activation is explicit; lifecycle commands below follow the selected KV or D1 authority',

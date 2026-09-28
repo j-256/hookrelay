@@ -164,7 +164,8 @@ async function upsertSignal(
        summary = excluded.summary,
        last_seen_at = excluded.last_seen_at,
        occurrences = operational_signals.occurrences + 1,
-       resolved_at = NULL`,
+       resolved_at = NULL,
+       resolution_reason = NULL`,
   )
     .bind(
       fingerprint,

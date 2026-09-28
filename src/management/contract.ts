@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { authorityIdSchema } from '../configuration/authority'
 import { subscriptionPolicySchema } from '../configuration/policy'
 import { githubSetupEvents, githubSetupRepository } from '../lib/github-setup'
+import { resolutionInput, signalPageInput } from '../operational-review'
 
 export const MANAGEMENT_PATH = '/admin/api/v1'
 export const MANAGEMENT_VERSION = 1
@@ -29,6 +30,10 @@ export const deliveryCursor = z.object({
 }).strict()
 export const managementInputs = {
   snapshot: context,
+  signals: context.extend(signalPageInput.shape).strict(),
+  resolution_plan: context.extend(resolutionInput.shape).strict(),
+  resolution_apply: context.extend({ planId: z.uuid() }).strict(),
+  resolution_get: context.extend({ planId: z.uuid() }).strict(),
   subscriptions: context.extend({ cursor: z.string().max(8192).nullable().default(null) }).strict(),
   deliveries: context.extend({
     status: z.enum(DELIVERY_STATES).nullable().default(null),

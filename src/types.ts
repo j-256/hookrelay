@@ -87,6 +87,8 @@ export interface FanoutResult {
   errMsg?: string
   decisionReason?: DeliveryDecisionReason
   updatedAt?: string
+  resolvedAt?: string
+  resolutionReason?: string
 }
 
 export type FanoutResults = Record<string, FanoutResult>

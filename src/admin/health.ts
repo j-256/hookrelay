@@ -26,6 +26,7 @@ interface SignalRow {
   last_seen_at: string
   occurrences: number
   resolved_at: string | null
+  resolution_reason: string | null
 }
 
 interface AlertRow {
@@ -75,7 +76,7 @@ function renderSignals(rows: SignalRow[]): string {
     <td data-label="Route">${optionalCell(row.source)} / ${optionalCell(row.sub_name)}</td>
     <td data-label="Delivery">${optionalCell(row.event_id)} / ${optionalCell(row.sink_name)}</td>
     <td data-label="Occurrences">${row.occurrences}<br><span class="muted">Last: ${escapeHtml(row.last_seen_at)}</span></td>
-    <td data-label="State">${row.resolved_at ? `Resolved ${escapeHtml(row.resolved_at)}` : '<span class="status-pill status-pill--danger"><span class="status-dot"></span>Open</span>'}</td>
+    <td data-label="State">${row.resolved_at ? `Resolved ${escapeHtml(row.resolved_at)}${row.resolution_reason ? ` (${escapeHtml(row.resolution_reason)})` : ''}` : '<span class="status-pill status-pill--danger"><span class="status-dot"></span>Open</span>'}</td>
   </tr>`).join('')
 }
 
@@ -112,6 +113,7 @@ export async function handleAdminHealth(req: Request, env: Env): Promise<Respons
   ] = await Promise.all([
     env.EVENTS_DB.prepare(
       `SELECT CASE
+         WHEN resolved_at IS NOT NULL THEN 'acknowledged'
          WHEN status IN ('pending', 'queued', 'processing', 'retrying') THEN 'active'
          ELSE status
        END AS state, COUNT(*) AS total
@@ -126,7 +128,7 @@ export async function handleAdminHealth(req: Request, env: Env): Promise<Respons
     ).first<{ total: number }>(),
     env.EVENTS_DB.prepare(
       `SELECT code, severity, source, sub_name, event_id, sink_name, summary,
-              first_seen_at, last_seen_at, occurrences, resolved_at
+              first_seen_at, last_seen_at, occurrences, resolved_at, resolution_reason
        FROM operational_signals ORDER BY last_seen_at DESC LIMIT 50`,
     ).all<SignalRow>(),
     env.EVENTS_DB.prepare(
@@ -192,7 +194,7 @@ export async function handleAdminHealth(req: Request, env: Env): Promise<Respons
 
     <section class="health-grid" aria-label="Delivery totals">
       <article class="metric-card"><span>Active</span><strong>${totals.get('active') ?? 0}</strong><small>Oldest: ${escapeHtml(ageLabel(oldestActive?.oldest ?? null))}</small></article>
-      <article class="metric-card"><span>Exhausted</span><strong>${totals.get('exhausted') ?? 0}</strong><small>Needs attention</small></article>
+      <article class="metric-card"><span>Exhausted</span><strong>${totals.get('exhausted') ?? 0}</strong><small>Needs attention; ${totals.get('acknowledged') ?? 0} acknowledged separately</small></article>
       <article class="metric-card"><span>Delivered</span><strong>${totals.get('delivered') ?? 0}</strong><small>Successful sinks</small></article>
       <article class="metric-card"><span>Filtered</span><strong>${totals.get('filtered') ?? 0}</strong><small>Policy decisions</small></article>
       <article class="metric-card"><span>Open signals</span><strong>${openSignals}</strong><small>${operations ? `${operations.sinks.length} alert sinks` : 'Alerting not configured'}</small></article>

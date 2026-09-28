@@ -21,6 +21,8 @@ const deliverySchema = z.object({
   receivedAt: timestamp,
   subscription: managementName,
   source: managementName,
+  resolvedAt: timestamp.nullable(),
+  resolutionReason: z.enum(['recovered', 'obsolete', 'accepted-loss']).nullable(),
 })
 export type ManagementDelivery = z.infer<typeof deliverySchema>
 
@@ -35,7 +37,8 @@ function metadata<T>(schema: z.ZodType<T>, value: unknown): T {
 const deliveryColumns = `d.event_id AS eventId, d.sink_name AS sinkName,
   d.generation, d.status, d.attempts, d.decision_reason AS decisionReason,
   d.updated_at AS updatedAt, d.delivered_at AS deliveredAt,
-  e.received_at AS receivedAt, e.sub_name AS subscription, e.source`
+  e.received_at AS receivedAt, e.sub_name AS subscription, e.source,
+  d.resolved_at AS resolvedAt, d.resolution_reason AS resolutionReason`
 
 export async function readDelivery(env: Env, eventId: string, sinkName: string): Promise<ManagementDelivery> {
   const row = await env.EVENTS_DB.prepare(
@@ -50,6 +53,7 @@ export async function readDeliveries(env: Env, input: z.infer<typeof managementI
   const clauses: string[] = []
   const bindings: (string | number)[] = []
   if (input.status) { clauses.push('d.status = ?'); bindings.push(input.status) }
+  if (input.status === 'exhausted') clauses.push('d.resolved_at IS NULL')
   if (input.cursor) {
     clauses.push('(d.updated_at, d.event_id, d.sink_name) < (?, ?, ?)')
     bindings.push(input.cursor.updatedAt, input.cursor.eventId, input.cursor.sinkName)

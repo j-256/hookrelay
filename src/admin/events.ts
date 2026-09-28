@@ -83,6 +83,8 @@ interface DeliveryRow {
   last_error: string | null
   decision_reason: DeliveryDecisionReason | null
   updated_at: string
+  resolved_at: string | null
+  resolution_reason: string | null
 }
 
 interface EventPage {
@@ -123,7 +125,7 @@ export function buildEventWhere(f: Filters): { clause: string; binds: unknown[] 
   if (f.delivery === 'attention') {
     where.push(`EXISTS (
       SELECT 1 FROM deliveries delivery_filter
-      WHERE delivery_filter.event_id = events.id AND delivery_filter.status = 'exhausted'
+      WHERE delivery_filter.event_id = events.id AND delivery_filter.status = 'exhausted' AND delivery_filter.resolved_at IS NULL
     )`)
   } else if (f.delivery === 'active') {
     where.push(`EXISTS (
@@ -169,7 +171,7 @@ async function queryEvents(env: Env, f: Filters): Promise<EventPage> {
 
   const placeholders = rows.map(() => '?').join(', ')
   const deliveries = await env.EVENTS_DB.prepare(
-    `SELECT event_id, sink_name, status, attempts, last_error, decision_reason, updated_at
+    `SELECT event_id, sink_name, status, attempts, last_error, decision_reason, updated_at, resolved_at, resolution_reason
      FROM deliveries WHERE event_id IN (${placeholders}) ORDER BY sink_name`,
   )
     .bind(...rows.map((row) => row.id))
@@ -184,6 +186,7 @@ async function queryEvents(env: Env, f: Filters): Promise<EventPage> {
       ...(delivery.last_error ? { errMsg: delivery.last_error } : {}),
       ...(delivery.decision_reason ? { decisionReason: delivery.decision_reason } : {}),
       updatedAt: delivery.updated_at,
+      ...(delivery.resolved_at ? { resolvedAt: delivery.resolved_at, resolutionReason: delivery.resolution_reason ?? 'resolved' } : {}),
     }
     byEvent.set(delivery.event_id, eventResults)
   }
@@ -265,8 +268,8 @@ function renderDelivery(
   returnTo: string,
 ): string {
   const status = result.status ?? (result.ok ? 'delivered' : 'failed')
-  const tone = deliveryTone(status)
-  const retryable = status === 'exhausted' || status === 'failed'
+  const tone = result.resolvedAt ? 'neutral' : deliveryTone(status)
+  const retryable = !result.resolvedAt && (status === 'exhausted' || status === 'failed')
   const action = `/admin/events/${encodeURIComponent(eventId)}/deliveries/${encodeURIComponent(sink)}/retry?return_to=${encodeURIComponent(returnTo)}`
   const retry = retryable
     ? `<form class="retry" method="post" action="${escapeHtml(action)}"><button class="retry-button" type="submit">Retry</button></form>`
@@ -279,17 +282,21 @@ function renderDelivery(
   const decision = result.decisionReason
     ? `<div><dt>Decision</dt><dd>${escapeHtml(result.decisionReason)}</dd></div>`
     : ''
+  const resolution = result.resolvedAt
+    ? `<div><dt>Disposition</dt><dd>${escapeHtml(result.resolutionReason ?? 'resolved')} at ${escapeHtml(result.resolvedAt)}. Delivery was not verified.</dd></div>`
+    : ''
   return `<div class="delivery-row">
     <details class="delivery-details"${retryable ? ' open' : ''}>
       <summary class="status-pill status-pill--${tone}">
         <span class="status-dot" aria-hidden="true"></span>
-        <span class="delivery-label">${escapeHtml(sink)}: ${escapeHtml(status)}</span>
+        <span class="delivery-label">${escapeHtml(sink)}: ${escapeHtml(status)}${result.resolvedAt ? ' (acknowledged)' : ''}</span>
       </summary>
       <div class="delivery-meta">
         <dl class="delivery-facts">
           <div><dt>Attempts</dt><dd>${escapeHtml(attempts)}</dd></div>
           <div><dt>Updated</dt><dd>${updatedAt}</dd></div>
           ${decision}
+          ${resolution}
         </dl>
         ${error}
       </div>

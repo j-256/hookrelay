@@ -8,7 +8,7 @@ const credentialSchema = z.object({
   tokenHash: z.string().regex(/^[a-f0-9]{64}$/),
   expiresAt: z.iso.datetime(),
   workspaceIds: z.array(managementId).min(1).max(20),
-  capabilities: z.array(z.enum(['read', 'retry', 'configure', 'provision'])).min(1).max(4)
+  capabilities: z.array(z.enum(['read', 'retry', 'configure', 'provision', 'resolve'])).min(1).max(5)
     .refine(values => new Set(values).size === values.length),
 }).strict()
 export type ManagementPrincipal = z.infer<typeof credentialSchema>
@@ -66,6 +66,13 @@ export function authorizeConfiguration(principal: ManagementPrincipal, workspace
   authorizeManagement(principal, workspaceId)
   if (!principal.capabilities.includes('configure')) {
     throw new ManagementError('forbidden', 403, 'The management credential does not permit configuration changes')
+  }
+}
+
+export function authorizeResolution(principal: ManagementPrincipal, workspaceId: string): void {
+  authorizeManagement(principal, workspaceId)
+  if (!principal.capabilities.includes('resolve')) {
+    throw new ManagementError('forbidden', 403, 'The management credential does not permit operational resolution')
   }
 }
 
