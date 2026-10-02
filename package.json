@@ -37,15 +37,15 @@
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.22.0",
-    "@types/node": "^26.6.2",
+    "@types/node": "^26.6.3",
     "jsonc-parser": "^3.3.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.137.0",
+    "wrangler": "^4.143.0",
     "zod": "^4.6.5"
   },
   "dependencies": {
-    "postal-mime": "^3.0.0"
+    "postal-mime": "^4.0.0"
   }
 }
