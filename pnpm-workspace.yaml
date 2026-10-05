@@ -10,6 +10,7 @@ allowBuilds:
 
 overrides:
   sharp: 0.35.4
+  undici: 7.29.1
 
 minimumReleaseAgeExclude:
   - '@cloudflare/vitest-pool-workers@0.21.2'
