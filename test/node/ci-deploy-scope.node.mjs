@@ -13,8 +13,8 @@ function git(cwd, ...args) {
 }
 
 test('only a nonempty set of known non-runtime paths skips deployment', () => {
-  assert.equal(deployRequiredForPaths(['scripts/sync.ts', 'integrations/github-fleet/src/cli.ts', 'test/node/a.node.mjs', 'docs/screenshots/cover.png', 'tools/cover/capture.mjs', 'README.md', 'AGENTS.md']), false)
-  for (const paths of [[], ['src/index.ts'], ['wrangler.jsonc'], ['package.json'], ['pnpm-lock.yaml'], ['migrations/0002.sql'], ['.github/workflows/ci.yml'], ['new-root-file'], ['docs/readme.md', 'src/index.ts']]) {
+  assert.equal(deployRequiredForPaths(['.github/workflows/ci.yml', 'scripts/sync.ts', 'integrations/github-fleet/src/cli.ts', 'test/node/a.node.mjs', 'docs/screenshots/cover.png', 'tools/cover/capture.mjs', 'README.md', 'AGENTS.md']), false)
+  for (const paths of [[], ['src/index.ts'], ['wrangler.jsonc'], ['package.json'], ['pnpm-lock.yaml'], ['migrations/0002.sql'], ['new-root-file'], ['docs/readme.md', 'src/index.ts']]) {
     assert.equal(deployRequiredForPaths(paths), true, paths.join(', '))
   }
 })
@@ -37,6 +37,10 @@ test('push range includes every commit and handles unusual path names', (t) => {
   writeFileSync(join(repo, 'scripts', 'operator.mjs'), 'third')
   git(repo, 'add', '--', 'scripts/operator.mjs')
   git(repo, 'commit', '-qm', 'third')
+  mkdirSync(join(repo, '.github', 'workflows'), { recursive: true })
+  writeFileSync(join(repo, '.github', 'workflows', 'ci.yml'), 'workflow')
+  git(repo, 'add', '--', '.github/workflows/ci.yml')
+  git(repo, 'commit', '-qm', 'workflow')
   const toolingHead = git(repo, 'rev-parse', 'HEAD')
   const output = join(repo, 'github-output')
   const run = (base, head) => {

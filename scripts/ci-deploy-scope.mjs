@@ -3,7 +3,7 @@ import { appendFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const NON_RUNTIME_DIRECTORIES = Object.freeze(['docs/', 'integrations/', 'scripts/', 'test/', 'tools/cover/'])
+const NON_RUNTIME_DIRECTORIES = Object.freeze(['.github/', 'docs/', 'integrations/', 'scripts/', 'test/', 'tools/cover/'])
 const NON_RUNTIME_FILES = new Set(['AGENTS.md', 'README.md'])
 const COMMIT_ID = /^[a-f0-9]{40,64}$/
 const INITIAL_COMMIT_ID = /^0+$/
