@@ -134,7 +134,7 @@ Read by Wrangler at deploy time; never committed.
 | Variable | What it is |
 | --- | --- |
 | `CLOUDFLARE_ACCOUNT_ID` | Your account id. Kept in the local environment or a GitHub Actions repository variable (not `wrangler.jsonc`) so the committed config carries no account identifier. |
-| `CLOUDFLARE_API_TOKEN` | Auth for Wrangler and operator commands. Store the CI value as a GitHub Actions repository secret; deployment needs Workers Scripts Write plus Queues Read and Write, while KV, D1, R2, and Zone WAF operations require their corresponding scopes. Guard each token and grant only the scopes its workflow uses. |
+| `CLOUDFLARE_API_TOKEN` | Auth for Wrangler and operator commands. Store the CI value as a GitHub Actions repository secret; CI deployment needs Workers Scripts Write, Queues Read and Write, and D1 Read for the migration check. Other KV, D1, R2, and Zone WAF operations require their corresponding scopes. Guard each token and grant only the scopes its workflow uses. |
 
 ### 3. Wrangler secrets – recoverable only by Worker code
 
