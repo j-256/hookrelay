@@ -371,6 +371,15 @@ If you edit `eventProfiles` in `routes.jsonc` yourself, omit `--events` to recon
 pnpm github:events github:example-owner/example-repo
 ```
 
+For several edited subscriptions, preview the saved selections together, then apply the reviewed plan:
+
+```sh
+pnpm github:sync
+pnpm github:sync -y
+```
+
+`github:sync` reads only the GitHub subscriptions already saved in `routes.jsonc`; it does not discover or enroll repositories. It checks matching hooks for non-manual selections and the secrets needed for changed hooks before writing, applies only the GitHub subscriptions' provider `filter` fields, and changes only webhook event arrays that differ. It rechecks hook state before applying and verifies the updated hooks afterward. The preview prints subscription names and event selections without webhook URLs or secrets. The `manual` preset leaves GitHub's event selection unchanged.
+
 GitHub may return the same events in a different order, so order alone does not trigger an update. GitHub's general webhook update clears an existing secret unless the request supplies it again, so the command requires the subscription's `auth.secretEnv` value in `.dev.vars` and resends it with the unchanged URL, content type, SSL setting, and active state. The secret-bearing request travels through stdin and is never placed in process arguments or output. Selecting `manual` changes local metadata but leaves GitHub's checkboxes under manual control.
 
 ## Staged subscription and sink retirement

@@ -465,6 +465,7 @@ describe('GitHub fleet apply and verify', () => {
       expect(first).toMatchObject({ installedSecrets: 1, reconciledHooks: 3 })
       expect(createHook).toHaveBeenCalledTimes(2)
       expect(hooks).toContain(unrelated)
+      expect(hooks.find((hook) => hook.config.url.endsWith(`/${entry.slugs.stars}`))?.events).toEqual(['star'])
       expect(pingHook).toHaveBeenCalledTimes(3)
       expect(Object.keys(remote.subs)).toHaveLength(3)
 

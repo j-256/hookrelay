@@ -22,7 +22,7 @@ describe('GitHub fleet model', () => {
     expect(() => parseGitHubFleetProfiles('unknown')).toThrow(/valid values/)
   })
 
-  it('uses the fixed names, event profiles, and sinks', async () => {
+  it('routes the fleet stars subscription to star events only', async () => {
     expect(githubFleetSubscriptionName('example-owner/example-repo', 'activity')).toBe('github:example-owner/example-repo')
     expect(githubFleetSubscriptionName('example-owner/example-repo', 'stars')).toBe('github:example-owner/example-repo:stars')
     expect(githubFleetSubscriptionName('example-owner/example-repo', 'alerts')).toBe('github:example-owner/example-repo:alerts')
@@ -34,7 +34,7 @@ describe('GitHub fleet model', () => {
     )
     expect(subscriptions.map((sub) => sub.setup.github.eventProfiles)).toEqual([
       ['activity'],
-      ['stars', 'watchers'],
+      ['stars'],
       ['alerts'],
     ])
     expect(subscriptions.map((sub) => sub.sinks[0])).toEqual([

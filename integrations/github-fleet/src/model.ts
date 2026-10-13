@@ -11,7 +11,7 @@ export const GITHUB_FLEET_PROFILES = Object.freeze({
   }),
   stars: Object.freeze({
     suffix: ':stars',
-    eventProfiles: Object.freeze(['stars', 'watchers']),
+    eventProfiles: Object.freeze(['stars']),
     sink: 'discord:github-stars',
   }),
   alerts: Object.freeze({

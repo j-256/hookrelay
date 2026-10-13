@@ -13,6 +13,7 @@ describe('commandReference', () => {
     expect(reference).toContain('pnpm sub:add <name> <source> [-s <sink>]')
     expect(reference).toContain('--email-base, --allow-sender')
     expect(reference).toContain('pnpm github:events <name> [-e <profiles>]')
+    expect(reference).toContain('pnpm github:sync [-y]')
     expect(reference).not.toContain('sub:events')
     expect(reference).toContain('pnpm cloudevents:send')
     expect(reference).toContain('Optional integrations')

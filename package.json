@@ -24,6 +24,7 @@
     "new-sub": "tsx scripts/new-sub.ts",
     "sub:add": "tsx scripts/sub-add.ts",
     "github:events": "tsx scripts/providers/github/subscription-events.ts",
+    "github:sync": "tsx scripts/providers/github/sync-events.ts",
     "sub:retire": "tsx scripts/sub-retire.ts",
     "sink:add": "tsx scripts/sink-add.ts",
     "sink:retire": "tsx scripts/sink-retire.ts",
