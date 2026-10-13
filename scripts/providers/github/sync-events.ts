@@ -157,11 +157,12 @@ export async function planGitHubEventSync(
 
 export function formatGitHubEventSyncPlan(plan: GitHubEventSyncPlan): string {
   const lines = [
-    `GitHub subscriptions checked: ${plan.checked}`,
-    `GitHub webhook event updates: ${plan.changes.length}`,
+    'GitHub webhook event plan:',
+    `  Saved subscriptions checked: ${plan.checked}`,
+    `  Hooks to update: ${plan.changes.length}`,
   ]
   for (const change of plan.changes) {
-    lines.push(`UPDATE ${change.name}: ${change.before.events.join(',')} -> ${change.events.join(',')}`)
+    lines.push(`  UPDATE ${change.name}: ${change.before.events.join(',')} -> ${change.events.join(',')}`)
   }
   return lines.join('\n')
 }
@@ -234,9 +235,12 @@ async function main(): Promise<void> {
     console.error(`PROGRESS ${message}`)
   })
   console.log(formatGitHubEventSyncPlan(plan))
-  if (plan.providerScope.puts?.length) await runSync(false, undefined, plan.providerScope)
   if (!options.yes) {
-    console.log('Preview only; run pnpm github:sync -y to apply')
+    if (plan.providerScope.puts?.length) {
+      console.log('\nProvider filters:')
+      await runSync(false, undefined, plan.providerScope)
+    }
+    console.log('\nPreview only; run pnpm github:sync -y to apply')
     return
   }
   const [currentRoutes, currentDevVars] = await Promise.all([
@@ -249,10 +253,13 @@ async function main(): Promise<void> {
   const result = await applyGitHubEventSync(plan, {
     listHooks: listGitHubRepositoryHooks,
     updateHook: updateGitHubRepositoryHookEvents,
-    syncProvider: (apply, scope) => runSync(apply, undefined, scope),
+    syncProvider: async (apply, scope) => {
+      console.log('\nProvider filters:')
+      await runSync(apply, undefined, scope)
+    },
     progress: (message) => console.error(`PROGRESS ${message}`),
   })
-  console.log(`Verified GitHub webhook event updates: ${result.updated}`)
+  console.log(`\nGitHub webhook event updates verified: ${result.updated}`)
 }
 
 if (import.meta.main) {

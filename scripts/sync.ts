@@ -812,7 +812,7 @@ async function main() {
   const fullPlan = scope ? null : computeProviderComparisonPlan(routes, current)
   const summary = plan ? providerConfigurationPlanSummary(plan) : null
 
-  console.log(`Plan (${current.state.mode} authority at revision ${current.state.revision}):`)
+  console.log(`Provider configuration plan (${current.state.mode} authority; current config revision: ${current.state.revision}):`)
   if (summary) {
     for (const entry of summary.puts) console.log(`  PUT    ${printableKvKey(entry.key)}`)
     for (const entry of summary.deletes) console.log(`  DELETE ${printableKvKey(entry.key)}`)
@@ -834,7 +834,7 @@ async function main() {
       fullPlan.retirementUpdates.length > 0
   ))
   if (!changed) {
-    console.log('  (no changes)')
+    console.log('  No provider configuration changes')
     return
   }
 
