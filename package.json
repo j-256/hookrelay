@@ -37,16 +37,16 @@
     "capture:cover": "node --import tsx tools/cover/capture.mjs"
   },
   "devDependencies": {
-    "@cloudflare/vitest-pool-workers": "^0.22.0",
-    "@types/node": "^26.6.4",
+    "@cloudflare/vitest-pool-workers": "^0.23.0",
+    "@types/node": "^26.6.5",
     "jsonc-parser": "^3.3.1",
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^4.1.11",
-    "wrangler": "^4.147.0",
-    "zod": "^4.6.5"
+    "wrangler": "^4.149.0",
+    "zod": "^4.6.7"
   },
   "dependencies": {
-    "postal-mime": "^4.0.4"
+    "postal-mime": "^4.0.5"
   }
 }
