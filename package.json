@@ -43,10 +43,10 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^4.1.12",
-    "wrangler": "^4.151.2",
+    "wrangler": "^4.153.0",
     "zod": "^4.6.7"
   },
   "dependencies": {
-    "postal-mime": "^4.0.11"
+    "postal-mime": "^4.1.4"
   }
 }
