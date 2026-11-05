@@ -14,7 +14,9 @@ export const encryptedHandoffSchema = z.object({
 export type EncryptedHandoff = z.infer<typeof encryptedHandoffSchema>
 const ringSchema = z.object({
   version: z.literal(1), activeKeyId: z.string().min(1).max(64),
-  keys: z.array(z.object({ id: z.string().min(1).max(64), key: z.string().regex(/^[A-Za-z0-9+/]{43}=$/) }).strict()).min(1).max(LIMITS.KEYS),
+  keys: z.array(z.object({ id: z.string().min(1).max(64), key: z.string().regex(/^[A-Za-z0-9+/]{43}=$/)
+    .refine(value => { try { return atob(value).length === LIMITS.KEY_BYTES && btoa(atob(value)) === value } catch { return false } }),
+  }).strict()).min(1).max(LIMITS.KEYS),
 }).strict().refine(ring => new Set(ring.keys.map(key => key.id)).size === ring.keys.length && ring.keys.some(key => key.id === ring.activeKeyId))
 const encoder = new TextEncoder()
 function ring(env: Environment) {

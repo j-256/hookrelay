@@ -8,7 +8,7 @@ const credentialSchema = z.object({
   tokenHash: z.string().regex(/^[a-f0-9]{64}$/),
   expiresAt: z.iso.datetime(),
   workspaceIds: z.array(managementId).min(1).max(20),
-  capabilities: z.array(z.enum(['read', 'retry', 'configure', 'provision', 'resolve'])).min(1).max(5)
+  capabilities: z.array(z.enum(['read', 'retry', 'configure', 'provision', 'resolve', 'handoff', 'custody'])).min(1).max(7)
     .refine(values => new Set(values).size === values.length),
 }).strict()
 export type ManagementPrincipal = z.infer<typeof credentialSchema>
@@ -80,5 +80,12 @@ export function authorizeProvision(principal: ManagementPrincipal, workspaceId: 
   authorizeManagement(principal, workspaceId)
   if (!principal.capabilities.includes('provision')) {
     throw new ManagementError('forbidden', 403, 'The management credential does not permit hook setup')
+  }
+}
+
+export function authorizeHandoff(principal: ManagementPrincipal, workspaceId: string, custody = false): void {
+  authorizeManagement(principal, workspaceId)
+  if (!principal.capabilities.includes('handoff') || (custody && !principal.capabilities.includes('custody'))) {
+    throw new ManagementError('forbidden', 403, 'The management credential does not permit this manual hook operation')
   }
 }

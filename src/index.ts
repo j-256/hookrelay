@@ -1,4 +1,7 @@
 import { pruneGitHubSetupReviews } from './management/github-setup'
+import { handleHandoffPrivate } from './management/github-handoff-private'
+import { pruneHandoffHistory } from './management/github-handoff'
+import { HANDOFF_PRIVATE_PATH } from './lib/github-handoff'
 import './registry'
 import { handleAdminEvents, handleAdminRaw, handleAdminRetry } from './admin/events'
 import { handleAdminBulkRetry } from './admin/bulk-retry'
@@ -47,6 +50,7 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
+    if (url.pathname === HANDOFF_PRIVATE_PATH) return handleHandoffPrivate(request, env)
     if (url.pathname === MANAGEMENT_PATH) {
       return handleManagement(request, env)
     }
@@ -133,6 +137,7 @@ export default {
     try {
       await pruneManagementReceipts(env)
       await pruneGitHubSetupReviews(env)
+      await pruneHandoffHistory(env)
       await pruneConfigurationReviews(env)
     } catch {
       console.log(JSON.stringify({ level: 'warn', msg: 'management.receipts.prune_deferred' }))

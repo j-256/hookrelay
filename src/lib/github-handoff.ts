@@ -33,7 +33,9 @@ export function handoffSubscriptionName(repository: string, profile: HandoffProf
   return `github:${repository}${HANDOFF_PROFILES[profile].suffix}`
 }
 export function handoffProfileFilter(profile: HandoffProfile) {
-  return githubEventTypeFilter(parseGitHubEventSelection(profile))
+  return githubEventTypeFilter(parseGitHubEventSelection(profile)) ?? {
+    eventTypes: { include: HANDOFF_PROFILES[profile].events.map(event => `${event}.*`) },
+  }
 }
 const slug = z.string().min(22).max(128).regex(SUBSCRIPTION_SLUG_RE)
 export const handoffBundleSchema = z.object({

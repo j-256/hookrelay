@@ -1,8 +1,10 @@
 import type { Env } from '../index'
 import type { Subscription } from '../types'
-import { HANDOFF_KEYS, HandoffUnavailableError, handoffAuthSchema, handoffMetadataSchema } from './github-handoff'
+import { HANDOFF_KEYS, HandoffUnavailableError, handoffAuthSchema, handoffMetadataSchema, type HandoffProfile } from './github-handoff'
 import { openHandoffBundle, type HandoffBinding } from './github-handoff-crypto'
 import { hashSubscriptionSlug } from './subscription'
+import { readOptionalSecret } from './secret'
+import { sha256Hex, timingSafeEqualHex } from './hmac'
 
 export interface HandoffRepositoryRow {
   id: string
@@ -10,6 +12,8 @@ export interface HandoffRepositoryRow {
   workspace_id: string
   repository_key: string
   repository: string
+  origin: string
+  hmac_name: string
   bundle_revision: number
   encrypted_json: string
   created_at: string
@@ -19,6 +23,29 @@ export function handoffRowBinding(row: HandoffRepositoryRow): HandoffBinding {
 }
 export async function openHandoffRepository(env: Env, row: HandoffRepositoryRow) {
   return openHandoffBundle(env, handoffRowBinding(row), JSON.parse(row.encrypted_json))
+}
+export async function verifyHandoffResources(env: Env, row: HandoffRepositoryRow, resources: {
+  resourceId: string; profile: HandoffProfile; authMode: 'environment' | 'bundle'; key: string; value: string
+}[]) {
+  try {
+    const bundle = await openHandoffRepository(env, row)
+    for (const resource of resources) {
+      const sub = JSON.parse(resource.value) as Subscription
+      const metadata = handoffMetadataSchema.parse(sub.githubHandoff)
+      if (metadata.repositoryId !== row.id || metadata.workspaceId !== row.workspace_id || metadata.authorityId !== row.authority_id ||
+        metadata.resourceId !== resource.resourceId || metadata.profile !== resource.profile || metadata.repository !== row.repository ||
+        resource.key !== `sub:sha256:${await hashSubscriptionSlug(bundle.slugs[resource.profile])}` || sub.auth?.scheme !== 'github-sha256') throw new HandoffUnavailableError()
+      if (resource.authMode === 'bundle') {
+        const auth = handoffAuthSchema.parse(sub.auth)
+        if (auth.credentialId !== row.id) throw new HandoffUnavailableError()
+      } else {
+        const value = readOptionalSecret(env, sub.auth.secretEnv)
+        if (sub.auth.secretEnv !== bundle.hmac.name || sub.auth.credentialId || sub.auth.derivationId || sub.auth.alternateSecretEnvs || !value ||
+          !timingSafeEqualHex(await sha256Hex(new TextEncoder().encode(value)), await sha256Hex(new TextEncoder().encode(bundle.hmac.value)))) throw new HandoffUnavailableError()
+      }
+    }
+    return bundle
+  } catch { throw new HandoffUnavailableError() }
 }
 export async function readHandoffSigningSecret(env: Env, subscription: Subscription): Promise<string> {
   try {

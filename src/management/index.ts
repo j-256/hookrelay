@@ -1,4 +1,5 @@
 import { readGitHubSetupConfiguration, planGitHubSetup, applyGitHubSetup, getGitHubSetup, readGitHubSetupStatus } from './github-setup'
+import { readHandoffConfiguration, readHandoffRepository, planHandoff, applyHandoff, getHandoff, readHandoffStatus } from './github-handoff'
 import { z } from 'zod'
 import type { Env } from '../index'
 import { ConfigurationError, configurationQuery } from '../configuration/authority'
@@ -28,6 +29,12 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
     authorizeManagement(principal, context.workspaceId, ['retry_plan', 'retry_apply'].includes(envelope.command))
     let result: unknown
     switch (envelope.command) {
+      case 'github_handoff_configuration': result = await readHandoffConfiguration(env, principal); break
+      case 'github_handoff_repository': result = await readHandoffRepository(env, envelope.input); break
+      case 'github_handoff_plan': result = await planHandoff(env, principal, envelope.input); break
+      case 'github_handoff_apply': result = await applyHandoff(env, principal, envelope.input); break
+      case 'github_handoff_get': result = await getHandoff(env, principal, envelope.input); break
+      case 'github_handoff_status': result = await readHandoffStatus(env, envelope.input); break
       case 'signals': {
         const { cursor, resolved } = managementInputs.signals.parse(envelope.input)
         result = await readOperationalSignals(configurationQuery(env.EVENTS_DB), { cursor, resolved })
