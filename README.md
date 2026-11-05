@@ -1,5 +1,7 @@
 # hookrelay
 
+[Manual GitHub handoff](docs/github-handoff.md) creates reviewed receivers for trusted external administrators, with protected URL/secret retrieval, immutable encrypted custody and compatible local recovery. Its guide records restoration requirements and Free-plan estimates.
+
 Run `pnpm commands` for a one-screen reference to routine setup, sync, development, and deployment commands.
 
 Hookrelay is a small, provider-agnostic webhook notification gateway for Cloudflare Workers. Add adapters for new webhook senders, receive ordinary email, and route normalized updates to sinks such as push, chat, or logs. Provider configuration uses KV in legacy mode or a separately activated [provider-owned D1 configuration authority](docs/configuration-authority.md). Hookrelay's commands manage either authority; an external dashboard is an additional policy client, not the exclusive control plane. Inbound bearer credentials are represented by hashes, and recoverable credentials live in Wrangler secrets.

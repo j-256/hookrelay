@@ -55,6 +55,40 @@ async function plan(profile = 'activity', repository = 'Owner/Repo', planId = cr
   const state = await readConfigurationState(query)
   return metadata('github_handoff_plan', { planId, authorityId: state.authorityId, revision: state.revision, repository, profile, sinks: ['discord:repo-activity'] })
 }
+async function legacyRecovery(profiles = ['activity']) {
+  const slugs = { activity: 'synthetic-legacy-activity-route', stars: 'synthetic-legacy-stars-route', alerts: 'synthetic-legacy-alerts-route' }
+  const state = await readConfigurationState(query)
+  const puts = await Promise.all(profiles.map(async profile => ({ namespace: 'SUBS' as const, key: `sub:sha256:${await hashSubscriptionSlug(slugs[profile as keyof typeof slugs])}`, resourceId: crypto.randomUUID(),
+    value: JSON.stringify({ name: `github:Owner/Repo${profile === 'activity' ? '' : ':' + profile}`, source: 'github', enabled: true, sinks: ['discord:repo-activity'], auth: { scheme: 'github-sha256', secretEnv: 'HMAC_GITHUB_OWNER_REPO' } }) })))
+  await acceptConfigurationChange(query, { ...context, clientId: 'operator', clientRevision: 1, authorityId: state.authorityId, expectedRevision: state.revision, kind: 'lifecycle', operationId: crypto.randomUUID(), expiresAt: new Date(Date.now() + 60000).toISOString(), deletes: [], puts })
+  const latest = await readConfigurationState(query)
+  return { fields: { planId: crypto.randomUUID(), authorityId: latest.authorityId, revision: latest.revision, repository: 'Owner/Repo', record: { hmac: { name: 'HMAC_GITHUB_OWNER_REPO', value: 'synthetic-legacy-secret' }, slugs, profiles, state: 'active' } }, puts }
+}
+it('rejects adoption that omits another canonical legacy profile', async () => {
+  const { fields } = await legacyRecovery(['activity', 'stars'])
+  fields.record.profiles = ['activity']
+  expect((await privateCall('adopt_plan', fields)).status).toBe(400)
+  expect((await env.EVENTS_DB.prepare('SELECT count(*) AS n FROM github_handoff_repositories').first<{ n: number }>())!.n).toBe(0)
+})
+it('recovers pre-acceptance adoption reservations with the same immutable bundle and receiver UUID', async () => {
+  const { fields, puts } = await legacyRecovery()
+  const reviewed = await (await privateCall('adopt_plan', fields)).json() as any
+  await metadata('github_handoff_apply', { planId: reviewed.planId })
+  const stored = await env.EVENTS_DB.prepare('SELECT id,encrypted_json FROM github_handoff_repositories').first<{ id: string; encrypted_json: string }>()
+  // Reconstruct the durable boundary after custody reservation but before route acceptance
+  await env.EVENTS_DB.prepare('UPDATE configuration_entries SET value=? WHERE resource_id=?').bind(puts[0]!.value, puts[0]!.resourceId).run()
+  await env.EVENTS_DB.prepare('DELETE FROM configuration_receipts WHERE id=?').bind(reviewed.planId).run()
+  const latest = await readConfigurationState(query)
+  const retryFields = { ...fields, planId: crypto.randomUUID(), revision: latest.revision }
+  const retry = await privateCall('adopt_plan', retryFields)
+  expect(retry.status).toBe(200)
+  const retried = await retry.json() as any
+  expect(retried.repositoryId).toBe(stored!.id)
+  expect(retried.resourceId).toBe(puts[0]!.resourceId)
+  await metadata('github_handoff_apply', { planId: retried.planId })
+  expect((await env.EVENTS_DB.prepare('SELECT encrypted_json FROM github_handoff_repositories').first<{ encrypted_json: string }>())!.encrypted_json).toBe(stored!.encrypted_json)
+  expect((await privateCall('adopt_plan', { ...retryFields, planId: crypto.randomUUID() })).status).toBe(409)
+})
 it('creates one receiver without automatic installer credentials and privately retrieves its details', async () => {
   expect((await metadata('github_handoff_configuration')).canCreate).toBe(true)
   const reviewed = await plan()

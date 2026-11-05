@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { assertLegacyFleetSelection } from './ownership'
 import { resolve } from 'node:path'
 import { subscriptionKvKey } from '../../../src/lib/subscription'
 import { discoverGitHubFleet, type GitHubFleetDiscoveryOptions } from './discovery'
@@ -289,6 +290,7 @@ export async function planGitHubFleetRetirement(
   const selected = selectedRepositories(options)
   options.progress?.('Reading fleet retirement files')
   const files = await readFiles(options, projectRoot, dependencies)
+  assertLegacyFleetSelection(files.manifest, files.routes, selected)
   const resolved = paths(options, projectRoot)
   options.progress?.('Discovering repository checkouts')
   const discovery = await dependencies.discover(resolved.roots, discoveryOptions(options))

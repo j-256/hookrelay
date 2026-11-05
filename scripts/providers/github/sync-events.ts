@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { isHandoffSubscription } from '../../../src/lib/github-handoff'
 import { resolve } from 'node:path'
 import { subscriptionKvKey } from '../../../src/lib/subscription'
 import { getDevVar, readPrivateOptionalText, runSync } from '../../setup'
@@ -31,6 +32,7 @@ export interface GitHubEventSyncChange {
 
 export interface GitHubEventSyncPlan {
   checked: number
+  providerManaged?: string[]
   providerScope: ProviderSyncScope
   changes: GitHubEventSyncChange[]
 }
@@ -97,7 +99,8 @@ export async function planGitHubEventSync(
   progress?: (message: string) => void,
 ): Promise<GitHubEventSyncPlan> {
   const routes = parseRoutes(routesText)
-  const subscriptions = routes.subs.filter((sub) => sub.source === 'github')
+  const providerManaged = routes.subs.filter(sub => sub.source === 'github' && isHandoffSubscription(sub)).map(sub => sub.name)
+  const subscriptions = routes.subs.filter((sub) => sub.source === 'github' && !isHandoffSubscription(sub))
   const names = new Set<string>()
   const hashes = new Set<string>()
   const repoNames = new Set<string>()
@@ -144,6 +147,7 @@ export async function planGitHubEventSync(
 
   return {
     checked: subscriptions.length,
+    ...(providerManaged.length ? { providerManaged } : {}),
     providerScope: {
       puts: subscriptions.map((sub) => ({
         namespace: 'SUBS' as const,
@@ -164,6 +168,7 @@ export function formatGitHubEventSyncPlan(plan: GitHubEventSyncPlan): string {
   for (const change of plan.changes) {
     lines.push(`  UPDATE ${change.name}: ${change.before.events.join(',')} -> ${change.events.join(',')}`)
   }
+  for (const name of plan.providerManaged ?? []) lines.push(`  SKIP ${name}: provider-managed; use the manual hook workflow`)
   return lines.join('\n')
 }
 

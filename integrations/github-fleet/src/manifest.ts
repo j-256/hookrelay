@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto'
 import { z } from 'zod'
 import { SUBSCRIPTION_SLUG_RE } from '../../../src/lib/subscription'
+import { HANDOFF_LEGACY_MUTATION_ERROR, handoffProviderBindingSchema } from '../../../src/lib/github-handoff'
 import {
   GITHUB_FLEET_PROFILE_NAMES,
   assertGitHubFleetRepositoryCollisions,
@@ -12,6 +13,7 @@ import {
 const LEGACY_MANIFEST_VERSION_TWO = 2
 const LEGACY_MANIFEST_VERSION_THREE = 3
 const MANIFEST_VERSION = 4
+export const PROVIDER_MANIFEST_VERSION = 5
 const PROFILE_MANIFEST_VERSION = 3
 const REPOSITORY_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
 const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]*$/
@@ -47,6 +49,7 @@ const baseRepositorySchema = z.object({
   hmac: secretSchema,
   slugs: slugsSchema,
   profiles: z.array(profileSchema).min(1).optional(),
+  provider: handoffProviderBindingSchema.optional(),
 }).strict()
 
 const hookRetirementSchema = z.object({
@@ -81,6 +84,7 @@ const manifestSchema = z.object({
     z.literal(LEGACY_MANIFEST_VERSION_TWO),
     z.literal(LEGACY_MANIFEST_VERSION_THREE),
     z.literal(MANIFEST_VERSION),
+    z.literal(PROVIDER_MANIFEST_VERSION),
   ]),
   repositories: z.record(z.string().regex(REPOSITORY_RE), repositorySchema),
   retiredRepositories: z.record(z.string().regex(REPOSITORY_RE), retiredRepositorySchema),
@@ -130,6 +134,7 @@ export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void
   assertGitHubFleetRepositoryCollisions(repositories)
   const slugOwners = new Map<string, string>()
   const hmacValueOwners = new Map<string, string>()
+  const providerResourceOwners = new Set<string>()
 
   if (
     manifest.version === LEGACY_MANIFEST_VERSION_TWO
@@ -153,6 +158,18 @@ export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void
 
   for (const repo of repositories) {
     const entry = manifest.repositories[repo] ?? retiredRepositories[repo]!
+    if (entry.provider) {
+      if (manifest.version !== PROVIDER_MANIFEST_VERSION) throw new Error(`manifest version ${PROVIDER_MANIFEST_VERSION} is required for provider bindings`)
+      if (!('state' in entry) || entry.state !== 'active' || entry.slugRotation || entry.retirement) throw new Error('Provider-managed recovery does not support legacy lifecycle transitions')
+      const profiles = githubFleetManifestProfiles(entry)
+      const bound = GITHUB_FLEET_PROFILE_NAMES.filter(profile => entry.provider!.resources[profile] !== undefined)
+      if (profiles.length !== bound.length || !profiles.every((profile, index) => profile === bound[index])) throw new Error('Provider resource bindings must match active profiles')
+      for (const profile of bound) {
+        const id = entry.provider.resources[profile]!.resourceId
+        if (providerResourceOwners.has(id)) throw new Error('Provider resource identities must be unique')
+        providerResourceOwners.add(id)
+      }
+    }
     const expectedName = githubFleetHmacName(repo)
     if (entry.hmac.name !== expectedName) {
       throw new Error(`manifest repository ${repo} must use HMAC name ${expectedName}`)
@@ -177,7 +194,7 @@ export function validateGitHubFleetManifest(manifest: GitHubFleetManifest): void
     }
     const slugRotation = 'state' in entry ? entry.slugRotation : undefined
     if (slugRotation) {
-      if (manifest.version !== MANIFEST_VERSION) {
+      if (manifest.version < MANIFEST_VERSION) {
         throw new Error(`manifest version ${MANIFEST_VERSION} is required for slug rotation`)
       }
       const canonicalProfiles = GITHUB_FLEET_PROFILE_NAMES.filter((profile) => (
@@ -230,6 +247,7 @@ export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): str
         alerts: entry.slugs.alerts,
       },
       ...(entry.profiles ? { profiles: [...entry.profiles] } : {}),
+      ...(entry.provider ? { provider: entry.provider } : {}),
       state: entry.state,
       ...(entry.retirement
         ? {
@@ -268,6 +286,7 @@ export function serializeGitHubFleetManifest(manifest: GitHubFleetManifest): str
         alerts: entry.slugs.alerts,
       },
       ...(entry.profiles ? { profiles: [...entry.profiles] } : {}),
+      ...(entry.provider ? { provider: entry.provider } : {}),
       retiredAt: entry.retiredAt,
     }
   }
@@ -313,7 +332,7 @@ export function withGitHubFleetManifestRepository(
     throw new Error(`manifest repository ${repo} disagrees with recovered or generated values`)
   }
   const next: GitHubFleetManifest = {
-    version: MANIFEST_VERSION,
+    version: manifest.version === PROVIDER_MANIFEST_VERSION || entry.provider ? PROVIDER_MANIFEST_VERSION : MANIFEST_VERSION,
     repositories: { ...manifest.repositories, [repo]: existing ?? entry },
     retiredRepositories: { ...manifest.retiredRepositories },
   }
@@ -328,6 +347,7 @@ export function beginGitHubFleetRepositoryRetirement(
 ): GitHubFleetManifest {
   if (manifest.retiredRepositories[repo]) return manifest
   const entry = manifest.repositories[repo]
+  if (entry?.provider) throw new Error(HANDOFF_LEGACY_MUTATION_ERROR)
   if (!entry) throw new Error(`manifest repository is missing: ${repo}`)
   if (entry.state === 'retiring') return manifest
   const next: GitHubFleetManifest = {
@@ -405,6 +425,7 @@ export function completeGitHubFleetRepositoryRetirement(
 export function githubFleetManifestValues(
   entry: GitHubFleetManifestRepository | GitHubFleetRetiredRepository,
 ): GitHubFleetValues {
+  if (entry.provider) throw new Error(HANDOFF_LEGACY_MUTATION_ERROR)
   return {
     hmacName: entry.hmac.name,
     slugs: { ...entry.slugs } as Record<GitHubFleetProfileName, string>,
@@ -425,6 +446,7 @@ export function beginGitHubFleetSlugRotation(
   randomValues: GitHubFleetRandomValues = DEFAULT_RANDOM_VALUES,
 ): GitHubFleetManifest {
   const entry = manifest.repositories[repo]
+  if (entry?.provider) throw new Error(HANDOFF_LEGACY_MUTATION_ERROR)
   if (!entry || entry.state !== 'active') {
     throw new Error(`manifest repository is not active: ${repo}`)
   }
@@ -452,7 +474,7 @@ export function beginGitHubFleetSlugRotation(
   }
   const next: GitHubFleetManifest = {
     ...manifest,
-    version: MANIFEST_VERSION,
+    version: manifest.version === PROVIDER_MANIFEST_VERSION ? PROVIDER_MANIFEST_VERSION : MANIFEST_VERSION,
     repositories: {
       ...manifest.repositories,
       [repo]: {
@@ -479,7 +501,7 @@ export function completeGitHubFleetSlugRotation(
   const { slugRotation: _completed, ...completedEntry } = entry
   const next: GitHubFleetManifest = {
     ...manifest,
-    version: MANIFEST_VERSION,
+    version: manifest.version === PROVIDER_MANIFEST_VERSION ? PROVIDER_MANIFEST_VERSION : MANIFEST_VERSION,
     repositories: { ...manifest.repositories, [repo]: completedEntry },
   }
   validateGitHubFleetManifest(next)

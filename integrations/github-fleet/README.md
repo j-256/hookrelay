@@ -1,5 +1,7 @@
 # Optional GitHub fleet integration
 
+[Manual handoff recovery](../../docs/github-handoff.md#local-recovery-mirror) imports a private provider export into a v5 manifest and optional explicitly selected golden routes. Provider-managed entries keep their HMAC and reserved slugs; ordinary legacy lifecycle writers skip or reject them before mutation. Use `pnpm github:handoff:recovery --help` for private-file and encryption prerequisites. Unrelated legacy records retain the workflow below.
+
 This directory contains the repository-fleet operations tooling used to dogfood Hookrelay across many GitHub repositories. It is optional: Hookrelay does not require this integration to receive GitHub webhooks, and ordinary GitHub subscriptions use the core GitHub adapter plus `pnpm sub:add`, `pnpm github:events`, and `pnpm github:sync`.
 
 The integration discovers repositories, maintains a private recovery manifest, prepares one Hookrelay subscription and GitHub repository hook per selected profile, reconciles drift, rotates repository HMACs and subscription slugs, retires managed repositories, and verifies end-to-end authentication. It depends on Hookrelay's generic operator helpers and GitHub provider tooling, while nothing in the Worker runtime or ordinary operator scripts depends on the integration.

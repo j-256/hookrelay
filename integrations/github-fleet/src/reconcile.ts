@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
+import { assertLegacyFleetSelection } from './ownership'
 import { resolve } from 'node:path'
 import { hmacSha256Hex } from '../../../src/lib/hmac'
 import { hashSubscriptionSlug, subscriptionKvKey } from '../../../src/lib/subscription'
@@ -523,6 +524,7 @@ export async function applyGitHubFleet(
 
   options.progress?.('Reading prepared fleet files and Worker secrets')
   const files = await readFleetFiles(options, projectRoot, dependencies)
+  assertLegacyFleetSelection(files.manifest, files.routes, selected)
   const rotations = selected.flatMap((repo) => {
     const rotation = files.manifest.repositories[repo]?.slugRotation
     return rotation

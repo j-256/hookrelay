@@ -82,7 +82,7 @@ export const subSchema = z
       z.object({
         scheme: z.string().min(1),
         secretEnv: z.string().min(1).refine(value => value !== HANDOFF_KEYS),
-        alternateSecretEnvs: z.array(z.string().min(1)).min(1).optional(),
+        alternateSecretEnvs: z.array(z.string().min(1).refine(value => value !== HANDOFF_KEYS)).min(1).optional(),
         derivationId: z.uuid().optional(),
       }).strict(),
       handoffAuthSchema,

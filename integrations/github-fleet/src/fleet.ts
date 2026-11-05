@@ -1,4 +1,6 @@
 import { readFile } from 'node:fs/promises'
+import { HANDOFF_LEGACY_MUTATION_ERROR } from '../../../src/lib/github-handoff'
+import { providerManagedRepositories } from './ownership'
 import { resolve } from 'node:path'
 import { applyEdits, modify, parse as parseJsonc, type FormattingOptions, type ParseError } from 'jsonc-parser'
 import { hashSubscriptionSlug, subscriptionKvKey } from '../../../src/lib/subscription'
@@ -85,6 +87,7 @@ export interface GitHubFleetCapacity {
 }
 
 export interface GitHubFleetPlan {
+  providerManaged?: string[]
   discovered: string[]
   selected: string[]
   managed: string[]
@@ -130,6 +133,7 @@ const DEFAULT_DEPENDENCIES: GitHubFleetDependencies = {
 }
 
 interface FleetLocalState {
+  providerManaged: string[]
   routesText: string
   routes: Routes
   devVarsText: string
@@ -296,9 +300,15 @@ async function loadLocalState(
   ])
   const routes = parseRoutes(routesText)
   let manifest = parseGitHubFleetManifest(manifestText)
+  const providerManaged = providerManagedRepositories(manifest, routes)
+  const providerKeys = new Set(providerManaged.map(repository => repository.toLowerCase()))
   const discoveredNames = new Set(discovery.repositories.map((repo) => repo.nameWithOwner))
   const requested = new Set(options.repositories.length > 0 ? options.repositories : discoveredNames)
   for (const repo of requested) {
+    if (providerKeys.has(repo.toLowerCase())) {
+      if (options.repositories.length > 0) blockers.push(`${repo}: ${HANDOFF_LEGACY_MUTATION_ERROR}`)
+      continue
+    }
     if (!discoveredNames.has(repo)) {
       const eligibleVisibility = options.includePrivate
         ? 'an eligible public or explicitly selected private repository'
@@ -332,7 +342,7 @@ async function loadLocalState(
     }
   }
   const selected = new Set([...requested].filter((repo) => (
-    manifest.repositories[repo]?.state !== 'retiring' && !manifest.retiredRepositories[repo]
+    !providerKeys.has(repo.toLowerCase()) && manifest.repositories[repo]?.state !== 'retiring' && !manifest.retiredRepositories[repo]
   )))
 
   const lifecycleRepositories = new Set([
@@ -343,14 +353,15 @@ async function loadLocalState(
   ])
   const activeDiscovery: GitHubFleetDiscovery = {
     ...discovery,
-    repositories: discovery.repositories.filter((repository) => !lifecycleRepositories.has(repository.nameWithOwner)),
+    repositories: discovery.repositories.filter((repository) => !lifecycleRepositories.has(repository.nameWithOwner) && !providerKeys.has(repository.nameWithOwner.toLowerCase())),
   }
   const hooks = await readHooks(activeDiscovery, dependencies, blockers, options.progress)
   const manifestAdditions: string[] = []
   const managed = new Set(Object.keys(manifest.repositories).filter((repo) => (
-    discoveredNames.has(repo) && manifest.repositories[repo]?.state !== 'retiring'
+    discoveredNames.has(repo) && manifest.repositories[repo]?.state !== 'retiring' && !providerKeys.has(repo.toLowerCase())
   )))
   for (const repo of discoveredNames) {
+    if (providerKeys.has(repo.toLowerCase())) continue
     const existingRoutes = profileRoutes(routes, repo)
     const existingProfiles = GITHUB_FLEET_PROFILE_NAMES.filter((profile) => existingRoutes[profile] !== undefined)
     const routeCount = existingProfiles.length
@@ -407,6 +418,7 @@ async function loadLocalState(
     }
   }
   return {
+    providerManaged,
     routesText,
     routes,
     devVarsText,
@@ -668,6 +680,7 @@ export async function planGitHubFleet(
       : []
   })
   return {
+    ...(state.providerManaged.length ? { providerManaged: state.providerManaged } : {}),
     discovered: state.discovery.repositories.map((repo) => repo.nameWithOwner),
     selected: selectedNames,
     managed: [...state.managed].sort(),
@@ -760,7 +773,7 @@ export async function prepareGitHubFleet(
 
   const rotationRepositories = new Set(options.rotateHmac ? options.repositories : [])
   for (const [repo, entry] of Object.entries(manifest.repositories)
-    .filter(([, candidate]) => candidate.state !== 'retiring')) {
+    .filter(([name, candidate]) => candidate.state !== 'retiring' && !state.providerManaged.some(repository => repository.toLowerCase() === name.toLowerCase()))) {
     const beforeCanonical = getDevVar(devVarsText, entry.hmac.name)
     if (beforeCanonical !== null && beforeCanonical !== entry.hmac.value && rotationRepositories.has(repo)) {
       devVarsText = addDevVar(removeDevVar(devVarsText, entry.hmac.name), entry.hmac.name, entry.hmac.value)
@@ -837,6 +850,7 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
   for (const exclusion of plan.exclusions) lines.push(`EXCLUDE ${exclusion.child}: ${exclusion.reason}`)
   for (const repo of plan.retiring) lines.push(`RETIRING ${repo}`)
   for (const repo of plan.retired) lines.push(`RETIRED ${repo}`)
+  for (const repo of plan.providerManaged ?? []) lines.push(`SKIP provider-managed ${repo}: legacy lifecycle coverage is unavailable`)
   for (const repo of plan.manifestAdditions) lines.push(`ADD manifest ${repo}`)
   for (const name of plan.subscriptionAdditions) lines.push(`ADD subscription ${name}`)
   for (const name of plan.hookAdditions) lines.push(`ADD hook ${name}`)

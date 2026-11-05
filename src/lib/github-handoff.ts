@@ -4,6 +4,10 @@ import { SUBSCRIPTION_SLUG_RE } from './subscription'
 
 export const HANDOFF_KEYS = 'HOOK_HANDOFF_KEYS'
 export const HANDOFF_PRIVATE_PATH = '/admin/api/v1/private/github-handoff'
+export const HANDOFF_LEGACY_MUTATION_ERROR = 'Provider-managed hooks must use the manual hook workflow; legacy lifecycle changes are unsupported'
+export function isHandoffSubscription(value: { auth?: unknown; githubHandoff?: unknown }): boolean {
+  return Boolean(value.githubHandoff || (value.auth && typeof value.auth === 'object' && 'credentialId' in value.auth))
+}
 export const HANDOFF_PROFILE_NAMES = ['activity', 'stars', 'alerts'] as const
 export const handoffProfileSchema = z.enum(HANDOFF_PROFILE_NAMES)
 export type HandoffProfile = z.infer<typeof handoffProfileSchema>
@@ -49,6 +53,13 @@ export const handoffMetadataSchema = z.object({
   repositoryId: z.uuid(), resourceId: z.uuid(), repository: handoffRepositorySchema, profile: handoffProfileSchema,
 }).strict()
 export type HandoffMetadata = z.infer<typeof handoffMetadataSchema>
+const providerResource = z.object({ resourceId: z.uuid(), authMode: z.enum(['environment', 'bundle']) }).strict()
+export const handoffProviderBindingSchema = z.object({
+  kind: z.literal('hookrelay-handoff-v1'), authorityId: z.string().regex(/^[a-f0-9]{32}$/),
+  workspaceId: z.string().min(1).max(240), repositoryId: z.uuid(), bundleRevision: z.literal(1),
+  resources: z.object({ activity: providerResource.optional(), stars: providerResource.optional(), alerts: providerResource.optional() }).strict(),
+}).strict()
+export type HandoffProviderBinding = z.infer<typeof handoffProviderBindingSchema>
 export const handoffAuthSchema = z.object({
   scheme: z.literal('github-sha256'), secretEnv: z.literal(HANDOFF_KEYS), credentialId: z.uuid(),
   alternateSecretEnvs: z.never().optional(), derivationId: z.never().optional(),

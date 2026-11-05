@@ -1,4 +1,5 @@
 import { readFile } from 'node:fs/promises'
+import { HANDOFF_LEGACY_MUTATION_ERROR, isHandoffSubscription } from '../src/lib/github-handoff'
 import { resolve } from 'node:path'
 import { subscriptionKvKey } from '../src/lib/subscription'
 import {
@@ -222,6 +223,7 @@ async function prepareSubscriptionRetirement(
   const manifest = parseRetirementManifest(manifestText)
   const routes = parseRoutes(routesText)
   const local = localSubscription(routes, options.name)
+  if (local && isHandoffSubscription(local)) throw new Error(HANDOFF_LEGACY_MUTATION_ERROR)
   if (!local) {
     const archive = manifest.subscriptions[options.name]
     if (archive?.kvRemoved && archive.secretsRemoved && (!archive.hook || archive.hook.deleted)) {
@@ -335,11 +337,10 @@ async function finalizeSubscriptionRetirement(
   paths: { routes: string; manifest: string; devVars: string },
   dependencies: SubscriptionRetirementDependencies,
 ): Promise<'finalized' | 'cancelled' | 'complete'> {
-  const [routesText, manifestText, devVarsText, remote] = await Promise.all([
+  const [routesText, manifestText, devVarsText] = await Promise.all([
     dependencies.readText(paths.routes),
     dependencies.readPrivateText(paths.manifest),
     dependencies.readPrivateText(paths.devVars),
-    dependencies.readKv(),
   ])
   let manifest = parseRetirementManifest(manifestText)
   const routes = parseRoutes(routesText)
@@ -347,6 +348,8 @@ async function finalizeSubscriptionRetirement(
   const archived = manifest.subscriptions[options.name]
   const subscription = local ?? archived?.subscription
   if (!subscription) throw new Error(`subscription does not exist and is not archived: ${options.name}`)
+  if (isHandoffSubscription(subscription)) throw new Error(HANDOFF_LEGACY_MUTATION_ERROR)
+  const remote = await dependencies.readKv()
   assertExpectedSlugHash(subscription, options.expectedSlugHash)
   if (local?.enabled) throw new Error(`subscription ${options.name} must be disabled locally before finalization`)
   if (archived?.kvRemoved && archived.secretsRemoved && (!archived.hook || archived.hook.deleted)) {

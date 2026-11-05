@@ -136,7 +136,9 @@ export async function planHandoff(env: Env, principal: ManagementPrincipal, inpu
   const previous = await findReview(env, principal, fields, fields.planId)
   if (previous) { if (previous.input_hash !== inputHash) throw conflict(); return reviewResult(env, principal, previous) }
   const row = await repositoryByKey(env, fields.authorityId, fields.workspaceId, normalized.key)
-  if (!row && (await legacyEntries(env, normalized.repository)).length) throw new ConfigurationError('conflict', 'Import the existing repository recovery record before adding manual hooks')
+  const existingEntries = await legacyEntries(env, normalized.repository)
+  if (!row && existingEntries.length) throw new ConfigurationError('conflict', 'Import the existing repository recovery record before adding manual hooks')
+  if (row && existingEntries.some(entry => JSON.parse(entry.value).name.toLowerCase() === handoffSubscriptionName(row.repository, fields.profile).toLowerCase())) throw new ConfigurationError('conflict', 'This profile already has a receiver; recover or adopt its existing identity')
   const nameCollision = await env.EVENTS_DB.prepare('SELECT id FROM github_handoff_repositories WHERE authority_id=? AND hmac_name=? AND repository_key!=? LIMIT 1')
     .bind(fields.authorityId, handoffHmacName(normalized.repository), normalized.key).first()
   if (nameCollision) throw new ConfigurationError('conflict', 'This repository conflicts with an existing recovery credential name')
@@ -166,27 +168,33 @@ export async function planHandoffAdoption(env: Env, principal: ManagementPrincip
   const inputHash = await configurationDigest({ ...fields, repository: normalized.key, owner: owner(principal, fields) })
   const previous = await findReview(env, principal, fields, fields.planId)
   if (previous) { if (previous.input_hash !== inputHash) throw conflict(); return reviewResult(env, principal, previous) }
-  if (await repositoryByKey(env, fields.authorityId, fields.workspaceId, normalized.key)) throw conflict()
+  const existingRepository = await repositoryByKey(env, fields.authorityId, fields.workspaceId, normalized.key)
   const bundle = handoffBundleSchema.parse({ version: 1, hmac: fields.record.hmac, slugs: fields.record.slugs })
   if (bundle.hmac.name !== handoffHmacName(normalized.repository)) throw new ConfigurationError('validation', 'The repository recovery credential name does not match')
+  if (existingRepository && (existingRepository.repository !== normalized.repository || existingRepository.origin !== handoffOrigin(env) ||
+    await configurationDigest(await openHandoffRepository(env, existingRepository)) !== await configurationDigest(bundle))) throw conflict()
   const selected = fields.record.profiles ?? [...HANDOFF_PROFILE_NAMES]
   const profiles = HANDOFF_PROFILE_NAMES.filter(profile => selected.includes(profile))
   const entries = await legacyEntries(env, normalized.repository)
+  if (entries.length !== profiles.length) throw new ConfigurationError('validation', 'Adoption must include every existing canonical legacy profile')
+  if (existingRepository && entries.some(entry => JSON.parse(entry.value).githubHandoff)) throw conflict()
   const resources: Stored['resources'] = []
   for (const profile of profiles) {
     const matches = entries.filter(entry => JSON.parse(entry.value).name.toLowerCase() === handoffSubscriptionName(normalized.repository, profile).toLowerCase())
     if (matches.length !== 1) throw new ConfigurationError('validation', 'Each selected legacy profile must identify one existing receiver')
     const entry = matches[0]!
     if (entry.key !== `sub:sha256:${await hashSubscriptionSlug(bundle.slugs[profile])}`) throw new ConfigurationError('validation', 'The recovery route does not match the existing receiver')
-    if (await env.EVENTS_DB.prepare('SELECT resource_id FROM github_handoff_receivers WHERE resource_id=?').bind(entry.resourceId).first()) throw conflict()
+    const reservation = await env.EVENTS_DB.prepare('SELECT repository_id,profile,auth_mode FROM github_handoff_receivers WHERE resource_id=?').bind(entry.resourceId).first<{ repository_id: string; profile: string; auth_mode: string }>()
+    if (reservation && (!existingRepository || reservation.repository_id !== existingRepository.id || reservation.profile !== profile || reservation.auth_mode !== 'environment')) throw conflict()
+    if (existingRepository && await env.EVENTS_DB.prepare('SELECT resource_id FROM github_handoff_receivers WHERE repository_id=? AND profile=? AND resource_id!=?').bind(existingRepository.id, profile, entry.resourceId).first()) throw conflict()
     await checkLegacySecret(env, bundle, entry)
     resources.push({ resourceId: entry.resourceId, profile, authMode: 'environment', previous: { ...entry, retired: Boolean(entry.retired) } })
   }
-  const repositoryId = crypto.randomUUID()
+  const repositoryId = existingRepository?.id ?? crypto.randomUUID()
   const saved: Stored = { repository: normalized.repository, repositoryKey: normalized.key, origin: handoffOrigin(env),
     profile: profiles[0]!, sinks: (JSON.parse(resources[0]!.previous!.value) as Subscription).sinks, resources }
-  const encrypted = await sealHandoffBundle(env, { authorityId: fields.authorityId, workspaceId: fields.workspaceId, repositoryId, repository: saved.repository, revision: 1 }, bundle)
-  return saveReview(env, principal, fields, 'adopt', repositoryId, saved, inputHash, JSON.stringify(encrypted))
+  const encrypted = existingRepository?.encrypted_json ?? JSON.stringify(await sealHandoffBundle(env, { authorityId: fields.authorityId, workspaceId: fields.workspaceId, repositoryId, repository: saved.repository, revision: 1 }, bundle))
+  return saveReview(env, principal, fields, 'adopt', repositoryId, saved, inputHash, encrypted)
 }
 function randomHex(bytes: number): string { return [...crypto.getRandomValues(new Uint8Array(bytes))].map(byte => byte.toString(16).padStart(2, '0')).join('') }
 function randomSlug(): string { return btoa(String.fromCharCode(...crypto.getRandomValues(new Uint8Array(LIMITS.SLUG_BYTES)))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '') }

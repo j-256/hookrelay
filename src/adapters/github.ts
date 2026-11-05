@@ -4,6 +4,7 @@ import { hmacSha256Hex, timingSafeEqualHex } from '../lib/hmac'
 import type { Env } from '../index'
 import { readOptionalSecret } from '../lib/secret'
 import { readHandoffSigningSecret } from '../lib/github-handoff-store'
+import { HANDOFF_KEYS } from '../lib/github-handoff'
 import type { NormalizedEvent, Severity, Subscription } from '../types'
 
 const SECURITY_SEVERITY: Record<string, Severity> = {
@@ -472,7 +473,7 @@ const adapter: Adapter = {
     }
     const provided = header.slice('sha256='.length)
     const secretEnvs = [sub.auth.secretEnv, ...(sub.auth.alternateSecretEnvs ?? [])]
-    const secrets = sub.auth.credentialId
+    const secrets = 'credentialId' in sub.auth || secretEnvs.includes(HANDOFF_KEYS)
       ? [await readHandoffSigningSecret(env, sub)]
       : secretEnvs.map((name) => readOptionalSecret(env, name))
         .filter((secret): secret is string => secret !== undefined)

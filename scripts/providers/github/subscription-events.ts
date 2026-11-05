@@ -13,6 +13,7 @@ import {
   validateGitHubRepo,
 } from './repository-hooks'
 import { confirm, getDevVar, prepareProduction, readOptionalText, writeText } from '../../setup'
+import { HANDOFF_LEGACY_MUTATION_ERROR, isHandoffSubscription } from '../../../src/lib/github-handoff'
 import { parseRoutes } from '../../sync'
 import { subscriptionKvKey } from '../../../src/lib/subscription'
 
@@ -111,6 +112,7 @@ export function prepareGitHubSubscriptionEvents(
   if (matches.length > 1) throw new Error(`subscription is declared more than once: ${name}`)
 
   const { sub, index } = matches[0]!
+  if (isHandoffSubscription(sub)) throw new Error(HANDOFF_LEGACY_MUTATION_ERROR)
   if (sub.source !== 'github') throw new Error(`subscription is not a GitHub subscription: ${name}`)
   const github = sub.setup?.github
   if (!github) throw new Error(`subscription has no setup.github metadata: ${name}`)

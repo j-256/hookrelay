@@ -58,6 +58,15 @@ it('rejects a signed event for another repository before it can be persisted', a
   const request = new Request('https://hooks.example/', { headers: { 'x-github-event': 'ping', 'x-github-delivery': crypto.randomUUID() } })
   await expect(github.parse(request, body, sub)).rejects.toThrow('repository mismatch')
 })
+it('never uses a reserved wrapping keyring as a primary or alternate legacy HMAC', async () => {
+  const body = new TextEncoder().encode('{}')
+  const request = new Request('https://hooks.example/', { headers: { 'x-hub-signature-256': `sha256=${await hmacSha256Hex(keyring, body)}` } })
+  for (const auth of [
+    { scheme: 'github-sha256', secretEnv: 'HOOK_HANDOFF_KEYS' },
+    { scheme: 'github-sha256', secretEnv: 'LEGACY_MISSING_SECRET', alternateSecretEnvs: ['HOOK_HANDOFF_KEYS'] },
+    { scheme: 'github-sha256', secretEnv: 'HOOK_HANDOFF_KEYS', credentialId: '' },
+  ]) await expect(github.verify(request, body, { ...sub, auth }, runtime)).rejects.toThrow('unavailable')
+})
 it('reports unavailable custody as 503 rather than rejecting a valid signature as 401', async () => {
   const unavailable = new Proxy(runtime, { get(target, prop, receiver) {
     return prop === 'HOOK_HANDOFF_KEYS' ? undefined : Reflect.get(target, prop, receiver)

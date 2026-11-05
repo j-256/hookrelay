@@ -122,6 +122,52 @@ function dependencies(repositories = [REPO]): GitHubFleetDependencies {
 }
 
 describe('GitHub fleet planning and preparation', () => {
+  it('blocks provider-managed preparation before file writes or upstream administrator reads', async () => {
+    const directory = await project()
+    try {
+      await prepareGitHubFleet(options([REPO]), dependencies(), directory)
+      const manifestPath = join(directory, 'fleet.json')
+      const manifest = parseGitHubFleetManifest(await readFile(manifestPath, 'utf8'))
+      const entry = manifest.repositories[REPO]!
+      const repositoryId = crypto.randomUUID()
+      manifest.version = 5
+      entry.provider = { kind: 'hookrelay-handoff-v1', authorityId: 'a'.repeat(32), workspaceId: 'alpha', repositoryId, bundleRevision: 1,
+        resources: { activity: { resourceId: crypto.randomUUID(), authMode: 'environment' }, stars: { resourceId: crypto.randomUUID(), authMode: 'environment' }, alerts: { resourceId: crypto.randomUUID(), authMode: 'environment' } } }
+      await writePrivateText(manifestPath, serializeGitHubFleetManifest(manifest), TEST_FILE_SYSTEM)
+      const before = await Promise.all(['fleet.json', 'routes.jsonc', '.dev.vars'].map(path => readFile(join(directory, path), 'utf8')))
+      const deps = dependencies()
+      let reads = 0
+      deps.listHooks = async () => { reads++; return [] }
+      const plan = await planGitHubFleet({ ...options([REPO]), phase: 'plan' }, deps, directory)
+      expect(plan.providerManaged).toEqual([REPO])
+      expect(plan.blockers.some(value => /provider-managed/i.test(value))).toBe(true)
+      await expect(prepareGitHubFleet(options([REPO]), deps, directory)).rejects.toThrow(/provider-managed/i)
+      expect(reads).toBe(0)
+      expect(await Promise.all(['fleet.json', 'routes.jsonc', '.dev.vars'].map(path => readFile(join(directory, path), 'utf8')))).toEqual(before)
+    } finally { await rm(directory, { recursive: true, force: true }) }
+  })
+  it('keeps unrelated legacy enrollment usable when another record is provider-managed', async () => {
+    const directory = await project()
+    try {
+      await prepareGitHubFleet(options([REPO]), dependencies(), directory)
+      const manifestPath = join(directory, 'fleet.json')
+      const manifest = parseGitHubFleetManifest(await readFile(manifestPath, 'utf8'))
+      const entry = manifest.repositories[REPO]!
+      manifest.version = 5
+      entry.provider = { kind: 'hookrelay-handoff-v1', authorityId: 'a'.repeat(32), workspaceId: 'alpha', repositoryId: crypto.randomUUID(), bundleRevision: 1,
+        resources: { activity: { resourceId: crypto.randomUUID(), authMode: 'environment' }, stars: { resourceId: crypto.randomUUID(), authMode: 'environment' }, alerts: { resourceId: crypto.randomUUID(), authMode: 'environment' } } }
+      await writePrivateText(manifestPath, serializeGitHubFleetManifest(manifest), TEST_FILE_SYSTEM)
+      const deps = dependencies([REPO, OTHER_REPO])
+      const reads: string[] = []
+      deps.listHooks = async repo => { reads.push(repo); return [] }
+      let generated = 0
+      deps.randomValues = { hmac: () => 'synthetic-other-signing-secret', slug: () => `other-${generated++}-abcdefghijklmnopqrstuv` }
+      const plan = await planGitHubFleet({ ...options([OTHER_REPO]), phase: 'plan' }, deps, directory)
+      expect(plan.blockers).toEqual([])
+      expect(reads).toEqual([OTHER_REPO])
+      expect(plan.selected).toEqual([OTHER_REPO])
+    } finally { await rm(directory, { recursive: true, force: true }) }
+  })
   it('explains the opt-in when a selected private repository is excluded', async () => {
     const directory = await project()
     try {

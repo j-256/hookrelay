@@ -28,7 +28,7 @@ export async function revealHandoff(env: Env, workspaceId: string, resourceId: s
 export async function exportHandoff(env: Env, workspaceId: string, repositoryId: string) {
   const row = await ownedHandoffRepository(env, workspaceId, repositoryId)
   const { bundle, resources } = await verifiedResources(env, row)
-  return { version: 1, repository: row.repository, record: {
+  return { version: 1, repository: row.repository, origin: row.origin, record: {
     hmac: bundle.hmac, slugs: bundle.slugs, profiles: resources.map(resource => resource.profile), state: 'active',
     provider: { kind: 'hookrelay-handoff-v1', authorityId: row.authority_id, workspaceId: row.workspace_id, repositoryId: row.id, bundleRevision: row.bundle_revision,
       resources: Object.fromEntries(resources.map(resource => [resource.profile, { resourceId: resource.resourceId, authMode: resource.authMode }])) },

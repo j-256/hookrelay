@@ -60,6 +60,8 @@ export function commandReference(): string {
     'GitHub all and manual selections are exclusive',
     '',
     'Optional integrations',
+    '  pnpm github:handoff:recovery --help',
+    '      Inspect or import one private manual-hook export without replacing credentials',
     '  pnpm github:fleet --help',
     '      Manage the dogfooded GitHub repository fleet; see integrations/github-fleet/README.md',
     '  pnpm subscription:fleet --help',
