@@ -15,6 +15,7 @@ export const OPERATIONAL_SIGNAL_CODES = [
   'ingress-payload-too-large',
   'ingress-adapter-missing',
   'ingress-authentication-rejected',
+  'ingress-credentials-unavailable',
   'ingress-parse-rejected',
   'ingress-persistence-rejected',
   'delivery-exhausted',
@@ -45,6 +46,10 @@ const SIGNAL_DEFINITIONS: Record<OperationalSignalCode, SignalDefinition> = {
   'ingress-authentication-rejected': {
     severity: 'warning',
     summary: 'A known route rejected webhook authentication',
+  },
+  'ingress-credentials-unavailable': {
+    severity: 'critical',
+    summary: 'A known route could not access its protected signing credentials',
   },
   'ingress-parse-rejected': {
     severity: 'error',

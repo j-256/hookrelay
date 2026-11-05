@@ -3,6 +3,7 @@ import type { Adapter } from '.'
 import { hmacSha256Hex, timingSafeEqualHex } from '../lib/hmac'
 import type { Env } from '../index'
 import { readOptionalSecret } from '../lib/secret'
+import { readHandoffSigningSecret } from '../lib/github-handoff-store'
 import type { NormalizedEvent, Severity, Subscription } from '../types'
 
 const SECURITY_SEVERITY: Record<string, Severity> = {
@@ -471,9 +472,10 @@ const adapter: Adapter = {
     }
     const provided = header.slice('sha256='.length)
     const secretEnvs = [sub.auth.secretEnv, ...(sub.auth.alternateSecretEnvs ?? [])]
-    const secrets = secretEnvs
-      .map((name) => readOptionalSecret(env, name))
-      .filter((secret): secret is string => secret !== undefined)
+    const secrets = sub.auth.credentialId
+      ? [await readHandoffSigningSecret(env, sub)]
+      : secretEnvs.map((name) => readOptionalSecret(env, name))
+        .filter((secret): secret is string => secret !== undefined)
     if (secrets.length === 0) throw new Error(`secret not set: ${secretEnvs.join(', ')}`)
 
     const signingSecrets = sub.auth.derivationId
@@ -496,6 +498,10 @@ const adapter: Adapter = {
     if (!deliveryId) throw new Error('missing x-github-delivery header')
 
     const payload = JSON.parse(new TextDecoder().decode(raw)) as any
+    if (sub.githubHandoff && (
+      typeof payload?.repository?.full_name !== 'string' ||
+      payload.repository.full_name.toLowerCase() !== sub.githubHandoff.repository.toLowerCase()
+    )) throw new Error('repository mismatch')
     const summary = summarize(eventName, payload)
     return {
       source: 'github',

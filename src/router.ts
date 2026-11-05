@@ -5,6 +5,7 @@ import { withSubscriptionFallbackUrl } from './lib/event-url'
 import { hashSubscriptionSlug, SUBSCRIPTION_SLUG_PATTERN, subscriptionKvKey } from './lib/subscription'
 import { recordOperationalSignal } from './operations'
 import { primaryKey } from './persistence'
+import { HandoffUnavailableError } from './lib/github-handoff'
 import type { Env } from './index'
 import type { Subscription } from './types'
 
@@ -132,7 +133,12 @@ export async function handleHook(
 
   try {
     await adapter.verify(request, rawBody, sub, env)
-  } catch {
+  } catch (error) {
+    if (error instanceof HandoffUnavailableError) {
+      await recordOperationalSignal(env, { code: 'ingress-credentials-unavailable', source: sub.source, subName: sub.name })
+      console.log(JSON.stringify({ level: 'error', msg: 'credentials.unavailable', sourceType }))
+      return new Response('credential service unavailable', { status: 503 })
+    }
     await recordOperationalSignal(env, {
       code: 'ingress-authentication-rejected',
       source: sub.source,

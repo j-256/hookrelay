@@ -1,4 +1,5 @@
 import { githubSetupMetadata } from '../src/lib/github-setup'
+import { HANDOFF_KEYS, handoffAuthSchema, handoffMetadataSchema } from '../src/lib/github-handoff'
 import { parse as parseJsonc, ParseError } from 'jsonc-parser'
 import { z } from 'zod'
 import { readFile } from 'node:fs/promises'
@@ -77,13 +78,15 @@ export const subSchema = z
     enabled: z.boolean(),
     sinks: z.array(z.string().min(1)),
     fallbackUrl: z.string().min(1).optional(),
-    auth: z
-      .object({
+    auth: z.union([
+      z.object({
         scheme: z.string().min(1),
-        secretEnv: z.string().min(1),
+        secretEnv: z.string().min(1).refine(value => value !== HANDOFF_KEYS),
         alternateSecretEnvs: z.array(z.string().min(1)).min(1).optional(),
         derivationId: z.uuid().optional(),
-      })
+      }).strict(),
+      handoffAuthSchema,
+    ])
       .nullable()
       .optional()
       .default(null),
@@ -97,6 +100,7 @@ export const subSchema = z
     filter: eventFilterSchema.optional(),
     sinkFilters: z.record(z.string().min(1), eventFilterSchema).optional(),
     githubSetup: githubSetupMetadata.optional(),
+    githubHandoff: handoffMetadataSchema.optional(),
     setup: z
       .object({
         github: z
@@ -440,6 +444,10 @@ export function validateRoutes(routes: Routes, ctx: ValidateContext): string[] {
       }
     }
     if (sub.auth) {
+      if ('credentialId' in sub.auth && (
+        sub.source !== 'github' || !sub.githubHandoff ||
+        sub.githubHandoff.repositoryId !== sub.auth.credentialId
+      )) issues.push(`sub '${sub.name}': provider credentials require matching GitHub ownership metadata`)
       const secretEnvs = [sub.auth.secretEnv, ...(sub.auth.alternateSecretEnvs ?? [])]
       for (const name of secretEnvs) {
         if (!ctx.secretsAvailable.has(name)) {
@@ -731,6 +739,7 @@ export function computePlan(routes: Routes, current: KvSnapshot): Plan {
       ...(runtimeFilter ? { filter: runtimeFilter } : {}),
       ...(sub.sinkFilters ? { sinkFilters: sub.sinkFilters } : {}),
       ...(sub.githubSetup ? { githubSetup: sub.githubSetup } : {}),
+      ...(sub.githubHandoff ? { githubHandoff: sub.githubHandoff } : {}),
     })
     const existing = current.subs[key]
     const existingCanon = existing != null ? canonicalizeJson(existing) : null

@@ -28,6 +28,7 @@ export interface SubAuth {
   secretEnv: string
   alternateSecretEnvs?: string[]
   derivationId?: string
+  credentialId?: string
 }
 
 export interface EmailSubscriptionConfig {
@@ -68,6 +69,14 @@ export interface Subscription {
     events: string[]
     origin: string
     keyDigest: string
+  }
+  githubHandoff?: {
+    authorityId: string
+    workspaceId: string
+    repositoryId: string
+    resourceId: string
+    repository: string
+    profile: 'activity' | 'stars' | 'alerts'
   }
 }
 

@@ -37,6 +37,7 @@ export interface Env {
   HOOK_SETUP_KEY?: string
   HOOK_SETUP_GITHUB_TOKEN?: string
   HOOK_SETUP_ORIGIN?: string
+  HOOK_HANDOFF_KEYS?: string
   /** JSON binding injected by tests via cloudflareTest() miniflare.bindings */
   TEST_MIGRATIONS?: { name: string; queries: string[] }[]
   /** Set to '1' in test env to bypass CF Access JWT verification; never set in production */
