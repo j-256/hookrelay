@@ -10,6 +10,10 @@ Create the resources, install runtime secrets, and attach your custom domain usi
 
 In your fork's Settings > Secrets and variables > Actions, set `CLOUDFLARE_API_TOKEN` as a repository secret and `CLOUDFLARE_ACCOUNT_ID` as a repository variable. The token needs Workers Scripts Write, Queues Read and Write, and D1 Read access to the target account. Deployment/readback use the existing Wrangler commands. The token is available only to migration preflight, deployment, and provider readback; checkout, dependency installation, and source tests do not receive it. No Cloudflare credentials are needed for ordinary CI or release preparation.
 
+The workflow grants no GitHub Actions cache access through `cache-mode: none`, and dependency setup does not restore or save caches. Cache access is enforced by GitHub's scoped job tokens, independently of whether a cache action runs. See the [dependency caching reference](https://docs.github.com/en/actions/reference/workflows-and-actions/dependency-caching#controlling-cache-access-with-cache-mode).
+
+Verification and deployment jobs check out the trusted workflow commit, revalidate the selected target's eligibility, and prepare its source in a separate directory before installing or running target code. An expected-SHA mismatch stops the run before that target directory is created. Existing target directories are never overwritten. This keeps target preparation behind validation in the job that will execute it.
+
 Keep Cloudflare Workers Builds disconnected if this manual workflow owns deployment. Otherwise, an independent build connection may still deploy on source pushes.
 
 ## Select a deployment
@@ -29,7 +33,7 @@ gh workflow run deploy.yml --ref main -f mode=main-commit -f revision=FULL_COMMI
 
 Replace `vX.Y.Z` or `FULL_COMMIT_SHA` with the intended target. Main-commit mode requires the full lowercase commit SHA; branch names, abbreviated SHAs, and commits outside `main` are rejected. Draft releases are rejected. An omitted release revision selects the latest published stable release; if none exists, select an explicit published prerelease or eligible main commit.
 
-GitHub write access is required to dispatch the workflow. A dispatch from another branch is rejected. The resolved source SHA is passed through verification and deployment, so later changes to `main` or a tag cannot change that run's target. Production runs share a concurrency group that does not cancel an active deployment; inspect Actions for the state of queued requests.
+GitHub write access is required to dispatch the workflow. A dispatch from another branch is rejected. The resolved source SHA is passed through verification and deployment, so later changes to `main` or a tag cannot change that run's target. Each job rechecks eligibility using its fetched refs and the expected SHA. If those refs identify a different release commit or no longer establish reachability from `main`, preparation stops and requires a new deliberate dispatch. Ref changes after that job's fetch are not observed, and cannot substitute a different commit for the expected SHA. Production runs share a concurrency group that does not cancel an active deployment; inspect Actions for the state of queued requests.
 
 ## Apply migrations before deployment
 

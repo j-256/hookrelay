@@ -14,6 +14,8 @@ on:
         type: string
         required: false
 
+cache-mode: none
+
 permissions:
   contents: read
 
@@ -39,7 +41,7 @@ jobs:
         with:
           version: 11
           runtime: node@22
-          cache: true
+          cache: false
           install: false
       - run: pnpm install --frozen-lockfile
       - name: Resolve eligible revision
@@ -57,17 +59,30 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ needs.select.outputs.sha }}
+          ref: ${{ github.sha }}
+          path: tooling
+          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           version: 11
           runtime: node@22
-          cache: true
+          cache: false
           install: false
+      - run: pnpm --dir tooling install --frozen-lockfile
+      - name: Validate and prepare selected source
+        run: pnpm --dir tooling exec tsx scripts/deployment.ts prepare --mode "$DEPLOY_MODE" --revision "$DEPLOY_SELECTION" --sha "$DEPLOY_SHA" --directory "$GITHUB_WORKSPACE/source"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_MODE: ${{ inputs.mode }}
+          DEPLOY_SELECTION: ${{ needs.select.outputs.selection }}
+          DEPLOY_SHA: ${{ needs.select.outputs.sha }}
       - run: pnpm install --frozen-lockfile
+        working-directory: source
       - run: pnpm typecheck
+        working-directory: source
       - run: pnpm test
+        working-directory: source
 
   deploy:
     name: deploy and verify selected revision
@@ -78,11 +93,7 @@ jobs:
         with:
           ref: ${{ github.sha }}
           path: tooling
-          persist-credentials: false
-      - uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.select.outputs.sha }}
-          path: source
+          fetch-depth: 0
           persist-credentials: false
       - uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
@@ -91,6 +102,13 @@ jobs:
           cache: false
           install: false
       - run: pnpm --dir tooling install --frozen-lockfile
+      - name: Validate and prepare selected source
+        run: pnpm --dir tooling exec tsx scripts/deployment.ts prepare --mode "$DEPLOY_MODE" --revision "$DEPLOY_SELECTION" --sha "$DEPLOY_SHA" --directory "$GITHUB_WORKSPACE/source"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEPLOY_MODE: ${{ inputs.mode }}
+          DEPLOY_SELECTION: ${{ needs.select.outputs.selection }}
+          DEPLOY_SHA: ${{ needs.select.outputs.sha }}
       - run: pnpm --dir source install --frozen-lockfile
       - name: Check target production migrations
         id: migrations

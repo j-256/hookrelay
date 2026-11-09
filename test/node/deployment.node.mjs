@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync } from 'node:fs'
+import { mkdtempSync, writeFileSync, mkdirSync, rmSync, readFileSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
-import { selectDeployment, verifyDeployment } from '../../scripts/deployment.ts'
+import { selectDeployment, verifyDeployment, prepareDeployment } from '../../scripts/deployment.ts'
 import { parseReleaseCheckArguments } from '../../scripts/release-check.ts'
 
 const VERSION_ID = '00000000-0000-4000-8000-000000000001'
@@ -132,6 +132,10 @@ test('operator CLIs provide offline help, reject invalid arguments, and retain o
   const selection = run(script, ['select', '--mode=main-commit', '--revision', sha], { GITHUB_EVENT_NAME: input.eventName, GITHUB_REF: input.workflowRef, GITHUB_OUTPUT: output })
   assert.equal(run(script, ['select', '--mode', 'invalid'], { GITHUB_EVENT_NAME: input.eventName, GITHUB_REF: input.workflowRef }).status, 2)
   assert.equal(selection.status, 0, selection.stderr)
+  const target = join(cwd, 'prepared-source')
+  const prepared = run(script, ['prepare', '--mode', 'main-commit', '--revision', sha, '--sha', sha, '--directory', target], { GITHUB_EVENT_NAME: input.eventName, GITHUB_REF: input.workflowRef })
+  assert.equal(prepared.status, 0, prepared.stderr)
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: target, encoding: 'utf8' }).trim(), sha)
   assert.match(readFileSync(output, 'utf8'), new RegExp(`sha=${sha}\\n`))
   for (const [name, value] of [['wrangler.jsonc', CONFIG], ['deploy.ndjson', OUTPUT], ['history.json', JSON.stringify([active()])]]) writeFileSync(join(cwd, name), value)
   const summary = join(cwd, 'summary')
@@ -139,4 +143,31 @@ test('operator CLIs provide offline help, reject invalid arguments, and retain o
   assert.equal(result.status, 0, result.stderr)
   assert.match(readFileSync(summary, 'utf8'), /Provider verification: matched/)
   assert.doesNotMatch(result.stdout + readFileSync(summary, 'utf8'), /https:/)
+})
+
+test('prepares only the validated immutable commit from a detached trusted checkout', async (t) => {
+  const { cwd, git, sha, input } = repository(t)
+  git('checkout', '--detach', sha)
+  const target = join(cwd, 'target')
+  const result = await prepareDeployment({ ...input, sha, directory: target }, { cwd })
+  assert.equal(result.sha, sha)
+  assert.equal(execFileSync('git', ['rev-parse', 'HEAD'], { cwd: target, encoding: 'utf8' }).trim(), sha)
+  assert.equal(JSON.parse(readFileSync(join(target, 'package.json'), 'utf8')).version, '1.2.3')
+})
+
+test('preparation refuses untrusted or changed revisions before creating a destination', async (t) => {
+  const { cwd, git, sha, input } = repository(t)
+  const target = join(cwd, 'target')
+  git('checkout', '-qb', 'feature')
+  git('commit', '--allow-empty', '-qm', 'feature')
+  const feature = git('rev-parse', 'HEAD')
+  await assert.rejects(prepareDeployment({ ...input, revision: feature, sha: feature, directory: target }, { cwd }))
+  assert.equal(existsSync(target), false)
+  git('tag', '-f', 'v1.2.3', feature)
+  await assert.rejects(prepareDeployment({ ...input, mode: 'release', revision: 'v1.2.3', sha, directory: target }, { cwd, readRelease: async () => ({ tag_name: 'v1.2.3', draft: false, prerelease: false }) }), /changed/)
+  assert.equal(existsSync(target), false)
+  mkdirSync(target)
+  writeFileSync(join(target, 'keep'), 'preserve')
+  await assert.rejects(prepareDeployment({ ...input, sha, directory: target }, { cwd }))
+  assert.equal(readFileSync(join(target, 'keep'), 'utf8'), 'preserve')
 })

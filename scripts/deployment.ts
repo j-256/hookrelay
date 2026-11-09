@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { appendFileSync, readFileSync } from 'node:fs'
+import { appendFileSync, readFileSync, mkdirSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { parseArgs } from 'node:util'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
@@ -89,6 +89,22 @@ export async function selectDeployment(input: SelectionInput, dependencies: Sele
   return { mode: input.mode, selection, sha, packageVersion: pkg.data.version }
 }
 
+export async function prepareDeployment(
+  input: SelectionInput & { sha: string; directory: string },
+  dependencies: SelectionDependencies = {},
+) {
+  if (!FULL_SHA.test(input.sha) || !input.directory) throw new DeploymentError('Preparation requires a full SHA and a destination directory', 2)
+  const selection = await selectDeployment(input, dependencies)
+  if (selection.sha !== input.sha) throw new DeploymentError('The selected revision changed after initial resolution; start a new deployment')
+  const cwd = resolve(dependencies.cwd ?? process.cwd())
+  const directory = resolve(cwd, input.directory)
+  mkdirSync(directory)
+  command('git', ['init', '--quiet', directory], cwd)
+  command('git', ['fetch', '--quiet', '--no-tags', '--', cwd, input.sha], directory)
+  command('git', ['checkout', '--quiet', '--detach', input.sha], directory)
+  return selection
+}
+
 export function verifyDeployment(configText: string, outputText: string, deploymentsText: string) {
   const errors: ParseError[] = []
   const config = z.object({ name: z.string().regex(/^[a-zA-Z0-9_-]+$/) }).safeParse(parseJsonc(configText, errors, { allowTrailingComma: true }))
@@ -116,7 +132,7 @@ export function verifyDeployment(configText: string, outputText: string, deploym
   return { workerName: config.data.name, versionId: receipt.data.version_id, deploymentId: latest.id }
 }
 
-const HELP = `Usage: tsx scripts/deployment.ts <select|verify> [options]
+const HELP = `Usage: tsx scripts/deployment.ts <select|prepare|verify> [options]
 
 Internal manual-deployment workflow helper (Node.js 22, git, gh)
   select --mode <release|main-commit> [--revision <tag|full-SHA>]
@@ -124,6 +140,9 @@ Internal manual-deployment workflow helper (Node.js 22, git, gh)
     Release mode uses GH_TOKEN and GITHUB_REPOSITORY; omitted tag uses latest stable
     Git checkout must contain origin/main and release tags
     Validated outputs append to GITHUB_OUTPUT when configured
+  prepare --mode <release|main-commit> --revision <tag|full-SHA> --sha <full-SHA> --directory <new-directory>
+    Revalidates eligibility in the trusted checkout before creating any target files
+    Ref changes fail closed; existing directories are never overwritten
   verify --config <wrangler.jsonc> --output <Wrangler NDJSON> --deployments <JSON>
     Checks one deploy-v1 receipt against the latest provider deployment
     Safe identifiers append to GITHUB_STEP_SUMMARY when configured
@@ -137,24 +156,30 @@ async function main() {
   try {
     args = parseArgs({ allowPositionals: true, options: {
       help: { type: 'boolean', short: 'h' }, mode: { type: 'string' }, revision: { type: 'string' },
-      config: { type: 'string' }, output: { type: 'string' }, deployments: { type: 'string' },
+      sha: { type: 'string' }, directory: { type: 'string' }, config: { type: 'string' }, output: { type: 'string' }, deployments: { type: 'string' },
     } })
   } catch { process.stderr.write(HELP); process.exitCode = 2; return }
   const { values, positionals } = args
   if (values.help) { process.stdout.write(HELP); return }
-  if (positionals.length !== 1 || !['select', 'verify'].includes(positionals[0]!)) {
+  if (positionals.length !== 1 || !['select', 'prepare', 'verify'].includes(positionals[0]!)) {
     process.stderr.write(HELP); process.exitCode = 2; return
   }
-  if (positionals[0] === 'select') {
+  if (positionals[0] === 'select' || positionals[0] === 'prepare') {
     if (values.config || values.output || values.deployments) { process.stderr.write(HELP); process.exitCode = 2; return }
-    const result = await selectDeployment({
+    const input = {
       mode: String(values.mode ?? 'release'), revision: String(values.revision ?? ''),
       workflowRef: process.env.GITHUB_REF ?? '', eventName: process.env.GITHUB_EVENT_NAME ?? '',
-    })
+    }
+    if ((positionals[0] === 'select' && (values.sha || values.directory)) || (positionals[0] === 'prepare' && (!values.sha || !values.directory))) {
+      process.stderr.write(HELP); process.exitCode = 2; return
+    }
+    const result = positionals[0] === 'prepare'
+      ? await prepareDeployment({ ...input, sha: String(values.sha), directory: String(values.directory) })
+      : await selectDeployment(input)
     if (process.env.GITHUB_OUTPUT) appendFileSync(process.env.GITHUB_OUTPUT, `sha=${result.sha}\nselection=${result.selection}\npackage_version=${result.packageVersion}\n`)
     console.log(JSON.stringify(result))
   } else {
-    if (!values.config || !values.output || !values.deployments || values.mode || values.revision) {
+    if (!values.config || !values.output || !values.deployments || values.mode || values.revision || values.sha || values.directory) {
       process.stderr.write(HELP); process.exitCode = 2; return
     }
     const result = verifyDeployment(...[values.config, values.output, values.deployments].map(path => readFileSync(resolve(String(path)), 'utf8')) as [string, string, string])
