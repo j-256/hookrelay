@@ -14,18 +14,10 @@ jobs:
   test:
     name: typecheck + test
     runs-on: ubuntu-latest
-    outputs:
-      deploy_required: ${{ steps.deployment-scope.outputs.deploy_required }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Check production deployment scope
-        id: deployment-scope
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: node scripts/ci-deploy-scope.mjs
-        env:
-          GITHUB_EVENT_BEFORE: ${{ github.event.before }}
       - uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
         with:
           version: 11
@@ -47,38 +39,10 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  deploy:
-    name: deploy production
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.test.outputs.deploy_required == 'true'
-    needs: test
-    runs-on: ubuntu-latest
-    concurrency:
-      group: hookrelay-production
-      cancel-in-progress: false
-    steps:
-      - uses: actions/checkout@v7
-      - uses: pnpm/setup@fa36a5ef7dcdefc3a7cb25655c122e00cf6e636e # v3.1.2
-        with:
-          version: 11
-          runtime: node@22
-          cache: true
-          install: false
-      - run: pnpm install --frozen-lockfile
-      - name: Verify production D1 migrations
-        run: pnpm release:check
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      - name: Deploy Worker
-        run: pnpm deploy
-        env:
-          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
   publish-cover:
     name: Publish project cover
-    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.test.result == 'success' && (needs.deploy.result == 'success' || needs.deploy.result == 'skipped') }}
-    needs: [test, deploy]
+    if: ${{ !cancelled() && github.ref == 'refs/heads/main' && github.event_name != 'pull_request' && needs.test.result == 'success' }}
+    needs: test
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:

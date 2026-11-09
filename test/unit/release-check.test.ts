@@ -1,7 +1,6 @@
 // @vitest-environment node
 
 import { describe, expect, it, vi } from 'vitest'
-import packageJson from '../../package.json'
 import {
   checkProductionMigrations,
   migrationLedgerStatement,
@@ -33,11 +32,6 @@ function dependencies(applied = MIGRATIONS): ReleaseCheckDependencies {
 }
 
 describe('release migration verification', () => {
-  it('wires production migration verification ahead of release tests', () => {
-    expect(packageJson.scripts['release:check']).toBe('tsx scripts/release-check.ts')
-    expect(packageJson.scripts.preversion).toBe('[ "$(git branch --show-current)" = main ] || { echo \'Error: npm version must be run on main\'; exit 1; } && pnpm release:check && npm run typecheck && npm test')
-  })
-
   it('reads default and explicit migration settings for EVENTS_DB', () => {
     expect(parseReleaseMigrationConfig(wranglerConfig(), '/project/wrangler.jsonc')).toEqual({
       databaseId: DATABASE_ID,

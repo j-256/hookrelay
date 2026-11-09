@@ -1,5 +1,6 @@
 import { readdir, readFile } from 'node:fs/promises'
 import { dirname, resolve } from 'node:path'
+import { parseArgs } from 'node:util'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { z } from 'zod'
 import type { ConfigurationStatement } from '../src/configuration/authority'
@@ -88,7 +89,7 @@ export function requireCurrentProductionMigrations(local: readonly string[], app
   }
   const pending = local.filter((name) => !appliedNames.has(name))
   if (pending.length > 0) {
-    throw new Error(`Production D1 migrations are pending: ${pending.join(', ')}. Run ${APPLY_MIGRATIONS_COMMAND} before releasing`)
+    throw new Error(`Production D1 migrations are pending: ${pending.join(', ')}. Run ${APPLY_MIGRATIONS_COMMAND} before deploying`)
   }
 }
 
@@ -105,9 +106,33 @@ export async function checkProductionMigrations(
   dependencies.log(`Production D1 migrations are current (${local.length} applied)`)
 }
 
+const HELP = `Usage: pnpm deploy:check [-c, --config <wrangler.jsonc>]
+
+Read-only production D1 migration preflight (Node.js 22)
+  -c, --config  Target Wrangler configuration; defaults to wrangler.jsonc
+  -h, --help    Show help without reading configuration or contacting Cloudflare
+
+Requires CLOUDFLARE_ACCOUNT_ID and CLOUDFLARE_API_TOKEN with D1 Read access
+The configuration must identify EVENTS_DB and its migration directory/table
+Exit status: 0 success, 1 preflight failed, 2 invalid arguments
+`
+
+export function parseReleaseCheckArguments(args: string[]) {
+  const { values } = parseArgs({ args, options: {
+    config: { type: 'string', short: 'c', default: WRANGLER_CONFIG_PATH },
+    help: { type: 'boolean', short: 'h', default: false },
+  } })
+  if (!values.config?.trim()) throw new Error('A nonempty configuration path is required')
+  return { help: values.help, config: values.config }
+}
+
 if (import.meta.main) {
-  checkProductionMigrations().catch((error) => {
-    console.error(`Release blocked: ${error instanceof Error ? error.message : error}`)
-    process.exit(1)
+  let options: ReturnType<typeof parseReleaseCheckArguments> | undefined
+  try { options = parseReleaseCheckArguments(process.argv.slice(2)) }
+  catch { process.stderr.write(HELP); process.exitCode = 2 }
+  if (options?.help) process.stdout.write(HELP)
+  else if (options) checkProductionMigrations(DEFAULT_DEPENDENCIES, options.config).catch((error) => {
+    console.error(`Deployment blocked: ${error instanceof Error ? error.message : error}`)
+    process.exitCode = 1
   })
 }
