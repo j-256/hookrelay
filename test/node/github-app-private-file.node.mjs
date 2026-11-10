@@ -14,6 +14,7 @@ test('normalizes supported key encodings and refuses weak, non-RSA or concatenat
   assert.deepEqual(normalizeGitHubAppPrivateKey(pem), { pkcs8, fingerprint })
   assert.deepEqual(normalizeGitHubAppPrivateKey(pkcs8), { pkcs8, fingerprint })
   assert.throws(() => normalizeGitHubAppPrivateKey(pem + pem))
+  // Generate an undersized key only to prove that import rejects it, never for signing or storage
   assert.throws(() => normalizeGitHubAppPrivateKey(generateKeyPairSync('rsa', { modulusLength: 1024 }).privateKey.export({ type: 'pkcs8', format: 'pem' }).toString()))
 })
 test('writes new owner-only recovery files without overwriting, following links or trusting a stale fingerprint', async () => {
