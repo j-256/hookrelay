@@ -2,8 +2,9 @@ import { z } from 'zod'
 import type { Env } from '../index'
 import { configurationQuery, configurationDigest, type ConfigurationQuery } from '../configuration/authority'
 import { githubAuthQuery, readGitHubAuthCandidate } from '../configuration/github-auth'
-import { GitHubAuthError } from '../lib/github-app-contract'
+import { GitHubAuthError, githubAuthSecretName } from '../lib/github-app-contract'
 import { githubAppKeyFingerprint } from '../lib/github-app-token'
+import { githubTokenFingerprint } from '../lib/github-auth'
 
 export const GITHUB_APP_KEY_VERIFICATION_PATH = '/management/github-app-key-verification'
 export const GITHUB_APP_CHALLENGE_MS = 60000
@@ -20,7 +21,7 @@ export async function createGitHubAppKeyChallenge(
 ) {
   const candidate = await readGitHubAuthCandidate(query, candidateId)
   if (
-    candidate.descriptor.mode !== 'app' ||
+    candidate.descriptor.mode === 'gh' ||
     candidate.versionId !== versionId ||
     !['deployed', 'verified'].includes(candidate.state) ||
     candidate.expiresAt <= now
@@ -111,11 +112,11 @@ export async function handleGitHubAppKeyVerification(request: Request, env: Env)
     )
     if (!claimed) throw new Error()
     const candidate = await readGitHubAuthCandidate(query, claimed.candidate_id)
-    if (candidate.descriptor.mode !== 'app') throw new Error()
-    const key = (env as unknown as Record<string, unknown>)[candidate.descriptor.keySecretName]
+    if (candidate.descriptor.mode === 'gh') throw new Error()
+    const key = (env as unknown as Record<string, unknown>)[githubAuthSecretName(candidate.descriptor)]
     if (
       typeof key !== 'string' ||
-      (await githubAppKeyFingerprint(key)) !== claimed.fingerprint ||
+      (await (candidate.descriptor.mode==='app' ? githubAppKeyFingerprint(key) : githubTokenFingerprint(key))) !== claimed.fingerprint ||
       candidate.descriptor.fingerprint !== claimed.fingerprint
     )
       throw new Error()

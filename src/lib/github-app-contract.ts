@@ -39,3 +39,9 @@ export class GitHubAuthError extends Error {
     super('GitHub authentication ' + code + '; inspect the selected authority and reconcile uncertain operations before retrying')
   }
 }
+
+export function githubAuthSecretName(descriptor:GitHubAuthDescriptor):string {
+  if(descriptor.mode==='app')return descriptor.keySecretName
+  if(descriptor.mode==='token')return descriptor.tokenSecretName
+  throw new GitHubAuthError('validation')
+}

@@ -172,3 +172,18 @@ it('does not extend the original challenge deadline while computing a loaded fin
     time.mockRestore()
   }
 })
+
+it('proves a staged manual token identity once without exposing its value',async () => {
+  const {githubTokenFingerprint}=await import('../../src/lib/github-auth')
+  const token='synthetic-manual-runtime-token'
+  const fingerprint=await githubTokenFingerprint(token)
+  const descriptor={id:'manual',revision:1,keyRevision:1,mode:'token' as const,tokenSecretName:'GITHUB_MANUAL_A',fingerprint,managementWorkspaces:['alpha'],capabilities:['repository-hooks-write' as const],repositories:[{id:101,fullName:'example/allowed',ownerId:50,private:true}],state:'active' as const}
+  const candidate=await prepareGitHubAuthCandidate(query,{descriptor,expectedRevision:0,target})
+  await env.EVENTS_DB.prepare("UPDATE github_auth_candidates SET state='deployed',version_id='version-a' WHERE id=?").bind(candidate.id).run()
+  const challenge=await createGitHubAppKeyChallenge(query,candidate.id,'version-a')
+  const runtime={...env,CF_VERSION_METADATA:{id:'version-a',tag:'',timestamp:''},GITHUB_MANUAL_A:token}
+  const response=await handleGitHubAppKeyVerification(request(challenge.nonce),runtime)
+  expect(response.status).toBe(200)
+  expect(await response.text()).not.toContain(token)
+  expect((await handleGitHubAppKeyVerification(request(challenge.nonce),runtime)).status).toBe(404)
+})
