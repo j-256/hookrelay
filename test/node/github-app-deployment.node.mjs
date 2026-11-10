@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { generateKeyPairSync, createHash } from 'node:crypto'
-import { mkdtemp, rm, readFile } from 'node:fs/promises'
+import { mkdtemp, rm, readFile, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -23,8 +23,10 @@ async function fixture(run) {
   const root = await mkdtemp(join(tmpdir(), 'hookrelay-app-deploy-'))
   const db = new DatabaseSync(':memory:')
   try {
-    for (const file of ['0012_github_app_auth.sql', '0013_github_app_deployment.sql'])
-      db.exec(await readFile(join('migrations', file), 'utf8'))
+    const migrationNames = (await readdir('migrations')).filter(name => name.endsWith('.sql')).sort()
+    for (const file of migrationNames) db.exec(await readFile(join('migrations', file), 'utf8'))
+    db.exec('CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY, name TEXT NOT NULL)')
+    for (const name of migrationNames) db.prepare('INSERT INTO d1_migrations(name) VALUES (?)').run(name)
     const query = async ({ sql, params }) => db.prepare(sql).all(...params)
     const recoveryFile = join(root, 'recovery.json')
     await writeNewGitHubAppPrivateFile(recoveryFile, {
@@ -51,7 +53,7 @@ async function fixture(run) {
       deploys: 0,
       lost: false,
       split: false,
-      version: 'version-old',
+      version: 'version-base',
       latest: 'version-base',
       changedConfig: false,
       changedStage: false,
@@ -81,7 +83,10 @@ async function fixture(run) {
       },
       taggedVersions: async (tag) => [...versions.values()].filter((version) => version.tag === tag),
     }
+    const configPath = join(root, 'wrangler.jsonc')
+    await writeFile(configPath, JSON.stringify({d1_databases:[{binding:'EVENTS_DB',database_id:identity.databaseId,migrations_dir:join(process.cwd(),'migrations')}]}))
     const deps = {
+      configPath,
       query,
       provider,
       recoveryFile,
@@ -171,7 +176,9 @@ test('reconciles a lost deployment response without dispatching another deployme
     const plan = await prepareGitHubAppDeployment(f.input, f.deps)
     await stageGitHubAppWorkerKey(plan.candidateId, f.deps)
     f.state.lost = true
-    assert.equal((await deployGitHubAppWorkerVersion(plan.candidateId, f.deps)).phase, 'deployment_indeterminate')
+    const uncertain=await deployGitHubAppWorkerVersion(plan.candidateId, f.deps)
+    assert.equal(uncertain.phase, 'deployment_indeterminate')
+    assert.equal((await import('../../scripts/github-app.ts')).gitHubAppResultExitStatus(uncertain),1)
     assert.equal((await deployGitHubAppWorkerVersion(plan.candidateId, f.deps)).phase, 'deployed')
     assert.equal(f.state.deploys, 1)
     assert.equal(f.state.stages, 1)
@@ -202,7 +209,9 @@ test('retains a stage intent and reconciles its unique version after a lost uplo
       throw new Error('private-key-canary')
     }
     const plan = await prepareGitHubAppDeployment(f.input, f.deps)
-    assert.equal((await stageGitHubAppWorkerKey(plan.candidateId, f.deps)).phase, 'stage_indeterminate')
+    const uncertain=await stageGitHubAppWorkerKey(plan.candidateId, f.deps)
+    assert.equal(uncertain.phase, 'stage_indeterminate')
+    assert.equal((await import('../../scripts/github-app.ts')).gitHubAppResultExitStatus(uncertain),1)
     assert.equal((await stageGitHubAppWorkerKey(plan.candidateId, f.deps)).phase, 'staged')
     assert.equal(f.state.stages, 1)
   }))
@@ -393,4 +402,92 @@ test('makes retained credential variable capacity explicit before staging',async
   const plan=await prepareGitHubAppDeployment({...f.input,variableLimit:128},f.deps)
   assert.equal(plan.variableLimit,128)
   assert.equal(f.state.stages,0)
+}))
+
+test('credential preparation cannot promote an uploaded code upgrade or split serving base', async () => fixture(async f => {
+  f.state.version='another-serving-version'
+  await assert.rejects(prepareGitHubAppDeployment(f.input,f.deps),{code:'conflict'})
+  f.state.version='version-base';f.state.split=true
+  await assert.rejects(prepareGitHubAppDeployment(f.input,f.deps),{code:'conflict'})
+  assert.equal(f.state.stages,0);assert.equal(f.state.deploys,0)
+}))
+test('credential changes enforce the owning migration ledger before preparation and immediately before deployment', async () => fixture(async f => {
+  for (const name of ['0014_github_setup_app_fences.sql','0015_github_hook_operation_intents.sql','0016_github_hook_operation_reconciliation.sql']) {
+    f.db.prepare('DELETE FROM d1_migrations WHERE name=?').run(name)
+    await assert.rejects(prepareGitHubAppDeployment(f.input,f.deps),{code:'conflict'})
+    f.db.prepare('INSERT INTO d1_migrations(name) VALUES (?)').run(name)
+  }
+  f.db.prepare('INSERT INTO d1_migrations(name) VALUES (?)').run('9999_unreviewed.sql')
+  await assert.rejects(prepareGitHubAppDeployment(f.input,f.deps),{code:'conflict'})
+  f.db.prepare('DELETE FROM d1_migrations WHERE name=?').run('9999_unreviewed.sql')
+  const plan=await prepareGitHubAppDeployment(f.input,f.deps)
+  await stageGitHubAppWorkerKey(plan.candidateId,f.deps)
+  f.db.prepare('DELETE FROM d1_migrations WHERE name=?').run('0014_github_setup_app_fences.sql')
+  await assert.rejects(deployGitHubAppWorkerVersion(plan.candidateId,f.deps),{code:'conflict'})
+  assert.equal(f.state.deploys,0)
+}))
+test('staging and deployment refuse a changed serving code base',async()=>fixture(async f=>{
+  const plan=await prepareGitHubAppDeployment(f.input,f.deps)
+  f.state.version='unreviewed'
+  await assert.rejects(stageGitHubAppWorkerKey(plan.candidateId,f.deps),{code:'conflict'})
+  assert.equal(f.state.stages,0)
+  f.state.version='version-base'
+  await stageGitHubAppWorkerKey(plan.candidateId,f.deps)
+  f.state.version='unreviewed'
+  await assert.rejects(deployGitHubAppWorkerVersion(plan.candidateId,f.deps),{code:'conflict'})
+  assert.equal(f.state.deploys,0)
+}))
+for(const phase of ['stage','deploy'])for(const superseded of [false,true]) {
+  test(`historical ${phase} reconciliation survives ${superseded?'supersession':'expiry'} without renewing authority`,async()=>fixture(async f=>{
+    const {reconcileGitHubAppDeployment}=await import('../../scripts/providers/github/app-deployment.ts')
+    const plan=await prepareGitHubAppDeployment(f.input,f.deps)
+    if(phase==='stage'){
+      const stage=f.deps.provider.stage
+      f.deps.provider.stage=async(...args)=>{await stage(...args);throw new Error('lost')}
+      await stageGitHubAppWorkerKey(plan.candidateId,f.deps)
+    }else{
+      await stageGitHubAppWorkerKey(plan.candidateId,f.deps)
+      f.state.lost=true
+      await deployGitHubAppWorkerVersion(plan.candidateId,f.deps)
+    }
+    if(superseded)f.db.prepare('UPDATE github_auth_runtime_policy SET revision=revision+1').run()
+    else f.db.prepare('UPDATE github_auth_candidates SET expires_at=? WHERE id=?').run(Date.now()-1,plan.candidateId)
+    const before=f.db.prepare('SELECT * FROM github_app_deployments WHERE candidate_id=?').get(plan.candidateId)
+    await assert.rejects(stageGitHubAppWorkerKey(plan.candidateId,f.deps),{code:'conflict'})
+    await assert.rejects(deployGitHubAppWorkerVersion(plan.candidateId,f.deps),{code:'conflict'})
+    const result=await reconcileGitHubAppDeployment(plan.candidateId,{...f.deps,recoveryFile:join(f.root,'no-key-needed')})
+    assert.equal(result.phase,phase==='stage'?'historical_staged':'historical_deployed')
+    assert.equal(result.canActivate,false)
+    assert.equal(f.db.prepare('SELECT count(*) AS n FROM github_app_deployment_observations WHERE candidate_id=?').get(plan.candidateId).n,1)
+    assert.deepEqual(f.db.prepare('SELECT * FROM github_app_deployments WHERE candidate_id=?').get(plan.candidateId),before)
+    await assert.rejects(verifyGitHubAppWorkerKey(plan.candidateId,f.deps),{code:'conflict'})
+    await assert.rejects(activateGitHubAppDeployment(plan.candidateId,f.deps),{code:'conflict'})
+    assert.equal(f.state.stages,1);assert.equal(f.state.deploys,phase==='stage'?0:1)
+  }))
+}
+test('uncertain CLI receipts retain their data and require operator attention through a nonzero exit',async()=>{
+  const {gitHubAppResultExitStatus,parseGitHubAppArgs}=await import('../../scripts/github-app.ts')
+  for(const phase of ['stage_intent','stage_indeterminate','deploy_intent','deployment_indeterminate','conflict'])
+    assert.equal(gitHubAppResultExitStatus({candidateId:'safe-id',phase,versionId:null}),1)
+  for(const phase of ['staged','deployed','verified','active','historical_staged','historical_deployed'])
+    assert.equal(gitHubAppResultExitStatus({phase}),0)
+  assert.equal(gitHubAppResultExitStatus({cancelled:true}),0)
+  assert.equal(parseGitHubAppArgs(['reconcile','--candidate',crypto.randomUUID()]).command,'reconcile')
+})
+
+test('rechecks migration source and serving code without activating historical readback',async()=>fixture(async f=>{
+  const empty=join(f.root,'different-migrations');await (await import('node:fs/promises')).mkdir(empty)
+  await writeFile(f.deps.configPath,JSON.stringify({d1_databases:[{binding:'EVENTS_DB',database_id:f.input.databaseId,migrations_dir:empty}]}))
+  await assert.rejects(prepareGitHubAppDeployment(f.input,f.deps),{code:'conflict'})
+  assert.equal(f.state.stages,0);assert.equal(f.state.deploys,0)
+}))
+test('historical unknown outcomes remain unknown and bounded instead of authorizing another effect',async()=>fixture(async f=>{
+  const {reconcileGitHubAppDeployment}=await import('../../scripts/providers/github/app-deployment.ts')
+  const plan=await prepareGitHubAppDeployment(f.input,f.deps)
+  f.deps.provider.stage=async()=>{f.state.stages++;throw new Error('lost')}
+  await stageGitHubAppWorkerKey(plan.candidateId,f.deps)
+  f.db.prepare('UPDATE github_auth_candidates SET expires_at=? WHERE id=?').run(Date.now()-1,plan.candidateId)
+  for(let i=0;i<100;i++)assert.equal((await reconcileGitHubAppDeployment(plan.candidateId,f.deps)).phase,'stage_indeterminate')
+  await assert.rejects(reconcileGitHubAppDeployment(plan.candidateId,f.deps),{code:'conflict'})
+  assert.equal(f.state.stages,1);assert.equal(f.state.deploys,0)
 }))
