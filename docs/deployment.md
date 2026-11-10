@@ -6,6 +6,8 @@ The optional `deploy production` GitHub Actions workflow deploys a published rel
 
 ## Configure an instance
 
+Review the [sanitized telemetry pipeline](observability.md) before deployment. The source producer selects a dedicated Tail Worker and forbids raw telemetry persistence. Deploy the reviewed sanitizer first, retain separate instance identities, and verify both serving configurations. Existing instances that omit telemetry can retain disabled logging; never enable raw storage to bypass a missing Tail service. The production migration preflight also checks these producer privacy invariants before provider reads.
+
 Create the resources, install runtime secrets, and attach your custom domain using [Deploy your own](../README.md#deploy-your-own). Keep your resource bindings in `wrangler.jsonc` aligned with the instance you intend to deploy. The selected revision supplies those bindings; deploying a historical revision can select historical resource IDs, so review its configuration before choosing it. Ignored `routes.jsonc` and `.dev.vars` files are not uploaded by this workflow. Subscription configuration and runtime secret management remain separate operator workflows.
 
 In your fork's Settings > Secrets and variables > Actions, set `CLOUDFLARE_API_TOKEN` as a repository secret and `CLOUDFLARE_ACCOUNT_ID` as a repository variable. The token needs Workers Scripts Write, Queues Read and Write, and D1 Read access to the target account. Deployment/readback use the existing Wrangler commands. The token is available only to migration preflight, deployment, and provider readback; checkout, dependency installation, and source tests do not receive it. No Cloudflare credentials are needed for ordinary CI or release preparation.

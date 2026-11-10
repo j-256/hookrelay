@@ -84,30 +84,16 @@
     "crons": ["*/5 * * * *"]
   },
 
-  // Observability (stored Workers Logs) is DISABLED ON PURPOSE
-  //
-  // hookrelay's webhook URLs carry the per-subscription slug in the path
-  // (/hook/<source>/<slug>), and slugs are bearer tokens (spec sec 9). When Workers
-  // Logs is enabled, Cloudflare enriches every stored log event -- including our own
-  // console.log lines -- with the full request URL and path. That writes slugs into
-  // the log store, and on the Free plan there is no knob to strip it (invocation_logs:
-  // false only drops the standalone invocation log, not the URL enrichment on custom
-  // logs -- verified empirically). So we keep stored logs off entirely
-  //
-  // Failure visibility without stored logs:
-  //   - Per-sink delivery state, attempts, and errors are persisted to D1 and shown
-  //     at /admin/events -- this is the "did my notification go out?" signal
-  //   - Live debugging: `npx wrangler tail` streams our console.log lines to your
-  //     terminal in real time (ephemeral, not stored). Our log objects never contain
-  //     the slug (Subscription has no slug field; adapters must not log path values),
-  //     so tail output is slug-free
-  //
-  // If you later move to the Workers Paid plan, the clean way to get stored telemetry
-  // is a Tail Worker that redacts the slug from the URL before forwarding. Until then,
-  // do not enable this block, and do not configure Logpush "Destinations" -- both
-  // would store the slug-bearing URL
+  // Raw producer telemetry is transient; only the Tail Worker's safe summaries persist
+  // Deploy the selected sanitizing service before attaching this producer
+  "tail_consumers": [{ "service": "hookrelay-telemetry" }],
+  "logpush": false,
   "observability": {
-    "enabled": false
+    "enabled": true,
+    "redact_query_string": true,
+    "logs": { "enabled": true, "invocation_logs": false, "persist": false },
+    "traces": { "enabled": false, "persist": false },
+    "issues": { "enabled": false }
   },
 
   // CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD are set as Wrangler secrets, not vars,
