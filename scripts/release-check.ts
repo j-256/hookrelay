@@ -5,6 +5,7 @@ import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { z } from 'zod'
 import type { ConfigurationStatement } from '../src/configuration/authority'
 import { createOperatorConfigurationQuery } from './configuration-client'
+import { requireSafeTelemetryPolicy } from './telemetry-policy'
 
 const WRANGLER_CONFIG_PATH = 'wrangler.jsonc'
 const EVENTS_DATABASE_BINDING = 'EVENTS_DB'
@@ -58,6 +59,7 @@ export function parseReleaseMigrationConfig(text: string, configPath = WRANGLER_
     throw new Error('wrangler.jsonc must identify exactly one EVENTS_DB database')
   }
   const database = databases[0]!
+  requireSafeTelemetryPolicy(parsed)
   if (database.migrations_pattern !== undefined) {
     throw new Error('release migration verification does not support migrations_pattern')
   }

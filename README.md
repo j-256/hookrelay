@@ -429,6 +429,8 @@ Delivery is at least once. The D1 claim and lease suppress ordinary duplicate qu
 
 ## Operational health
 
+The [sanitized observability guide](docs/observability.md) describes the dedicated Tail Worker, retained safe summaries, deployment order and Paid requirement. Raw producer logs remain unpersisted because receiver paths contain bearer secrets. Stored telemetry complements protected delivery receipts and does not establish notification delivery or complete coverage.
+
 Use `pnpm operations --help` for [reviewed operational dispositions](docs/management.md#operational-dispositions). This workflow records why historical signals or exhausted deliveries were acknowledged, preserves their failed state and history, and never sends a notification. The CLI and scoped management API share the same exact-state review and receipt implementation.
 
 Hookrelay records actionable known-route ingress failures, coalesced subscription rate-limit refusals, exhausted deliveries, and stale active deliveries as fixed-code operational signals. Signal summaries are selected from constants, aggregate by a secret-free fingerprint, and never contain request paths, slugs, payloads, exception text, source addresses, or sink credentials. Unknown routes remain unrecorded so internet scanning cannot create health data.
