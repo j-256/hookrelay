@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import { generateKeyPairSync } from 'node:crypto'
-import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, readdir, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { DatabaseSync } from 'node:sqlite'
@@ -29,13 +29,10 @@ test('guided local preparation survives lost staging, deployment and hook acknow
   const db = new DatabaseSync(':memory:')
   try {
     db.exec('PRAGMA foreign_keys=ON')
-    for (const file of [
-      '0012_github_app_auth.sql',
-      '0013_github_app_deployment.sql',
-      '0015_github_hook_operation_intents.sql',
-      '0016_github_hook_operation_reconciliation.sql',
-    ])
-      db.exec(await readFile(join('migrations', file), 'utf8'))
+    const migrationNames=(await readdir('migrations')).filter(name=>name.endsWith('.sql')).sort()
+    for(const file of migrationNames)db.exec(await readFile(join('migrations',file),'utf8'))
+    db.exec('CREATE TABLE d1_migrations(id INTEGER PRIMARY KEY,name TEXT NOT NULL)')
+    for(const name of migrationNames)db.prepare('INSERT INTO d1_migrations(name) VALUES (?)').run(name)
     const query = async ({ sql, params }) => db.prepare(sql).all(...params)
     const database = {
       prepare(sql) {
@@ -112,7 +109,7 @@ test('guided local preparation survives lost staging, deployment and hook acknow
     const hooks = []
     const state = {
       latest: 'version-base',
-      serving: 'version-old',
+      serving: 'version-base',
       stages: 0,
       deploys: 0,
       creates: 0,
@@ -210,7 +207,10 @@ test('guided local preparation survives lost staging, deployment and hook acknow
         throw new Error('synthetic-lost-deploy')
       },
     }
+    const configPath=join(root,'wrangler.jsonc')
+    await writeFile(configPath,JSON.stringify({d1_databases:[{binding:'EVENTS_DB',database_id:identity.databaseId,migrations_dir:join(process.cwd(),'migrations')}]}))
     const deps = {
+      configPath,
       query,
       provider,
       recoveryFile,

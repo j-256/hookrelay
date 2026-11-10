@@ -1,6 +1,8 @@
 import { z } from 'zod'
-import { readFile } from 'node:fs/promises'
+import { readFile, readdir } from 'node:fs/promises'
+import { checkProductionMigrations, requireCurrentProductionMigrations } from '../../release-check'
 import { createHash } from 'node:crypto'
+import { resolve } from 'node:path'
 import { parse as parseJsonc, type ParseError } from 'jsonc-parser'
 import { configurationDigest, type ConfigurationQuery } from '../../../src/configuration/authority'
 import {
@@ -56,6 +58,7 @@ export interface GitHubAppDeploymentProvider {
   deployment(): Promise<GitHubServingDeployment>
   deploy(id: string): Promise<void>
 }
+const DEPLOYMENT_OBSERVATION_LIMIT = 100
 const WORKER_VARIABLE_LIMITS = Object.freeze({ FREE: 64, PAID: 128, SECRET_BYTES: 5000 })
 export type GitHubAppDeploymentInput = GitHubWorkerIdentity & {
   variableLimit?: 64 | 128
@@ -79,6 +82,7 @@ export type GitHubAppDeploymentReceipt = GitHubAppStageReceipt
 export type GitHubAppDeploymentAttestation = GitHubAppStageReceipt
 export type GitHubAppDeploymentDependencies = {
   query: ConfigurationQuery
+  configPath?: string
   provider: GitHubAppDeploymentProvider
   recoveryFile: string
   currentIdentity(): Promise<GitHubWorkerIdentity>
@@ -177,6 +181,39 @@ async function material(deps: GitHubAppDeploymentDependencies, descriptor: GitHu
     throw new GitHubAuthError('validation')
   return recovery
 }
+async function checkMigrations(deps: GitHubAppDeploymentDependencies, databaseId: string) {
+  try {
+    const tracked = (await readdir(resolve(import.meta.dirname, '../../../migrations')))
+      .filter(name => name.endsWith('.sql')).sort()
+    await checkProductionMigrations({
+      readConfig: path => readFile(path, 'utf8'),
+      listMigrations: async directory => {
+        const selected = (await readdir(directory, { withFileTypes: true }))
+          .filter(entry => entry.isFile() && entry.name.endsWith('.sql'))
+          .map(entry => entry.name).sort()
+        requireCurrentProductionMigrations(tracked, selected)
+        return selected
+      },
+      query: async (selectedDatabase, statement) => {
+        if (selectedDatabase !== databaseId) conflict()
+        return deps.query(statement)
+      },
+      log: () => {},
+    }, deps.configPath ?? 'wrangler.jsonc')
+  } catch {
+    conflict()
+  }
+}
+async function assertServingBase(
+  deps: GitHubAppDeploymentDependencies,
+  plan: Pick<GitHubAppDeploymentInput, 'target' | 'baseVersionId'>,
+) {
+  const serving = await deps.provider.deployment()
+  if (
+    !serving.singleVersion || serving.versionId !== plan.baseVersionId ||
+    !(await equal(plan.target, { accountId: serving.accountId, workerName: serving.workerName }))
+  ) conflict()
+}
 export async function prepareGitHubAppDeployment(
   input: GitHubAppDeploymentInput,
   deps: GitHubAppDeploymentDependencies,
@@ -204,6 +241,8 @@ export async function prepareGitHubAppDeployment(
     input.descriptor.keyRevision !== (prior?.key_revision ?? 0) + 1
   )
     conflict()
+  await checkMigrations(deps, input.databaseId)
+  await assertServingBase(deps, input)
   const recovery = await material(deps, input.descriptor)
   const baseVersion = await deps.provider.latestVersion()
   if (
@@ -230,17 +269,18 @@ export async function prepareGitHubAppDeployment(
   )
   return plan
 }
-async function journal(deps: GitHubAppDeploymentDependencies, id: string) {
+async function journal(deps: GitHubAppDeploymentDependencies, id: string, historical = false) {
   const candidate = await readGitHubAuthCandidate(deps.query, id)
   const [row] = await githubAuthQuery<{
     plan_json: string
     phase: string
     version_id: string | null
     attestation_id: string | null
+    updated_at: number
   }>(deps.query, 'SELECT * FROM github_app_deployments WHERE candidate_id=?', [id])
   if (
     !row ||
-    (candidate.state !== 'active' && candidate.expiresAt <= Date.now()) ||
+    (!historical && candidate.state !== 'active' && candidate.expiresAt <= Date.now()) ||
     candidate.descriptor.mode === 'gh'
   )
     conflict()
@@ -250,15 +290,18 @@ async function journal(deps: GitHubAppDeploymentDependencies, id: string) {
   } catch {
     throw new GitHubAuthError('unavailable')
   }
+  const currentIdentity = await deps.currentIdentity()
   if (
     plan.candidateId !== id ||
     !(await equal(plan.descriptor, candidate.descriptor)) ||
-    !(await equal(identity(plan), await deps.currentIdentity()))
+    !(await equal(plan.target, currentIdentity.target)) ||
+    plan.databaseId !== currentIdentity.databaseId ||
+    (!historical && plan.configDigest !== currentIdentity.configDigest)
   )
     conflict()
-  await material(deps, candidate.descriptor)
+  if (!historical) await material(deps, candidate.descriptor)
   if (
-    candidate.state !== 'active' &&
+    !historical && candidate.state !== 'active' &&
     !(
       await githubAuthQuery(
         deps.query,
@@ -299,9 +342,10 @@ async function validateStaged(
   plan: GitHubAppDeploymentPlan,
   version: GitHubWorkerVersion,
   query: ConfigurationQuery,
+  historical = false,
 ) {
   if (variableCount(version) > plan.variableLimit) conflict()
-  await assertRetainedCredentials(query, version)
+  if (!historical) await assertRetainedCredentials(query, version)
   if (
     plan.descriptor.mode === 'gh' ||
     version.scriptEtag !== plan.baseVersion.scriptEtag ||
@@ -344,6 +388,8 @@ export async function stageGitHubAppWorkerKey(
     (await deps.provider.latestVersion()).id !== plan.baseVersionId
   )
     conflict()
+  await checkMigrations(deps, plan.databaseId)
+  await assertServingBase(deps, plan)
   const claimed = await githubAuthQuery(
     deps.query,
     `UPDATE github_app_deployments SET phase='stage_intent',updated_at=? WHERE candidate_id=? AND phase='prepared'
@@ -398,6 +444,8 @@ export async function deployGitHubAppWorkerVersion(
     return save(deps, id, 'deployed', row.version_id)
   }
   if (row.phase !== 'staged') return save(deps, id, 'deployment_indeterminate', row.version_id)
+  await checkMigrations(deps, plan.databaseId)
+  await assertServingBase(deps, plan)
   const claimed = await githubAuthQuery(
     deps.query,
     "UPDATE github_app_deployments SET phase='deploy_intent',updated_at=? WHERE candidate_id=? AND phase='staged' RETURNING candidate_id",
@@ -405,6 +453,7 @@ export async function deployGitHubAppWorkerVersion(
   )
   if (!claimed.length) conflict()
   await journal(deps, id)
+  await assertServingBase(deps, plan)
   try {
     await deps.provider.deploy(row.version_id)
   } catch {
@@ -419,6 +468,42 @@ export async function deployGitHubAppWorkerVersion(
     [id],
   )
   return save(deps, id, 'deployed', row.version_id)
+}
+export async function reconcileGitHubAppDeployment(id: string, deps: GitHubAppDeploymentDependencies) {
+  const { plan, row } = await journal(deps, id, true)
+  if (row.phase === 'prepared') conflict()
+  let versionId = row.version_id
+  let phase = 'stage_indeterminate'
+  if (!versionId) {
+    const versions = await deps.provider.taggedVersions(id)
+    if (versions.length > 1) conflict()
+    versionId = versions[0]?.id ?? null
+  }
+  const serving = await deps.provider.deployment()
+  if (!(await equal(plan.target, { accountId: serving.accountId, workerName: serving.workerName }))) conflict()
+  if (versionId) {
+    try {
+      await validateStaged(plan, await deps.provider.version(versionId), deps.query, true)
+      phase = serving.singleVersion && serving.versionId === versionId
+        ? 'historical_deployed' : 'historical_staged'
+      if (
+        ['deploy_intent', 'deployment_indeterminate', 'deployed', 'verified'].includes(row.phase) &&
+        phase !== 'historical_deployed'
+      ) phase = 'deployment_indeterminate'
+    } catch (error) {
+      if (error instanceof GitHubAuthError && error.code === 'conflict') phase = 'conflict'
+      else throw error
+    }
+  }
+  const observationId = crypto.randomUUID()
+  const recorded = await githubAuthQuery(
+    deps.query,
+    'INSERT INTO github_app_deployment_observations(id,candidate_id,journal_phase,journal_updated_at,phase,version_id,serving_version_id,observed_at) SELECT ?,?,?,?,?,?,?,? WHERE (SELECT count(*) FROM github_app_deployment_observations WHERE candidate_id=?)<? RETURNING id',
+    [observationId, id, row.phase, row.updated_at, phase, versionId,
+      serving.singleVersion ? serving.versionId : null, Date.now(), id, DEPLOYMENT_OBSERVATION_LIMIT],
+  )
+  if (!recorded.length) conflict()
+  return { candidateId: id, observationId, phase, versionId, canActivate: false }
 }
 export async function verifyGitHubAppWorkerKey(
   id: string,
@@ -686,8 +771,9 @@ export function createGitHubAppDeploymentProvider(
 export async function previewGitHubAppDeployment(
   id: string,
   deps: GitHubAppDeploymentDependencies,
+  historical = false,
 ) {
-  const { plan, row } = await journal(deps, id)
+  const { plan, row } = await journal(deps, id, historical)
   return {
     ...receipt(id, row),
     target: plan.target,

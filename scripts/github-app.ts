@@ -20,6 +20,7 @@ import {
   verifyGitHubAppWorkerKey,
   activateGitHubAppDeployment,
   previewGitHubAppDeployment,
+  reconcileGitHubAppDeployment,
   readGitHubWorkerIdentity,
   createGitHubAppDeploymentProvider,
   readGitHubAppOperatorStatus,
@@ -39,6 +40,7 @@ const COMMANDS = [
   'verify',
   'activate',
   'status',
+  'reconcile',
   'disconnect',
 ] as const
 export type GitHubAppOptions = {
@@ -68,15 +70,16 @@ export function githubAppUsage() {
     'import-token -i <private-file|-> -o <new-private-file> Save a manual token locally; no provider access or activation',
     'inspect -i <private-file>                         Show metadata from a recovery file or registration attempt',
     'prepare -i <recovery> -p <metadata-input>          Review an inactive provider registry candidate',
-    '    Metadata: {descriptor,expectedRevision,baseVersionId,verificationOrigin,variableLimit?:64|128}. Select a reviewed, uploaded code version.',
+    '    Metadata: {descriptor,expectedRevision,baseVersionId,verificationOrigin,variableLimit?:64|128}. Select the exact 100-percent serving code version; code upgrades use the checked deployment workflow.',
     '    Descriptor: explicit App/install/account IDs, numeric repositories, managementWorkspaces and hook capabilities.',
     '    Include id, revision, keyRevision, a NEW keySecretName, public fingerprint, mode app and state active. Token descriptors use mode token and a NEW tokenSecretName.',
     '    Variable capacity defaults to Free 64; explicitly review 128 for Paid. New secret material is bounded to 5000 bytes.',
-    '    The uploaded version must bind EVENTS_DB and CF_VERSION_METADATA. Prepare stages no secret and deploys no code.',
+    '    The serving base must also be the latest uploaded version and bind EVENTS_DB and CF_VERSION_METADATA. Prepare stages no secret and deploys no code.',
     'stage -i <recovery> -d <candidate> [-y]            Stage a named key/version without serving it',
     'deploy -i <recovery> -d <candidate> [-y]           Deploy the exact staged version [provider write]',
     'verify -i <recovery> -d <candidate>               Verify serving version and loaded credential identity',
     'activate -i <recovery> -d <candidate> [-y]         Activate only the attested candidate by revision CAS',
+    'reconcile -d <candidate> [-y]                     Append historical version readback even after expiry; no key or activation',
     'status -r <descriptor>                            Read selected provider auth metadata',
     'disconnect -r <descriptor> [-y]                   Review and locally disable selected provider auth',
     '',
@@ -157,11 +160,12 @@ export function parseGitHubAppArgs(args: string[]): GitHubAppOptions | null {
       verify: ['file', 'candidate'],
       activate: ['file', 'candidate'],
       status: ['descriptor'],
+      reconcile: ['candidate'],
       disconnect: ['descriptor'],
     } as const
     const allowed = new Set<string>([
       ...required[command],
-      ...(['register', 'stage', 'deploy', 'activate', 'disconnect'].includes(command)
+      ...(['register', 'stage', 'deploy', 'activate', 'disconnect', 'reconcile'].includes(command)
         ? ['yes']
         : []),
       ...(!['register', 'import', 'import-token', 'inspect'].includes(command) ? ['config'] : []),
@@ -318,12 +322,30 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
       return { cancelled: true }
     return disconnectGitHubAppDescriptor(query, before.descriptorId, before.revision)
   }
+  if (options.command === 'reconcile') {
+    const deps = {
+      query,
+      provider: createGitHubAppDeploymentProvider(selected.target),
+      recoveryFile: '',
+      configPath: options.config,
+      currentIdentity: () => readGitHubWorkerIdentity(options.config),
+    }
+    const preview = await previewGitHubAppDeployment(options.candidate!, deps, true)
+    console.error(JSON.stringify({
+      ...preview,
+      effect: 'Append an exact historical observation; do not deploy or restore activation authority',
+    }))
+    if (!options.yes && !(await confirm('Record this historical deployment observation?')))
+      return { cancelled: true }
+    return reconcileGitHubAppDeployment(options.candidate!, deps)
+  }
   const document = await readPrivateAppDocument(options.file!)
   const recovery = await readGitHubCredentialPrivateFile(options.file!)
   const deps = {
     query,
     provider: createGitHubAppDeploymentProvider(selected.target),
     recoveryFile: options.file!,
+    configPath: options.config,
     currentIdentity: () => readGitHubWorkerIdentity(options.config),
   }
   if (options.command === 'prepare') {
@@ -396,11 +418,23 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
   })
   return result
 }
+export function gitHubAppResultExitStatus(result: unknown): 0 | 1 {
+  if (!result || typeof result !== 'object' || !('phase' in result)) return 0
+  const completed = [
+    'prepared', 'staged', 'deployed', 'verified', 'active', 'disconnected',
+    'historical_staged', 'historical_deployed',
+  ]
+  return completed.includes(String(result.phase)) ? 0 : 1
+}
 if (import.meta.main) {
   try {
     const options = parseGitHubAppArgs(process.argv.slice(2))
     if (!options) console.log(githubAppUsage())
-    else console.log(JSON.stringify(await runGitHubAppCommand(options), null, 2))
+    else {
+      const result = await runGitHubAppCommand(options)
+      console.log(JSON.stringify(result, null, 2))
+      process.exitCode = gitHubAppResultExitStatus(result)
+    }
   } catch (error) {
     console.error(
       error instanceof GitHubAuthError
