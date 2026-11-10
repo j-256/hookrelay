@@ -42,8 +42,9 @@ function dependencies(outputs: string[]) {
 }
 
 describe('version retagging', () => {
-  it('wires the standard version hooks to an atomic push and guarded helper', () => {
-    expect(packageJson.scripts.postversion).toBe('git push --atomic origin main v$npm_package_version')
+  it('keeps version preparation behind its PR guard and retag repair explicit', () => {
+    expect(packageJson.scripts).not.toHaveProperty('postversion')
+    expect(packageJson.scripts.preversion).toContain('node scripts/version-preflight.mjs')
     expect(packageJson.scripts.retag).toBe('tsx scripts/retag.ts')
   })
 

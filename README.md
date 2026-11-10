@@ -598,7 +598,16 @@ Run `pnpm typecheck` and `pnpm test` before integration. The test command checks
 
 ## Versioning and releases
 
-Run `npm version <major|minor|patch>` from clean `main` to prepare a semantic version. npm checks that the worktree is clean, and Hookrelay's `preversion` guard requires `main` and runs typechecking and tests without production credentials. npm then creates the version commit and annotated `v<version>` tag. The `postversion` hook atomically pushes `main` and that tag to `origin`, so GitHub updates both refs or neither. This publishes source and prepares a release draft; deploying an instance is a separate [manual operation](docs/deployment.md).
+Prepare a version on a clean named topic branch with `npm version --no-git-tag-version <major|minor|patch>`. The preversion guard refuses `main`, detached or dirty checkouts and implicit tag creation, then runs typechecking and tests without production credentials. npm updates the version metadata without creating a commit, tag or provider push. Review and commit those files, then integrate the version PR through the repository's normal required checks.
+
+After the version PR is integrated, explicitly approve tag publication from clean updated `main`. Confirm that the selected package version matches the intended tag, then create and push that tag:
+
+```sh
+git tag -a vX.Y.Z -m "vX.Y.Z"
+git push origin vX.Y.Z
+```
+
+Replace `vX.Y.Z` with the integrated package version. Tag publication prepares a release draft; deploying an instance is a separate [manual operation](docs/deployment.md).
 
 The pushed tag triggers the [`release draft`](.github/workflows/release.yml) GitHub Actions workflow. It checks out the exact tag, requires the tag to equal `v` plus the package version, installs from the lockfile, repeats typechecking and tests, and creates a draft GitHub Release with generated starter notes. The write-capable token is available only to the dependent release-creation job, not to dependency installation or project scripts. Rerunning the workflow is safe when a draft or published release already exists.
 

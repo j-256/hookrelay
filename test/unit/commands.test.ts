@@ -22,7 +22,7 @@ describe('commandReference', () => {
     expect(reference).toContain('integrations/subscription-fleet/README.md')
     expect(reference).toContain('pnpm sync\n')
     expect(reference).toContain('pnpm sync -y                         [production write]')
-    expect(reference).toContain('npm version <major|minor|patch>')
+    expect(reference).toContain('npm version --no-git-tag-version <major|minor|patch>')
     expect(reference).toContain('trigger a draft GitHub Release')
     expect(reference).toContain('GitHub Actions verifies the tag')
     expect(reference).toContain('pnpm retag --allow-published')

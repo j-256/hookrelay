@@ -33,8 +33,7 @@
     "sink:secret:rename": "tsx scripts/sink-secret-rename.ts",
     "deploy:check": "tsx scripts/release-check.ts",
     "release:check": "tsx scripts/release-check.ts",
-    "preversion": "[ \"$(git branch --show-current)\" = main ] || { echo 'Error: npm version must be run on main'; exit 1; } && npm run typecheck && npm test",
-    "postversion": "git push --atomic origin main v$npm_package_version",
+    "preversion": "node scripts/version-preflight.mjs && npm run typecheck && npm test",
     "retag": "tsx scripts/retag.ts",
     "capture:cover": "node --import tsx tools/cover/capture.mjs"
   },
