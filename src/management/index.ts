@@ -1,3 +1,4 @@
+import { GitHubAuthError } from '../lib/github-app-contract'
 import { readGitHubAuthStatus } from './github-auth'
 import { readGitHubSetupConfiguration, planGitHubSetup, applyGitHubSetup, getGitHubSetup, readGitHubSetupStatus } from './github-setup'
 import { readHandoffConfiguration, readHandoffRepository, planHandoff, applyHandoff, getHandoff, readHandoffStatus } from './github-handoff'
@@ -60,11 +61,11 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
         break
       }
       case 'github_auth_status': result = await readGitHubAuthStatus(env, principal, context); break
-      case 'github_setup_configuration': result = await readGitHubSetupConfiguration(env, principal); break
+      case 'github_setup_configuration': result = await readGitHubSetupConfiguration(env, principal,context.workspaceId); break
       case 'github_setup_plan': result = await planGitHubSetup(env, principal, managementInputs.github_setup_plan.parse(envelope.input)); break
       case 'github_setup_apply': result = await applyGitHubSetup(env, principal, managementInputs.github_setup_apply.parse(envelope.input)); break
       case 'github_setup_get': result = await getGitHubSetup(env, principal, managementInputs.github_setup_get.parse(envelope.input)); break
-      case 'github_setup_status': result = await readGitHubSetupStatus(env, managementInputs.github_setup_status.parse(envelope.input).resourceId); break
+      case 'github_setup_status': result = await readGitHubSetupStatus(env, managementInputs.github_setup_status.parse(envelope.input).resourceId,principal,context); break
       case 'snapshot': result = await readSnapshot(env); break
       case 'subscriptions':
         result = await readSubscriptions(env, managementInputs.subscriptions.parse(envelope.input).cursor)
@@ -112,6 +113,10 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
       result,
     })
   } catch (error) {
+    if (error instanceof GitHubAuthError) {
+      const statuses={validation:400,conflict:409,denied:403,unavailable:503,rate_limited:429,not_sent:503,indeterminate:503}
+      return managementResponse({error:{code:error.code,message:error.message}},statuses[error.code])
+    }
     if (error instanceof ConfigurationError) {
       const statuses = { unavailable: 503, validation: 400, conflict: 409, expired: 409, not_found: 404, inactive: 409 }
       return managementResponse({ error: { code: error.code, message: error.message } }, statuses[error.code])

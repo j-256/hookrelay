@@ -89,3 +89,19 @@ export function authorizeHandoff(principal: ManagementPrincipal, workspaceId: st
     throw new ManagementError('forbidden', 403, 'The management credential does not permit this manual hook operation')
   }
 }
+
+export function assertCurrentManagementGrant(env:Env,principal:ManagementPrincipal,workspaceId:string,provision = true) {
+  if (provision) authorizeProvision(principal,workspaceId)
+  else authorizeManagement(principal,workspaceId)
+  let current:ManagementPrincipal|undefined
+  try {
+    const raw = env.MANAGEMENT_CREDENTIALS
+    if (!raw || raw.length > MANAGEMENT_LIMITS.CREDENTIAL_BYTES) throw new Error()
+    const credentials = z.array(credentialSchema).min(1).max(20).parse(JSON.parse(raw))
+    if (new Set(credentials.map(item => item.id)).size !== credentials.length || new Set(credentials.map(item => item.tokenHash)).size !== credentials.length) throw new Error()
+    current = credentials.find(item => item.id === principal.id && item.revision === principal.revision && equalHash(item.tokenHash,principal.tokenHash))
+  } catch { throw new ManagementError('unconfigured',503,'Management authorization is unavailable') }
+  if (!current) throw new ManagementError('unauthorized',401,'Management authorization changed')
+  if (provision) authorizeProvision(current,workspaceId)
+  else authorizeManagement(current,workspaceId)
+}
