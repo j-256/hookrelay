@@ -4,6 +4,8 @@ import { GitHubAuthError, GITHUB_APP_LIMITS } from '../src/lib/github-app-contra
 import { importGitHubAppMaterial, runGitHubAppRegistration } from './providers/github/app-registration'
 import {
   readGitHubAppPrivateFile,
+  readGitHubCredentialPrivateFile,
+  importGitHubTokenMaterial,
   readPrivateAppDocument,
   replacePrivateAppDocument,
 } from './providers/github/app-private-file'
@@ -26,6 +28,7 @@ import { confirm, runProcess } from './setup'
 const COMMANDS = [
   'register',
   'import',
+  'import-token',
   'inspect',
   'prepare',
   'stage',
@@ -54,20 +57,21 @@ export type GitHubAppOptions = {
 }
 export function githubAppUsage() {
   return [
-    'usage: pnpm github:app <register|import|inspect|prepare|stage|deploy|verify|activate|status|disconnect> [options]',
+    'usage: pnpm github:app <register|import|import-token|inspect|prepare|stage|deploy|verify|activate|status|disconnect> [options]',
     '',
     'register -a <login> -t User|Organization -n <name> -v private|public -u <https-homepage> -e repository-hooks-read|repository-hooks-write -o <new-private-file> -j <new-attempt-file> [-y]',
     '    Open a loopback manifest ceremony. Creating the App on GitHub is explicit. No deployment or activation.',
     'import -i <private-file|-> -o <new-private-file>    Verify one App identity and save protected recovery locally',
+    'import-token -i <private-file|-> -o <new-private-file> Save a manual token locally; no provider access or activation',
     'inspect -i <private-file>                         Show metadata from a recovery file or registration attempt',
     'prepare -i <recovery> -p <metadata-input>          Review an inactive provider registry candidate',
     '    Metadata: {descriptor,expectedRevision,baseVersionId,verificationOrigin}. Select a reviewed, uploaded code version.',
     '    Descriptor: explicit App/install/account IDs, numeric repositories, managementWorkspaces and hook capabilities.',
-    '    Include id, revision, keyRevision, a NEW keySecretName, public fingerprint, mode app and state active.',
+    '    Include id, revision, keyRevision, a NEW keySecretName, public fingerprint, mode app and state active. Token descriptors use mode token and a NEW tokenSecretName.',
     '    The uploaded version must bind EVENTS_DB and CF_VERSION_METADATA. Prepare stages no secret and deploys no code.',
     'stage -i <recovery> -d <candidate> [-y]            Stage a named key/version without serving it',
     'deploy -i <recovery> -d <candidate> [-y]           Deploy the exact staged version [provider write]',
-    'verify -i <recovery> -d <candidate>               Verify serving version and loaded public key identity',
+    'verify -i <recovery> -d <candidate>               Verify serving version and loaded credential identity',
     'activate -i <recovery> -d <candidate> [-y]         Activate only the attested candidate by revision CAS',
     'status -r <descriptor>                            Read selected provider auth metadata',
     'disconnect -r <descriptor> [-y]                   Review and locally disable selected provider auth',
@@ -76,6 +80,7 @@ export function githubAppUsage() {
     '-i/--file, -o/--output, -j/--attempt, -a/--account, -t/--account-type, -n/--name, -v/--visibility,',
     '-u/--homepage, -e/--capability, -p/--input, -d/--candidate, -r/--descriptor, -y/--yes.',
     'Private import schema: {version:1,appId:positive integer,privateKey:PEM,webhookSecret:optional string}.',
+    'Private token import schema: {version:1,token:string}; working repository identity is checked during prepare.',
     'Keys must be RSA PKCS1/PKCS8, at least 2048 bits. Generated recovery files are version 1, kind github-app.',
     'Private files must be owner-only regular non-symlinks, mode 0600 and at most 64 KiB; output parents must be owner-controlled.',
     'An attempt file preserves claimed or indeterminate conversion. Inspect it before explicit recovery; no conversion replay.',
@@ -127,6 +132,7 @@ export function parseGitHubAppArgs(args: string[]): GitHubAppOptions | null {
     const required = {
       register: ['account', 'account-type', 'name', 'visibility', 'homepage', 'capability', 'output', 'attempt'],
       import: ['file', 'output'],
+      'import-token': ['file', 'output'],
       inspect: ['file'],
       prepare: ['file', 'input'],
       stage: ['file', 'candidate'],
@@ -139,7 +145,7 @@ export function parseGitHubAppArgs(args: string[]): GitHubAppOptions | null {
     const allowed = new Set<string>([
       ...required[command],
       ...(['register', 'stage', 'deploy', 'activate', 'disconnect'].includes(command) ? ['yes'] : []),
-      ...(!['register', 'import', 'inspect'].includes(command) ? ['config'] : []),
+      ...(!['register', 'import', 'import-token', 'inspect'].includes(command) ? ['config'] : []),
     ])
     if (required[command].some((key) => !values[key]) || [...seen].some((key) => !allowed.has(key))) throw new Error()
     if (values['account-type'] && !['User', 'Organization'].includes(values['account-type'])) throw new Error()
@@ -147,7 +153,7 @@ export function parseGitHubAppArgs(args: string[]): GitHubAppOptions | null {
     if (values.capability && !['repository-hooks-read', 'repository-hooks-write'].includes(values.capability))
       throw new Error()
     if (values.candidate && !z.uuid().safeParse(values.candidate).success) throw new Error()
-    if (values.file === '-' && command !== 'import') throw new Error()
+    if (values.file === '-' && !['import','import-token'].includes(command)) throw new Error()
     const { help: _help, 'account-type': accountType, ...selected } = values
     return {
       ...selected,
@@ -182,6 +188,7 @@ async function privateInput(path: string) {
   }
 }
 export async function runGitHubAppCommand(options: GitHubAppOptions) {
+  if (options.command==='import-token')return importGitHubTokenMaterial(await privateInput(options.file!),options.output!)
   if (options.command === 'inspect') {
     const document = (await readPrivateAppDocument(options.file!)).value
     const attempt = z
@@ -200,7 +207,8 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
         expiresAt: attempt.data.expiresAt,
         recoveryMaterialRetained: attempt.data.recovery !== undefined,
       }
-    const recovery = await readGitHubAppPrivateFile(options.file!)
+    const recovery = await readGitHubCredentialPrivateFile(options.file!)
+    if(recovery.kind==='github-token')return {kind:recovery.kind,fingerprint:recovery.fingerprint}
     return {
       appId: recovery.app.id,
       slug: recovery.app.slug,
@@ -275,7 +283,7 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
     return disconnectGitHubAppDescriptor(query, before.descriptorId, before.revision)
   }
   const document = await readPrivateAppDocument(options.file!)
-  const recovery = await readGitHubAppPrivateFile(options.file!)
+  const recovery = await readGitHubCredentialPrivateFile(options.file!)
   const deps = {
     query,
     provider: createGitHubAppDeploymentProvider(selected.target),

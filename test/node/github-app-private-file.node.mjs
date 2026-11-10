@@ -48,3 +48,22 @@ test('keeps token material in the same strict private-file boundary and rejects 
     await assert.rejects(readGitHubTokenPrivateFile(file),{code:'validation'})
   }finally {await rm(root,{recursive:true,force:true})}
 })
+
+test('imports a manual token locally without provider calls or activation and inspects metadata only',async () => {
+  const {parseGitHubAppArgs,runGitHubAppCommand}=await import('../../scripts/github-app.ts')
+  const {writeNewPrivateAppDocument,readGitHubTokenPrivateFile}=await import('../../scripts/providers/github/app-private-file.ts')
+  const root=await mkdtemp(join(tmpdir(),'hookrelay-manual-import-'))
+  try {
+    const input=join(root,'input.json'),output=join(root,'token.json')
+    await writeNewPrivateAppDocument(input,{version:1,token:'synthetic-manual-import-token'})
+    const options=parseGitHubAppArgs(['import-token','-i',input,'-o',output])
+    const imported=await runGitHubAppCommand(options)
+    assert.equal(imported.phase,'prepared')
+    assert.equal(JSON.stringify(imported).includes('synthetic-manual-import-token'),false)
+    assert.equal((await readGitHubTokenPrivateFile(output)).kind,'github-token')
+    const inspected=await runGitHubAppCommand(parseGitHubAppArgs(['inspect','-i',output]))
+    assert.equal(inspected.kind,'github-token')
+    assert.equal(JSON.stringify(inspected).includes('synthetic-manual-import-token'),false)
+    await assert.rejects(runGitHubAppCommand(options))
+  } finally {await rm(root,{recursive:true,force:true})}
+})

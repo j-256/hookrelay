@@ -98,10 +98,32 @@ export const githubTokenRecoverySchema = z.object({
   deploymentReceipts:githubAppRecoverySchema.shape.deploymentReceipts,
 }).strict()
 export type GitHubTokenRecoveryFile = z.infer<typeof githubTokenRecoverySchema>
-export async function readGitHubTokenPrivateFile(path:string):Promise<GitHubTokenRecoveryFile> {
+function normalizeTokenRecovery(input:unknown):GitHubTokenRecoveryFile {
   try {
-    const value=githubTokenRecoverySchema.parse((await readPrivateAppDocument(path)).value)
+    const value=githubTokenRecoverySchema.parse(input)
     if(createHash('sha256').update(value.token).digest('hex') !== value.fingerprint) throw new Error()
     return value
   } catch {throw new GitHubAuthError('validation')}
+}
+
+export async function readGitHubTokenPrivateFile(path:string):Promise<GitHubTokenRecoveryFile> {
+  return normalizeTokenRecovery((await readPrivateAppDocument(path)).value)
+}
+export type GitHubCredentialRecoveryFile=GitHubAppRecoveryFile | GitHubTokenRecoveryFile
+export async function readGitHubCredentialPrivateFile(path:string):Promise<GitHubCredentialRecoveryFile> {
+  const value=(await readPrivateAppDocument(path)).value
+  return value && typeof value==='object' && 'kind' in value && value.kind==='github-token' ? normalizeTokenRecovery(value) : normalizeRecovery(value)
+}
+export async function importGitHubTokenMaterial(input:unknown,output:string) {
+  let value:GitHubTokenRecoveryFile
+  try {
+    const full=githubTokenRecoverySchema.safeParse(input)
+    if(full.success)value=normalizeTokenRecovery(full.data)
+    else {
+      const parsed=z.object({version:z.literal(1),token:githubTokenRecoverySchema.shape.token}).strict().parse(input)
+      value={...parsed,kind:'github-token',fingerprint:createHash('sha256').update(parsed.token).digest('hex'),createdAt:new Date().toISOString()}
+    }
+  } catch {throw new GitHubAuthError('validation')}
+  await writeNewPrivateAppDocument(output,value)
+  return {kind:value.kind,phase:'prepared',fingerprint:value.fingerprint,activation:'inactive'}
 }

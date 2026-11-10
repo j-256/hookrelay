@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { generateKeyPairSync } from 'node:crypto'
+import { generateKeyPairSync, createHash } from 'node:crypto'
 import { mkdtemp, rm, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -8,6 +8,7 @@ import { test } from 'node:test'
 import {
   normalizeGitHubAppPrivateKey,
   writeNewGitHubAppPrivateFile,
+  writeNewPrivateAppDocument,
 } from '../../scripts/providers/github/app-private-file.ts'
 import {
   prepareGitHubAppDeployment,
@@ -45,6 +46,7 @@ async function fixture(run) {
       ['version-base', { id: 'version-base', scriptEtag: 'script-a', runtimeDigest: 'c'.repeat(64), bindings }],
     ])
     const state = {
+      expectedKey: normalized.pkcs8,
       stages: 0,
       deploys: 0,
       lost: false,
@@ -59,7 +61,7 @@ async function fixture(run) {
       version: async (id) => versions.get(id),
       stage: async (name, key, tag) => {
         state.stages++
-        assert.equal(key, normalized.pkcs8)
+        assert.equal(key, state.expectedKey)
         const version = {
           ...versions.get('version-base'),
           id: 'version-staged',
@@ -92,7 +94,7 @@ async function fixture(run) {
         const { nonce } = JSON.parse(init.body)
         assert.equal(typeof nonce, 'string')
         const attestationId = crypto.randomUUID()
-        const candidate = db.prepare('SELECT id FROM github_auth_candidates ORDER BY created_at DESC LIMIT 1').get()
+        const candidate = db.prepare('SELECT id,metadata_json FROM github_auth_candidates ORDER BY created_at DESC LIMIT 1').get()
         db.prepare(
           'INSERT INTO github_auth_attestations(id,candidate_id,account_id,worker_name,version_id,fingerprint,verified_at,expires_at) VALUES (?,?,?,?,?,?,?,?)',
         ).run(
@@ -101,11 +103,11 @@ async function fixture(run) {
           target.accountId,
           target.workerName,
           state.version,
-          normalized.fingerprint,
+          JSON.parse(candidate.metadata_json).fingerprint,
           Date.now(),
           Date.now() + 60000,
         )
-        return Response.json({ attestationId, versionId: state.version, fingerprint: normalized.fingerprint })
+        return Response.json({ attestationId, versionId: state.version, fingerprint: JSON.parse(candidate.metadata_json).fingerprint })
       },
     }
     const descriptor = {
@@ -313,3 +315,68 @@ test('requires a monotonic key revision for a new named signing key', async () =
       { code: 'conflict' },
     )
   }))
+
+function installPrior(f) {
+  const prior={...f.descriptor,keySecretName:'GITHUB_APP_KEY_OLD'}
+  f.db.prepare('INSERT INTO github_auth_descriptors(id,revision,key_revision,metadata_json,write_id) VALUES (?,1,1,?,?)').run(prior.id,JSON.stringify(prior),'prior')
+  return {...f.input,expectedRevision:1,descriptor:{...f.descriptor,revision:2,keyRevision:2}}
+}
+test('refuses a reviewed upload missing the active descriptor key before deployment',async () => fixture(async f => {
+  const input=installPrior(f)
+  f.versions.get('version-base').bindings=f.versions.get('version-base').bindings.filter(binding=>binding.name!=='GITHUB_APP_KEY_OLD')
+  await assert.rejects(prepareGitHubAppDeployment(input,f.deps),{code:'conflict'})
+  assert.equal(f.state.stages,0)
+}))
+test('deliberately replaces an active App with a scoped manual token through staged version proof and CAS',async () => fixture(async f => {
+  const input=installPrior(f)
+  const token='synthetic-manual-rollback-token'
+  const fingerprint=createHash('sha256').update(token).digest('hex')
+  const recoveryFile=join(f.root,'token.json')
+  await writeNewPrivateAppDocument(recoveryFile,{version:1,kind:'github-token',token,fingerprint,createdAt:new Date().toISOString()})
+  const {appId,installationId,accountId,keySecretName,...common}=input.descriptor
+  input.descriptor={...common,mode:'token',tokenSecretName:'GITHUB_MANUAL_ROLLBACK',fingerprint}
+  const deps={...f.deps,recoveryFile}
+  f.state.expectedKey=token
+  const plan=await prepareGitHubAppDeployment(input,deps)
+  assert.equal(JSON.stringify(plan).includes(token),false)
+  await stageGitHubAppWorkerKey(plan.candidateId,deps)
+  assert.equal(f.versions.get('version-staged').bindings.some(binding=>binding.name==='GITHUB_APP_KEY_OLD'),true)
+  assert.equal(JSON.parse(f.db.prepare('SELECT metadata_json FROM github_auth_descriptors').get().metadata_json).mode,'app')
+  await deployGitHubAppWorkerVersion(plan.candidateId,deps)
+  await verifyGitHubAppWorkerKey(plan.candidateId,deps)
+  await activateGitHubAppDeployment(plan.candidateId,deps)
+  const active=JSON.parse(f.db.prepare('SELECT metadata_json FROM github_auth_descriptors').get().metadata_json)
+  assert.equal(active.mode,'token')
+  assert.equal(active.revision,2)
+  assert.deepEqual(active.repositories,input.descriptor.repositories)
+  assert.deepEqual(active.managementWorkspaces,['alpha'])
+}))
+test('retains other active descriptors even when replacing a different descriptor',async () => fixture(async f => {
+  const other={...f.descriptor,id:'other',keySecretName:'GITHUB_APP_KEY_OTHER'}
+  f.db.prepare('INSERT INTO github_auth_descriptors(id,revision,key_revision,metadata_json,write_id) VALUES (?,1,1,?,?)').run(other.id,JSON.stringify(other),'prior-other')
+  await assert.rejects(prepareGitHubAppDeployment(f.input,f.deps),{code:'conflict'})
+  assert.equal(f.state.stages,0)
+}))
+test('checks manual repository identity without claiming upstream write permission or accepting identity drift',async () => fixture(async f => {
+  const token='synthetic-manual-preparation-token'
+  const fingerprint=createHash('sha256').update(token).digest('hex')
+  const recoveryFile=join(f.root,'token.json')
+  await writeNewPrivateAppDocument(recoveryFile,{version:1,kind:'github-token',token,fingerprint,createdAt:new Date().toISOString()})
+  const {appId,installationId,accountId,keySecretName,...common}=f.descriptor
+  const input={...f.input,descriptor:{...common,mode:'token',tokenSecretName:'GITHUB_MANUAL_PREPARE',fingerprint}}
+  let wrong=false,calls=0
+  const deps={...f.deps,recoveryFile,verifyMaterial:undefined,fetch:async(url,init)=>{
+    calls++
+    assert.equal(String(url),'https://api.github.com/repos/example/allowed')
+    assert.equal(init.method,'GET')
+    assert.equal(init.redirect,'manual')
+    assert.equal(new Headers(init.headers).get('authorization'),'Bearer '+token)
+    return Response.json({id:wrong ? 999 : 101,full_name:'example/allowed',owner:{id:50},private:true})
+  }}
+  const plan=await prepareGitHubAppDeployment(input,deps)
+  assert.equal(plan.descriptor.mode,'token')
+  assert.equal(calls,1)
+  wrong=true
+  await assert.rejects(prepareGitHubAppDeployment(input,deps),{code:'denied'})
+  assert.equal(f.state.stages,0)
+}))
