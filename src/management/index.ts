@@ -1,3 +1,4 @@
+import { readGitHubAuthStatus } from './github-auth'
 import { readGitHubSetupConfiguration, planGitHubSetup, applyGitHubSetup, getGitHubSetup, readGitHubSetupStatus } from './github-setup'
 import { readHandoffConfiguration, readHandoffRepository, planHandoff, applyHandoff, getHandoff, readHandoffStatus } from './github-handoff'
 import { z } from 'zod'
@@ -58,6 +59,7 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
         }
         break
       }
+      case 'github_auth_status': result = await readGitHubAuthStatus(env, principal, context); break
       case 'github_setup_configuration': result = await readGitHubSetupConfiguration(env, principal); break
       case 'github_setup_plan': result = await planGitHubSetup(env, principal, managementInputs.github_setup_plan.parse(envelope.input)); break
       case 'github_setup_apply': result = await applyGitHubSetup(env, principal, managementInputs.github_setup_apply.parse(envelope.input)); break

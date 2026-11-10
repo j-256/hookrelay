@@ -62,6 +62,7 @@ export const managementInputs = {
   }).strict(),
   configuration_policy_apply: context.extend({ planId: z.uuid() }).strict(),
   configuration_policy_get: context.extend({ planId: z.uuid() }).strict(),
+  github_auth_status: context,
   github_setup_configuration: context,
   github_setup_plan: context.extend({
     planId: z.uuid(), authorityId: authorityIdSchema, revision: z.number().int().nonnegative(),

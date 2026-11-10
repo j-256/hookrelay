@@ -38,6 +38,8 @@ export interface Env {
   CF_ACCESS_AUD: string
   MANAGEMENT_CREDENTIALS?: string
   HOOK_SETUP_KEY?: string
+  GITHUB_AUTH_MODE?: string
+  GITHUB_AUTH_DESCRIPTOR?: string
   HOOK_SETUP_GITHUB_TOKEN?: string
   HOOK_SETUP_ORIGIN?: string
   HOOK_HANDOFF_KEYS?: string
