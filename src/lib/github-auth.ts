@@ -275,9 +275,10 @@ async function resolveGitHubAuthLease(
         },
         input.onProviderRequest,
       )
-      await recordGitHubAuthResponse(input.query, scope.quotaKey, response, clock())
       if (!response.ok) {
         void response.body?.cancel().catch(() => {})
+        const retryAt = githubRetryAt(response, clock())
+        if (retryAt !== null) throw new GitHubAuthError('rate_limited', retryAt)
         throw new GitHubAuthError('denied')
       }
       const observed = z
