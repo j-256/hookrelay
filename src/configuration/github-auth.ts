@@ -401,9 +401,9 @@ export async function recordGitHubAuthCooldown(
   retryAt: number,
   now = Date.now(),
 ) {
-  await githubAuthQuery(
+  const [recorded] = await githubAuthQuery<{ retry_at: number }>(
     query,
-    'INSERT INTO github_auth_cooldowns(quota_key,retry_at) VALUES (?,?) ON CONFLICT(quota_key) DO UPDATE SET retry_at=max(retry_at,excluded.retry_at)',
+    'INSERT INTO github_auth_cooldowns(quota_key,retry_at) VALUES (?,?) ON CONFLICT(quota_key) DO UPDATE SET retry_at=max(retry_at,excluded.retry_at) RETURNING retry_at',
     [
       quotaKey,
       Math.min(
@@ -412,6 +412,8 @@ export async function recordGitHubAuthCooldown(
       ),
     ],
   )
+  if (!recorded) throw new GitHubAuthError('unavailable')
+  return recorded.retry_at
 }
 
 export async function readGitHubRuntimePolicy(

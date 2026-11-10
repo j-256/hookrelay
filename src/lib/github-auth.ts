@@ -20,6 +20,7 @@ import {
 } from './github-app-contract'
 import {
   mintGitHubInstallationToken,
+  githubHookPermissions,
   verifyGitHubInstallation,
   readGitHubAppJson,
 } from './github-app-token'
@@ -206,6 +207,8 @@ async function resolveGitHubAuthLease(
   let token: string
   let tokenExpiresAt = clock() + GITHUB_APP_LIMITS.AUTHORITY_AGE_MS
   let digest = before.digest
+  let cacheGeneration = before.generation
+  let appIdentity: Awaited<ReturnType<typeof githubAuthIdentity>> | undefined
   let fresh =
     input.phase === 'effect' ||
     input.refreshToken === true ||
@@ -228,19 +231,34 @@ async function resolveGitHubAuthLease(
         onProviderRequest: input.onProviderRequest,
       }
       const installation = fresh ? await verifyGitHubInstallation(request) : null
-      const minted = await mintGitHubInstallationToken({
-        ...request,
-        cache: fresh ? 'refresh' : true,
-      })
-      token = minted.token
-      tokenExpiresAt = minted.expiresAt
-      if (installation)
+      if (installation) {
+        // Token validation pins these permissions; CAS must confirm the predicted generation
         digest = await configurationDigest({
           installation,
           repository,
           capability,
-          permissions: minted.permissions,
+          permissions: githubHookPermissions(capability),
         })
+        if (before.digest !== digest || before.state !== 'allowed') cacheGeneration++
+      }
+      appIdentity = await githubAuthIdentity(
+        descriptor,
+        cacheGeneration,
+        input.workspaceId,
+        input.callerId,
+        repository.id,
+        capability,
+      )
+      const minted = await mintGitHubInstallationToken({
+        ...request,
+        authorityIdentity: await configurationDigest({
+          authorityIdentity: appIdentity.authorityIdentity,
+          observationDigest: digest,
+        }),
+        cache: fresh ? 'refresh' : true,
+      })
+      token = minted.token
+      tokenExpiresAt = minted.expiresAt
     } else {
       if (!input.loadToken) throw new GitHubAuthError('unavailable')
       token = await input.loadToken(descriptor)
@@ -304,15 +322,18 @@ async function resolveGitHubAuthLease(
       fresh = true
     }
   } catch (error) {
-    if (error instanceof GitHubAuthError && error.code === 'rate_limited')
-      await recordGitHubAuthCooldown(
+    let reportedError = error
+    if (error instanceof GitHubAuthError && error.code === 'rate_limited') {
+      const retryAt = await recordGitHubAuthCooldown(
         input.query,
         scope.quotaKey,
         error.retryAt ?? clock() + GITHUB_APP_LIMITS.AUTHORITY_AGE_MS,
         clock(),
       )
+      reportedError = new GitHubAuthError('rate_limited', retryAt)
+    }
     if (fresh) await invalidateGitHubAuthAuthority(input.query, descriptor.id)
-    if (error instanceof GitHubAuthError) throw error
+    if (reportedError instanceof GitHubAuthError) throw reportedError
     throw new GitHubAuthError('unavailable')
   }
   if (!digest) throw new GitHubAuthError('unavailable')
@@ -334,6 +355,8 @@ async function resolveGitHubAuthLease(
         now,
       })
     : before
+  if (descriptor.mode === 'app' && authority.generation !== cacheGeneration)
+    throw new GitHubAuthError('conflict')
   const fence = {
     descriptorId: descriptor.id,
     revision: descriptor.revision,
@@ -347,7 +370,7 @@ async function resolveGitHubAuthLease(
     capability,
   }
   await assertGitHubAuthFence(input.query, fence, clock())
-  const identity = await githubAuthIdentity(
+  const identity = appIdentity ?? await githubAuthIdentity(
     descriptor,
     authority.generation,
     input.workspaceId,
