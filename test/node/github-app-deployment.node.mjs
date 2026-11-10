@@ -364,13 +364,14 @@ test('checks manual repository identity without claiming upstream write permissi
   await writeNewPrivateAppDocument(recoveryFile,{version:1,kind:'github-token',token,fingerprint,createdAt:new Date().toISOString()})
   const {appId,installationId,accountId,keySecretName,...common}=f.descriptor
   const input={...f.input,descriptor:{...common,mode:'token',tokenSecretName:'GITHUB_MANUAL_PREPARE',fingerprint}}
-  let wrong=false,calls=0
+  let wrong=false,calls=0,limited=false
   const deps={...f.deps,recoveryFile,verifyMaterial:undefined,fetch:async(url,init)=>{
     calls++
     assert.equal(String(url),'https://api.github.com/repos/example/allowed')
     assert.equal(init.method,'GET')
     assert.equal(init.redirect,'manual')
     assert.equal(new Headers(init.headers).get('authorization'),'Bearer '+token)
+    if(limited)return Response.json({},{status:403,headers:{'retry-after':'3600'}})
     return Response.json({id:wrong ? 999 : 101,full_name:'example/allowed',owner:{id:50},private:true})
   }}
   const plan=await prepareGitHubAppDeployment(input,deps)
@@ -378,5 +379,18 @@ test('checks manual repository identity without claiming upstream write permissi
   assert.equal(calls,1)
   wrong=true
   await assert.rejects(prepareGitHubAppDeployment(input,deps),{code:'denied'})
+  wrong=false;limited=true
+  await assert.rejects(prepareGitHubAppDeployment(input,deps),{code:'rate_limited'})
+  const before=calls;limited=false
+  await assert.rejects(prepareGitHubAppDeployment(input,deps),{code:'rate_limited'})
+  assert.equal(calls,before)
+  assert.equal(f.state.stages,0)
+}))
+test('makes retained credential variable capacity explicit before staging',async () => fixture(async f => {
+  const bindings=f.versions.get('version-base').bindings
+  for(let i=0;i<63;i++)bindings.push({name:'EXAMPLE_SETTING_'+i,type:'plain_text'})
+  await assert.rejects(prepareGitHubAppDeployment(f.input,f.deps),{code:'validation'})
+  const plan=await prepareGitHubAppDeployment({...f.input,variableLimit:128},f.deps)
+  assert.equal(plan.variableLimit,128)
   assert.equal(f.state.stages,0)
 }))

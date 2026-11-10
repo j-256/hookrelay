@@ -1,7 +1,7 @@
 import { configurationDigest } from '../configuration/authority'
 import { type GitHubAuthDescriptor, type GitHubHookCapability } from './github-app-contract'
 import { z } from 'zod'
-import type { ConfigurationQuery } from '../configuration/authority'
+import type { ConfigurationQuery, ConfigurationStatement } from '../configuration/authority'
 import {
   readGitHubAuthDescriptor,
   readGitHubAuthAuthority,
@@ -47,16 +47,33 @@ export async function githubAuthIdentity(
     quotaKey: await configurationDigest(
       descriptor.mode === 'app'
         ? ['github-app', descriptor.appId, descriptor.installationId]
-        : [
-            'github-' + descriptor.mode,
-            descriptor.id,
-            descriptor.mode === 'token' ? descriptor.fingerprint : null,
-          ],
+        : descriptor.mode === 'token'
+          ? ['github-token', descriptor.fingerprint]
+          : ['github-gh', descriptor.id],
     ),
   }
 }
 
+export type GitHubAuthDiagnostic = {
+  level: 'info' | 'warn'
+  msg: 'github.auth.completed'
+  correlationId: string
+  mode: GitHubAuthDescriptor['mode'] | null
+  descriptorId: string | null
+  revision: number | null
+  keyRevision: number | null
+  phase: 'read' | 'effect'
+  capability: GitHubHookCapability
+  outcome: 'allowed' | GitHubAuthError['code']
+  durationMs: number
+  providerRequests: number
+  d1Requests: number
+  retryAt: number | null
+}
 export type GitHubAuthResolveInput = {
+  diagnostic?: (event: GitHubAuthDiagnostic) => void
+  correlationId?: string
+  onProviderRequest?: () => void
   query: ConfigurationQuery
   selection: GitHubAuthSelection
   workspaceId: string
@@ -86,6 +103,69 @@ export async function recordGitHubAuthResponse(
   if (retryAt !== null) await recordGitHubAuthCooldown(query, quotaKey, retryAt, now)
 }
 export async function resolveGitHubAuth(input: GitHubAuthResolveInput): Promise<GitHubAuthLease> {
+  const started = Date.now()
+  const stats = {
+    revision: null as number | null,
+    keyRevision: null as number | null,
+    providerRequests: 0,
+    d1Requests: 0,
+  }
+  let outcome: GitHubAuthDiagnostic['outcome'] = 'unavailable'
+  let retryAt: number | null = null
+  const countedQuery: ConfigurationQuery = async <Row>(statement: ConfigurationStatement) => {
+    stats.d1Requests++
+    return input.query<Row>(statement)
+  }
+  try {
+    const result = await resolveGitHubAuthLease(
+      {
+        ...input,
+        query: countedQuery,
+        onProviderRequest: () => {
+          stats.providerRequests++
+          try {
+            input.onProviderRequest?.()
+          } catch {}
+        },
+      },
+      stats,
+    )
+    outcome = 'allowed'
+    return result
+  } catch (error) {
+    if (error instanceof GitHubAuthError) {
+      outcome = error.code
+      retryAt = error.retryAt
+    }
+    throw error
+  } finally {
+    try {
+      input.diagnostic?.({
+        level: outcome === 'allowed' ? 'info' : 'warn',
+        msg: 'github.auth.completed',
+        correlationId: z.uuid().safeParse(input.correlationId).success
+          ? input.correlationId!
+          : crypto.randomUUID(),
+        mode: ['app', 'token', 'gh'].includes(input.selection?.mode)
+          ? (input.selection.mode as GitHubAuthDescriptor['mode'])
+          : null,
+        descriptorId: githubAuthId.safeParse(input.selection?.descriptorId).success
+          ? input.selection.descriptorId
+          : null,
+        phase: input.phase,
+        capability: input.capability,
+        outcome,
+        durationMs: Math.max(0, Date.now() - started),
+        ...stats,
+        retryAt,
+      })
+    } catch {}
+  }
+}
+async function resolveGitHubAuthLease(
+  input: GitHubAuthResolveInput,
+  stats: { revision: number | null; keyRevision: number | null },
+): Promise<GitHubAuthLease> {
   if (
     !githubAuthId.safeParse(input.workspaceId).success ||
     !githubAuthId.safeParse(input.callerId).success ||
@@ -95,6 +175,8 @@ export async function resolveGitHubAuth(input: GitHubAuthResolveInput): Promise<
     throw new GitHubAuthError('validation')
   const clock = input.now ?? Date.now
   const descriptor = await readGitHubAuthDescriptor(input.query, input.selection)
+  stats.revision = descriptor.revision
+  stats.keyRevision = descriptor.keyRevision
   const repository = descriptor.repositories.find(
     (repo) => repo.fullName === input.repositoryFullName,
   )
@@ -143,9 +225,13 @@ export async function resolveGitHubAuth(input: GitHubAuthResolveInput): Promise<
         fetch: input.fetch,
         remainingBudgetMs: input.remainingBudgetMs,
         signal: input.signal,
+        onProviderRequest: input.onProviderRequest,
       }
       const installation = fresh ? await verifyGitHubInstallation(request) : null
-      const minted = await mintGitHubInstallationToken({ ...request, cache: !fresh })
+      const minted = await mintGitHubInstallationToken({
+        ...request,
+        cache: fresh ? 'refresh' : true,
+      })
       token = minted.token
       tokenExpiresAt = minted.expiresAt
       if (installation)
@@ -187,6 +273,7 @@ export async function resolveGitHubAuth(input: GitHubAuthResolveInput): Promise<
             'user-agent': 'Hookrelay',
           },
         },
+        input.onProviderRequest,
       )
       await recordGitHubAuthResponse(input.query, scope.quotaKey, response, clock())
       if (!response.ok) {

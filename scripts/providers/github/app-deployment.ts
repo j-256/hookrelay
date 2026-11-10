@@ -24,12 +24,23 @@ import {
   createGitHubAppKeyChallenge,
   GITHUB_APP_KEY_VERIFICATION_PATH,
 } from '../../../src/management/github-app-key-verification'
-import { readGitHubCredentialPrivateFile, type GitHubCredentialRecoveryFile } from './app-private-file'
+import {
+  readGitHubCredentialPrivateFile,
+  type GitHubCredentialRecoveryFile,
+} from './app-private-file'
 import { githubAuthIdentity, recordGitHubAuthResponse } from '../../../src/lib/github-auth'
+import { githubRetryAt } from '../../../src/lib/github-rate-limit'
 import { fetchGitHubWithDeadline } from '../../../src/lib/github-http'
-import { assertGitHubAuthCooldown, recordGitHubAuthCooldown } from '../../../src/configuration/github-auth'
+import {
+  assertGitHubAuthCooldown,
+  recordGitHubAuthCooldown,
+} from '../../../src/configuration/github-auth'
 
-export type GitHubWorkerIdentity = { target: GitHubWorkerTarget; databaseId: string; configDigest: string }
+export type GitHubWorkerIdentity = {
+  target: GitHubWorkerTarget
+  databaseId: string
+  configDigest: string
+}
 export type GitHubWorkerVersion = {
   id: string
   scriptEtag: string
@@ -45,7 +56,9 @@ export interface GitHubAppDeploymentProvider {
   deployment(): Promise<GitHubServingDeployment>
   deploy(id: string): Promise<void>
 }
+const WORKER_VARIABLE_LIMITS = Object.freeze({ FREE: 64, PAID: 128, SECRET_BYTES: 5000 })
 export type GitHubAppDeploymentInput = GitHubWorkerIdentity & {
+  variableLimit?: 64 | 128
   descriptor: GitHubAuthDescriptor
   expectedRevision: number
   baseVersionId: string
@@ -53,6 +66,7 @@ export type GitHubAppDeploymentInput = GitHubWorkerIdentity & {
 }
 export type GitHubAppDeploymentPlan = GitHubAppDeploymentInput & {
   candidateId: string
+  variableLimit: 64 | 128
   baseVersion: GitHubWorkerVersion
 }
 export type GitHubAppStageReceipt = {
@@ -68,7 +82,10 @@ export type GitHubAppDeploymentDependencies = {
   provider: GitHubAppDeploymentProvider
   recoveryFile: string
   currentIdentity(): Promise<GitHubWorkerIdentity>
-  verifyMaterial?: (recovery: GitHubCredentialRecoveryFile, descriptor: GitHubAuthDescriptor) => Promise<void>
+  verifyMaterial?: (
+    recovery: GitHubCredentialRecoveryFile,
+    descriptor: GitHubAuthDescriptor,
+  ) => Promise<void>
   fetch?: typeof fetch
 }
 const identitySchema = z.object({
@@ -82,6 +99,9 @@ const identitySchema = z.object({
 const inputSchema = identitySchema
   .extend({
     descriptor: githubAuthDescriptorSchema,
+    variableLimit: z
+      .union([z.literal(WORKER_VARIABLE_LIMITS.FREE), z.literal(WORKER_VARIABLE_LIMITS.PAID)])
+      .default(WORKER_VARIABLE_LIMITS.FREE),
     expectedRevision: z.number().int().nonnegative(),
     baseVersionId: z
       .string()
@@ -117,8 +137,11 @@ const versionSchema = z
     tag: z.string().max(160).optional(),
   })
   .strict()
-const planSchema = inputSchema.extend({ candidateId: z.uuid(), baseVersion: versionSchema }).strict()
-const equal = async (a: unknown, b: unknown) => (await configurationDigest(a)) === (await configurationDigest(b))
+const planSchema = inputSchema
+  .extend({ candidateId: z.uuid(), baseVersion: versionSchema })
+  .strict()
+const equal = async (a: unknown, b: unknown) =>
+  (await configurationDigest(a)) === (await configurationDigest(b))
 function conflict(): never {
   throw new GitHubAuthError('conflict')
 }
@@ -128,16 +151,30 @@ function identity(plan: GitHubWorkerIdentity) {
 function compatible(version: GitHubWorkerVersion, databaseId: string) {
   return (
     version.bindings.filter(
-      (binding) => binding.name === 'EVENTS_DB' && binding.type === 'd1' && binding.id === databaseId,
+      (binding) =>
+        binding.name === 'EVENTS_DB' && binding.type === 'd1' && binding.id === databaseId,
     ).length === 1 &&
-    version.bindings.some((binding) => binding.name === 'CF_VERSION_METADATA' && binding.type === 'version_metadata')
+    version.bindings.some(
+      (binding) => binding.name === 'CF_VERSION_METADATA' && binding.type === 'version_metadata',
+    )
   )
 }
 async function material(deps: GitHubAppDeploymentDependencies, descriptor: GitHubAuthDescriptor) {
   const recovery = await readGitHubCredentialPrivateFile(deps.recoveryFile)
-  if (descriptor.mode==='gh' || recovery.fingerprint!==descriptor.fingerprint)conflict()
-  if (descriptor.mode==='app' && (recovery.kind!=='github-app' || recovery.app.id!==descriptor.appId || descriptor.repositories.some(repo=>repo.ownerId!==descriptor.accountId)))conflict()
-  if (descriptor.mode==='token' && recovery.kind!=='github-token')conflict()
+  if (descriptor.mode === 'gh' || recovery.fingerprint !== descriptor.fingerprint) conflict()
+  if (
+    descriptor.mode === 'app' &&
+    (recovery.kind !== 'github-app' ||
+      recovery.app.id !== descriptor.appId ||
+      descriptor.repositories.some((repo) => repo.ownerId !== descriptor.accountId))
+  )
+    conflict()
+  if (descriptor.mode === 'token' && recovery.kind !== 'github-token') conflict()
+  if (
+    new TextEncoder().encode(recovery.kind === 'github-app' ? recovery.privateKey : recovery.token)
+      .byteLength > WORKER_VARIABLE_LIMITS.SECRET_BYTES
+  )
+    throw new GitHubAuthError('validation')
   return recovery
 }
 export async function prepareGitHubAppDeployment(
@@ -145,11 +182,19 @@ export async function prepareGitHubAppDeployment(
   deps: GitHubAppDeploymentDependencies,
 ): Promise<GitHubAppDeploymentPlan> {
   const parsed = inputSchema.safeParse(input)
-  if (!parsed.success || parsed.data.descriptor.mode === 'gh' || parsed.data.descriptor.state !== 'active')
+  if (
+    !parsed.success ||
+    parsed.data.descriptor.mode === 'gh' ||
+    parsed.data.descriptor.state !== 'active'
+  )
     throw new GitHubAuthError('validation')
   input = parsed.data
   if (!(await equal(identity(input), await deps.currentIdentity()))) conflict()
-  const [prior] = await githubAuthQuery<{ revision: number; key_revision: number; metadata_json:string }>(
+  const [prior] = await githubAuthQuery<{
+    revision: number
+    key_revision: number
+    metadata_json: string
+  }>(
     deps.query,
     'SELECT revision,key_revision,metadata_json FROM github_auth_descriptors WHERE id=?',
     [input.descriptor.id],
@@ -164,14 +209,14 @@ export async function prepareGitHubAppDeployment(
   if (
     baseVersion.id !== input.baseVersionId ||
     !compatible(baseVersion, input.databaseId) ||
-    baseVersion.bindings.some(
-      (binding) => binding.name === githubAuthSecretName(input.descriptor),
-    )
+    baseVersion.bindings.some((binding) => binding.name === githubAuthSecretName(input.descriptor))
   )
     conflict()
-  await assertRetainedCredentials(deps.query,baseVersion)
+  if (variableCount(baseVersion) + 1 > parsed.data.variableLimit)
+    throw new GitHubAuthError('validation')
+  await assertRetainedCredentials(deps.query, baseVersion)
   if (deps.verifyMaterial) await deps.verifyMaterial(recovery, input.descriptor)
-  else await verifyMaterialScope(recovery,input.descriptor,deps)
+  else await verifyMaterialScope(recovery, input.descriptor, deps)
   const candidate = await prepareGitHubAuthCandidate(deps.query, {
     descriptor: input.descriptor,
     expectedRevision: input.expectedRevision,
@@ -229,7 +274,12 @@ function receipt(
   id: string,
   row: { phase: string; version_id: string | null; attestation_id: string | null },
 ): GitHubAppStageReceipt {
-  return { candidateId: id, phase: row.phase, versionId: row.version_id, attestationId: row.attestation_id }
+  return {
+    candidateId: id,
+    phase: row.phase,
+    versionId: row.version_id,
+    attestationId: row.attestation_id,
+  }
 }
 async function save(
   deps: GitHubAppDeploymentDependencies,
@@ -245,8 +295,13 @@ async function save(
   )
   return { candidateId: id, phase, versionId, attestationId }
 }
-async function validateStaged(plan: GitHubAppDeploymentPlan, version: GitHubWorkerVersion,query:ConfigurationQuery) {
-  await assertRetainedCredentials(query,version)
+async function validateStaged(
+  plan: GitHubAppDeploymentPlan,
+  version: GitHubWorkerVersion,
+  query: ConfigurationQuery,
+) {
+  if (variableCount(version) > plan.variableLimit) conflict()
+  await assertRetainedCredentials(query, version)
   if (
     plan.descriptor.mode === 'gh' ||
     version.scriptEtag !== plan.baseVersion.scriptEtag ||
@@ -254,9 +309,10 @@ async function validateStaged(plan: GitHubAppDeploymentPlan, version: GitHubWork
     !compatible(version, plan.databaseId)
   )
     conflict()
-  const expected = [...plan.baseVersion.bindings, { name: githubAuthSecretName(plan.descriptor), type: 'secret_text' }].sort(
-    (a, b) => a.name.localeCompare(b.name),
-  )
+  const expected = [
+    ...plan.baseVersion.bindings,
+    { name: githubAuthSecretName(plan.descriptor), type: 'secret_text' },
+  ].sort((a, b) => a.name.localeCompare(b.name))
   if (
     !(await equal(
       [...version.bindings].sort((a, b) => a.name.localeCompare(b.name)),
@@ -274,7 +330,7 @@ export async function stageGitHubAppWorkerKey(
   if (['stage_intent', 'stage_indeterminate'].includes(row.phase)) {
     const versions = await deps.provider.taggedVersions(id)
     if (versions.length !== 1) return save(deps, id, 'stage_indeterminate', null)
-    await validateStaged(plan, versions[0]!,deps.query)
+    await validateStaged(plan, versions[0]!, deps.query)
     await githubAuthQuery(
       deps.query,
       "UPDATE github_auth_candidates SET state='staged',version_id=? WHERE id=? AND state='prepared'",
@@ -298,12 +354,16 @@ export async function stageGitHubAppWorkerKey(
   const recovery = await material(deps, candidate.descriptor)
   let versionId: string
   try {
-    versionId = await deps.provider.stage(githubAuthSecretName(candidate.descriptor), recovery.kind==='github-app' ? recovery.privateKey : recovery.token, id)
+    versionId = await deps.provider.stage(
+      githubAuthSecretName(candidate.descriptor),
+      recovery.kind === 'github-app' ? recovery.privateKey : recovery.token,
+      id,
+    )
   } catch {
     return save(deps, id, 'stage_indeterminate', null)
   }
   try {
-    await validateStaged(plan, await deps.provider.version(versionId),deps.query)
+    await validateStaged(plan, await deps.provider.version(versionId), deps.query)
   } catch {
     await save(deps, id, 'conflict', versionId)
     conflict()
@@ -322,10 +382,12 @@ export async function deployGitHubAppWorkerVersion(
   const { plan, row } = await journal(deps, id)
   if (
     !row.version_id ||
-    !['staged', 'deploy_intent', 'deployment_indeterminate', 'deployed', 'verified'].includes(row.phase)
+    !['staged', 'deploy_intent', 'deployment_indeterminate', 'deployed', 'verified'].includes(
+      row.phase,
+    )
   )
     conflict()
-  await validateStaged(plan, await deps.provider.version(row.version_id),deps.query)
+  await validateStaged(plan, await deps.provider.version(row.version_id), deps.query)
   const serving = await deps.provider.deployment()
   if (serving.singleVersion && serving.versionId === row.version_id) {
     await githubAuthQuery(
@@ -373,18 +435,21 @@ export async function verifyGitHubAppWorkerKey(
     plan.descriptor.mode === 'gh'
   )
     conflict()
-  await validateStaged(plan, await deps.provider.version(row.version_id),deps.query)
+  await validateStaged(plan, await deps.provider.version(row.version_id), deps.query)
   const challenge = await createGitHubAppKeyChallenge(deps.query, id, row.version_id)
   const signal = AbortSignal.timeout(8000)
   let value: { attestationId: string; versionId: string; fingerprint: string }
   try {
-    const response = await (deps.fetch ?? fetch)(plan.verificationOrigin + GITHUB_APP_KEY_VERIFICATION_PATH, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce: challenge.nonce }),
-      signal,
-      redirect: 'error',
-    })
+    const response = await (deps.fetch ?? fetch)(
+      plan.verificationOrigin + GITHUB_APP_KEY_VERIFICATION_PATH,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ nonce: challenge.nonce }),
+        signal,
+        redirect: 'error',
+      },
+    )
     if (!response.ok) throw new Error()
     value = z
       .object({ attestationId: z.uuid(), versionId: z.string(), fingerprint: z.string() })
@@ -393,7 +458,8 @@ export async function verifyGitHubAppWorkerKey(
   } catch {
     throw new GitHubAuthError('unavailable')
   }
-  if (value.versionId !== row.version_id || value.fingerprint !== plan.descriptor.fingerprint) conflict()
+  if (value.versionId !== row.version_id || value.fingerprint !== plan.descriptor.fingerprint)
+    conflict()
   if (
     !(
       await githubAuthQuery(
@@ -419,7 +485,10 @@ export async function verifyGitHubAppWorkerKey(
   )
   return save(deps, id, 'verified', row.version_id, value.attestationId)
 }
-export async function activateGitHubAppDeployment(id: string, deps: GitHubAppDeploymentDependencies) {
+export async function activateGitHubAppDeployment(
+  id: string,
+  deps: GitHubAppDeploymentDependencies,
+) {
   const { plan, row } = await journal(deps, id)
   if (row.phase !== 'verified' || !row.attestation_id) conflict()
   return activateGitHubAuthCandidate(deps.query, {
@@ -427,7 +496,7 @@ export async function activateGitHubAppDeployment(id: string, deps: GitHubAppDep
     attestationId: row.attestation_id,
     verifyDeployment: async () => {
       if (!row.version_id) conflict()
-      await validateStaged(plan, await deps.provider.version(row.version_id),deps.query)
+      await validateStaged(plan, await deps.provider.version(row.version_id), deps.query)
       const serving = await deps.provider.deployment()
       if (serving.versionId !== row.version_id || !serving.singleVersion) conflict()
       return serving
@@ -471,7 +540,11 @@ export function createGitHubAppDeploymentProvider(
   fetcher: typeof fetch = fetch,
 ): GitHubAppDeploymentProvider {
   const token = environment.CLOUDFLARE_API_TOKEN
-  if (!token || !/^[a-f0-9]{32}$/.test(target.accountId) || !/^[A-Za-z0-9_-]{1,63}$/.test(target.workerName))
+  if (
+    !token ||
+    !/^[a-f0-9]{32}$/.test(target.accountId) ||
+    !/^[A-Za-z0-9_-]{1,63}$/.test(target.workerName)
+  )
     throw new GitHubAuthError('validation')
   const prefix = `https://api.cloudflare.com/client/v4/accounts/${target.accountId}/workers`
   async function request(path: string, method = 'GET', body?: unknown) {
@@ -510,7 +583,9 @@ export function createGitHubAppDeploymentProvider(
           resources: z.object({
             script: z.object({ etag: z.string() }),
             script_runtime: z.unknown(),
-            bindings: z.array(z.object({ name: z.string(), type: z.string() }).passthrough()).max(500),
+            bindings: z
+              .array(z.object({ name: z.string(), type: z.string() }).passthrough())
+              .max(500),
           }),
         })
         .parse(await request(script + '/versions/' + id))
@@ -542,11 +617,17 @@ export function createGitHubAppDeploymentProvider(
   return {
     version,
     latestVersion: async () => {
-      const { id } = z.object({ id: z.string() }).parse(await request(`/workers/${target.workerName}/versions/latest`))
+      const { id } = z
+        .object({ id: z.string() })
+        .parse(await request(`/workers/${target.workerName}/versions/latest`))
       return version(id)
     },
     stage: async (name, key, tag) => {
-      if (!/^[A-Z][A-Z0-9_]{0,99}$/.test(name) || !/^[A-Za-z0-9_-]{1,160}$/.test(tag))
+      if (
+        new TextEncoder().encode(key).byteLength > WORKER_VARIABLE_LIMITS.SECRET_BYTES ||
+        !/^[A-Z][A-Z0-9_]{0,99}$/.test(name) ||
+        !/^[A-Za-z0-9_-]{1,160}$/.test(tag)
+      )
         throw new GitHubAuthError('validation')
       const result = await request(`/workers/${target.workerName}/versions/latest`, 'PATCH', {
         env: { [name]: { type: 'secret_text', text: key } },
@@ -558,7 +639,12 @@ export function createGitHubAppDeploymentProvider(
       const result = z
         .object({
           items: z
-            .array(z.object({ id: z.string(), annotations: z.record(z.string(), z.string()).optional() }))
+            .array(
+              z.object({
+                id: z.string(),
+                annotations: z.record(z.string(), z.string()).optional(),
+              }),
+            )
             .max(100),
         })
         .parse(await request(script + '/versions?per_page=100'))
@@ -597,7 +683,10 @@ export function createGitHubAppDeploymentProvider(
     },
   }
 }
-export async function previewGitHubAppDeployment(id: string, deps: GitHubAppDeploymentDependencies) {
+export async function previewGitHubAppDeployment(
+  id: string,
+  deps: GitHubAppDeploymentDependencies,
+) {
   const { plan, row } = await journal(deps, id)
   return {
     ...receipt(id, row),
@@ -607,6 +696,9 @@ export async function previewGitHubAppDeployment(id: string, deps: GitHubAppDepl
     revision: plan.descriptor.revision,
     fingerprint: plan.descriptor.mode !== 'gh' ? plan.descriptor.fingerprint : null,
     baseVersionId: plan.baseVersionId,
+    variableLimit: plan.variableLimit,
+    stagedVariableCount: variableCount(plan.baseVersion) + 1,
+    requiresPaidVariableCapacity: variableCount(plan.baseVersion) + 1 > WORKER_VARIABLE_LIMITS.FREE,
     scriptEtag: plan.baseVersion.scriptEtag,
   }
 }
@@ -633,7 +725,11 @@ export async function readGitHubAppOperatorStatus(query: ConfigurationQuery, des
     managementWorkspaces: descriptor.managementWorkspaces,
   }
 }
-export async function disconnectGitHubAppDescriptor(query: ConfigurationQuery, descriptorId: string, revision: number) {
+export async function disconnectGitHubAppDescriptor(
+  query: ConfigurationQuery,
+  descriptorId: string,
+  revision: number,
+) {
   const status = await readGitHubAppOperatorStatus(query, descriptorId)
   if (status.state === 'disconnected' && status.revision === revision) return status
   const rows = await githubAuthQuery(
@@ -645,41 +741,114 @@ export async function disconnectGitHubAppDescriptor(query: ConfigurationQuery, d
   return readGitHubAppOperatorStatus(query, descriptorId)
 }
 
-async function verifyMaterialScope(recovery:GitHubCredentialRecoveryFile,descriptor:GitHubAuthDescriptor,deps:GitHubAppDeploymentDependencies) {
-  const capability=descriptor.capabilities.includes('repository-hooks-write') ? 'repository-hooks-write' : 'repository-hooks-read'
-  const {quotaKey}=await githubAuthIdentity(descriptor,0,descriptor.managementWorkspaces[0]!,'cloudflare-operator',descriptor.repositories[0]!.id,capability)
-  await assertGitHubAuthCooldown(deps.query,quotaKey,Date.now())
-  const signal=AbortSignal.timeout(GITHUB_APP_LIMITS.REQUEST_MS)
-  const fetcher:typeof fetch=async (url,init) => {
-    if(typeof url!=='string')throw new GitHubAuthError('validation')
-    const response=await fetchGitHubWithDeadline(deps.fetch ?? fetch,url,{...init,signal})
-    await recordGitHubAuthResponse(deps.query,quotaKey,response)
+async function verifyMaterialScope(
+  recovery: GitHubCredentialRecoveryFile,
+  descriptor: GitHubAuthDescriptor,
+  deps: GitHubAppDeploymentDependencies,
+) {
+  const capability = descriptor.capabilities.includes('repository-hooks-write')
+    ? 'repository-hooks-write'
+    : 'repository-hooks-read'
+  const { quotaKey } = await githubAuthIdentity(
+    descriptor,
+    0,
+    descriptor.managementWorkspaces[0]!,
+    'cloudflare-operator',
+    descriptor.repositories[0]!.id,
+    capability,
+  )
+  await assertGitHubAuthCooldown(deps.query, quotaKey, Date.now())
+  const signal = AbortSignal.timeout(GITHUB_APP_LIMITS.REQUEST_MS)
+  const fetcher: typeof fetch = async (url, init) => {
+    if (typeof url !== 'string') throw new GitHubAuthError('validation')
+    const response = await fetchGitHubWithDeadline(deps.fetch ?? fetch, url, { ...init, signal })
+    await recordGitHubAuthResponse(deps.query, quotaKey, response)
+    const retryAt = githubRetryAt(response)
+    if (retryAt !== null) {
+      void response.body?.cancel().catch(() => {})
+      throw new GitHubAuthError('rate_limited', retryAt)
+    }
     return response
   }
   try {
-    if(descriptor.mode==='app' && recovery.kind==='github-app') {
-      await verifyGitHubInstallation({...descriptor,privateKey:recovery.privateKey,capability,fetch:fetcher,signal})
-    } else if(descriptor.mode==='token' && recovery.kind==='github-token') {
-      for(const repo of descriptor.repositories) {
-        if(['.','..'].includes(repo.fullName.split('/')[1]!))throw new GitHubAuthError('validation')
-        const response=await fetcher('https://api.github.com/repos/'+repo.fullName,{method:'GET',redirect:'manual',signal,headers:{authorization:'Bearer '+recovery.token,accept:'application/vnd.github+json','x-github-api-version':'2022-11-28','user-agent':'Hookrelay'}})
-        if(response.status!==200){void response.body?.cancel().catch(()=>{});throw new GitHubAuthError('denied')}
-        const value=z.object({id:z.number(),full_name:z.string(),owner:z.object({id:z.number()}),private:z.boolean()}).parse(await readGitHubAppJson(response,signal))
-        if(value.id!==repo.id || value.full_name!==repo.fullName || value.owner.id!==repo.ownerId || value.private!==repo.private)throw new GitHubAuthError('denied')
+    if (descriptor.mode === 'app' && recovery.kind === 'github-app') {
+      await verifyGitHubInstallation({
+        ...descriptor,
+        privateKey: recovery.privateKey,
+        capability,
+        fetch: fetcher,
+        signal,
+      })
+    } else if (descriptor.mode === 'token' && recovery.kind === 'github-token') {
+      for (const repo of descriptor.repositories) {
+        if (['.', '..'].includes(repo.fullName.split('/')[1]!))
+          throw new GitHubAuthError('validation')
+        const response = await fetcher('https://api.github.com/repos/' + repo.fullName, {
+          method: 'GET',
+          redirect: 'manual',
+          signal,
+          headers: {
+            authorization: 'Bearer ' + recovery.token,
+            accept: 'application/vnd.github+json',
+            'x-github-api-version': '2022-11-28',
+            'user-agent': 'Hookrelay',
+          },
+        })
+        if (response.status !== 200) {
+          void response.body?.cancel().catch(() => {})
+          throw new GitHubAuthError('denied')
+        }
+        const value = z
+          .object({
+            id: z.number(),
+            full_name: z.string(),
+            owner: z.object({ id: z.number() }),
+            private: z.boolean(),
+          })
+          .parse(await readGitHubAppJson(response, signal))
+        if (
+          value.id !== repo.id ||
+          value.full_name !== repo.fullName ||
+          value.owner.id !== repo.ownerId ||
+          value.private !== repo.private
+        )
+          throw new GitHubAuthError('denied')
       }
     } else throw new GitHubAuthError('validation')
-  } catch(error) {
-    if(error instanceof GitHubAuthError && error.code==='rate_limited')await recordGitHubAuthCooldown(deps.query,quotaKey,error.retryAt ?? Date.now()+GITHUB_APP_LIMITS.AUTHORITY_AGE_MS)
-    if(error instanceof GitHubAuthError)throw error
+  } catch (error) {
+    if (error instanceof GitHubAuthError && error.code === 'rate_limited')
+      await recordGitHubAuthCooldown(
+        deps.query,
+        quotaKey,
+        error.retryAt ?? Date.now() + GITHUB_APP_LIMITS.AUTHORITY_AGE_MS,
+      )
+    if (error instanceof GitHubAuthError) throw error
     throw new GitHubAuthError('unavailable')
   }
 }
 
-async function assertRetainedCredentials(query:ConfigurationQuery,version:GitHubWorkerVersion) {
-  const rows=await githubAuthQuery<{metadata_json:string}>(query,"SELECT metadata_json FROM github_auth_descriptors WHERE json_extract(metadata_json,'$.state')='active' ORDER BY id LIMIT ?",[GITHUB_AUTH_REGISTRY_LIMITS.DESCRIPTORS+1])
-  if(rows.length>GITHUB_AUTH_REGISTRY_LIMITS.DESCRIPTORS)conflict()
-  for(const row of rows) {
-    const descriptor=githubAuthDescriptorSchema.parse(JSON.parse(row.metadata_json))
-    if(descriptor.mode!=='gh' && !version.bindings.some(binding=>binding.type==='secret_text' && binding.name===githubAuthSecretName(descriptor)))conflict()
+async function assertRetainedCredentials(query: ConfigurationQuery, version: GitHubWorkerVersion) {
+  const rows = await githubAuthQuery<{ metadata_json: string }>(
+    query,
+    "SELECT metadata_json FROM github_auth_descriptors WHERE json_extract(metadata_json,'$.state')='active' ORDER BY id LIMIT ?",
+    [GITHUB_AUTH_REGISTRY_LIMITS.DESCRIPTORS + 1],
+  )
+  if (rows.length > GITHUB_AUTH_REGISTRY_LIMITS.DESCRIPTORS) conflict()
+  for (const row of rows) {
+    const descriptor = githubAuthDescriptorSchema.parse(JSON.parse(row.metadata_json))
+    if (
+      descriptor.mode !== 'gh' &&
+      !version.bindings.some(
+        (binding) =>
+          binding.type === 'secret_text' && binding.name === githubAuthSecretName(descriptor),
+      )
+    )
+      conflict()
   }
+}
+
+function variableCount(version: GitHubWorkerVersion) {
+  return version.bindings.filter((binding) =>
+    ['plain_text', 'secret_text', 'json'].includes(binding.type),
+  ).length
 }

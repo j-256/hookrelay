@@ -82,9 +82,9 @@ const requestSchema = z.discriminatedUnion('operation', [
     z.object({ operation: z.literal(operation), repo, hookId }).strict(),
   ),
 ])
-export function parseGitHubHookRequest(input:unknown) {
-  const value=requestSchema.safeParse(input)
-  if(!value.success)throw new GitHubAuthError('validation')
+export function parseGitHubHookRequest(input: unknown) {
+  const value = requestSchema.safeParse(input)
+  if (!value.success) throw new GitHubAuthError('validation')
   return value.data
 }
 export type GitHubHookRequest = z.input<typeof requestSchema>
@@ -110,7 +110,7 @@ export type GitHubOperatorAuth = {
     fingerprint?: string
   }
   transport: GitHubHookTransport
-  verifyRepositoryAuthority?:(repo:string)=>Promise<GitHubAuthLease['fence']>
+  verifyRepositoryAuthority?: (repo: string) => Promise<GitHubAuthLease['fence']>
   repository(repo: string): Promise<{
     nameWithOwner: string
     visibility: string
@@ -367,7 +367,7 @@ export async function resolveOperatorGitHubAuth(
           operationId = crypto.randomUUID()
           const requestHash = await configurationDigest(requested)
           const targetHash = await configurationDigest({
-            repo: requested.repo,
+            repositoryId: current.fence.repositoryId,
             target:
               'webhookUrl' in requested
                 ? canonicalReceiverTarget(requested.webhookUrl)
@@ -629,7 +629,15 @@ export async function resolveOperatorGitHubAuth(
           : {}),
     },
     transport: { request },
-    verifyRepositoryAuthority:async repo=>(await lease(repo,'repository-hooks-write','effect',AbortSignal.timeout(GITHUB_APP_LIMITS.REQUEST_MS))).fence,
+    verifyRepositoryAuthority: async (repo) =>
+      (
+        await lease(
+          repo,
+          'repository-hooks-write',
+          'effect',
+          AbortSignal.timeout(GITHUB_APP_LIMITS.REQUEST_MS),
+        )
+      ).fence,
     repository: async (repository) => {
       const value = z
         .object({

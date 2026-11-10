@@ -145,6 +145,7 @@ export async function createRuntimeGitHubAuthentication(
     revision: principal.revision,
     actorId: context.actorId,
   })
+  const correlationId = crypto.randomUUID()
   let initial: GitHubAuthLease | null = null
   let legacyHash: string | null = null
   const result: RuntimeGitHubAuthentication = {
@@ -179,6 +180,11 @@ export async function createRuntimeGitHubAuthentication(
       const lease = await resolveGitHubAuth({
         query,
         selection,
+        correlationId,
+        diagnostic: (event) => {
+          if (event.phase === 'effect' || event.outcome !== 'allowed')
+            console.log(JSON.stringify(event))
+        },
         workspaceId: context.workspaceId,
         callerId,
         repositoryFullName,

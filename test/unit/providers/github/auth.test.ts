@@ -363,135 +363,356 @@ it('reports actual hook throttling and shares its cooldown with another workspac
   ).rejects.toMatchObject({ code: 'rate_limited' })
   expect(deps.fetch.mock.calls).toHaveLength(before)
 })
-it('retains a confirmed native deletion while marking its lost authority verification explicitly',async () => {
-  const {auth,deps}=await fixture('app','active')
-  const original=deps.fetch.getMockImplementation()!
-  deps.fetch.mockImplementation(async (url,init)=>{
-    const response=await original(url,init)
-    if(init?.method==='DELETE')await env.EVENTS_DB.prepare("UPDATE github_auth_descriptors SET revision=2,metadata_json=json_set(metadata_json,'$.revision',2)").run()
+it('retains a confirmed native deletion while marking its lost authority verification explicitly', async () => {
+  const { auth, deps } = await fixture('app', 'active')
+  const original = deps.fetch.getMockImplementation()!
+  deps.fetch.mockImplementation(async (url, init) => {
+    const response = await original(url, init)
+    if (init?.method === 'DELETE')
+      await env.EVENTS_DB.prepare(
+        "UPDATE github_auth_descriptors SET revision=2,metadata_json=json_set(metadata_json,'$.revision',2)",
+      ).run()
     return response
   })
-  await auth.transport.request({operation:'delete',repo:effect.repo,hookId:10})
-  expect(await env.EVENTS_DB.prepare('SELECT state,verified,error_code,provider_status FROM github_hook_operations').first()).toMatchObject({state:'accepted',verified:0,error_code:'authority_changed',provider_status:204})
-  const before=deps.fetch.mock.calls.length
-  await expect(auth.transport.request({operation:'ping',repo:effect.repo,hookId:10})).rejects.toMatchObject({code:'conflict'})
+  await auth.transport.request({ operation: 'delete', repo: effect.repo, hookId: 10 })
+  expect(
+    await env.EVENTS_DB.prepare(
+      'SELECT state,verified,error_code,provider_status FROM github_hook_operations',
+    ).first(),
+  ).toMatchObject({
+    state: 'accepted',
+    verified: 0,
+    error_code: 'authority_changed',
+    provider_status: 204,
+  })
+  const before = deps.fetch.mock.calls.length
+  await expect(
+    auth.transport.request({ operation: 'ping', repo: effect.repo, hookId: 10 }),
+  ).rejects.toMatchObject({ code: 'conflict' })
   expect(deps.fetch.mock.calls).toHaveLength(before)
 })
-it('treats equivalent receiver URL spellings as one unresolved target',async () => {
-  const {auth,deps}=await fixture('app','active')
-  const original=deps.fetch.getMockImplementation()!
-  let dispatches=0
-  deps.fetch.mockImplementation(async (url,init)=>{if(String(url).includes('/repos/') && init?.method==='POST'){dispatches++;throw new Error('lost')}return original(url,init)})
-  const request={operation:'create' as const,repo:effect.repo,webhookUrl:effect.webhookUrl,secret:effect.secret,events:effect.events}
-  await expect(auth.transport.request(request)).rejects.toMatchObject({code:'indeterminate'})
-  await expect(auth.transport.request({...request,webhookUrl:effect.webhookUrl+'/'})).rejects.toMatchObject({code:'indeterminate'})
+it('treats equivalent receiver URL spellings as one unresolved target', async () => {
+  const { auth, deps } = await fixture('app', 'active')
+  const original = deps.fetch.getMockImplementation()!
+  let dispatches = 0
+  deps.fetch.mockImplementation(async (url, init) => {
+    if (String(url).includes('/repos/') && init?.method === 'POST') {
+      dispatches++
+      throw new Error('lost')
+    }
+    return original(url, init)
+  })
+  const request = {
+    operation: 'create' as const,
+    repo: effect.repo,
+    webhookUrl: effect.webhookUrl,
+    secret: effect.secret,
+    events: effect.events,
+  }
+  await expect(auth.transport.request(request)).rejects.toMatchObject({ code: 'indeterminate' })
+  await expect(
+    auth.transport.request({ ...request, webhookUrl: effect.webhookUrl + '/' }),
+  ).rejects.toMatchObject({ code: 'indeterminate' })
   expect(dispatches).toBe(1)
 })
-it('classifies explicit input and missing CLI failures without exposing private subprocess diagnostics',async () => {
-  const {operatorGitHubExitCode}=await import('../../../../scripts/providers/github/auth')
-  let invalid:unknown
-  try{extractOperatorGitHubAuthArgs(['--github-auth','unknown'])}catch(error){invalid=error}
+it('classifies explicit input and missing CLI failures without exposing private subprocess diagnostics', async () => {
+  const { operatorGitHubExitCode } = await import('../../../../scripts/providers/github/auth')
+  let invalid: unknown
+  try {
+    extractOperatorGitHubAuthArgs(['--github-auth', 'unknown'])
+  } catch (error) {
+    invalid = error
+  }
   expect(operatorGitHubExitCode(invalid)).toBe(2)
-  const auth=await resolveOperatorGitHubAuth({mode:'gh'},{runner:async ()=>{throw Object.assign(new Error('private-error-canary'),{code:'ENOENT'})}})
-  let missing:unknown
-  try{await auth.transport.request({operation:'list',repo:'owner/repo'})}catch(error){missing=error}
+  const auth = await resolveOperatorGitHubAuth(
+    { mode: 'gh' },
+    {
+      runner: async () => {
+        throw Object.assign(new Error('private-error-canary'), { code: 'ENOENT' })
+      },
+    },
+  )
+  let missing: unknown
+  try {
+    await auth.transport.request({ operation: 'list', repo: 'owner/repo' })
+  } catch (error) {
+    missing = error
+  }
   expect(operatorGitHubExitCode(missing)).toBe(3)
   expect((missing as Error).message).not.toContain('private-error-canary')
 })
 
-it('reconciles an uncertain create using exact protected inputs and a fresh signed ping without replaying it',async () => {
-  const {inspectGitHubHookOperations,reconcileGitHubHookOperation}=await import('../../../../scripts/providers/github/operation-recovery')
-  const f=await fixture('app','active')
-  const normal=f.fetcher.getMockImplementation()!
-  let created=0,pinged=false
-  f.fetcher.mockImplementation(async (url,init)=>{
-    const path=new URL(String(url)).pathname
-    if(init?.method==='POST' && path.endsWith('/hooks')) {created++;throw new Error('lost-effect')}
-    if(init?.method==='GET' && path.endsWith('/hooks'))return Response.json([hook])
-    if(path.endsWith('/pings'))pinged=true
-    if(path.endsWith('/deliveries'))return Response.json(pinged ? [{guid:'recovery-ping',event:'ping',status_code:200,delivered_at:new Date().toISOString()}] : [])
-    return normal(url,init)
+it('reconciles an uncertain create using exact protected inputs and a fresh signed ping without replaying it', async () => {
+  const { inspectGitHubHookOperations, reconcileGitHubHookOperation } =
+    await import('../../../../scripts/providers/github/operation-recovery')
+  const f = await fixture('app', 'active')
+  const normal = f.fetcher.getMockImplementation()!
+  let created = 0,
+    pinged = false
+  f.fetcher.mockImplementation(async (url, init) => {
+    const path = new URL(String(url)).pathname
+    if (init?.method === 'POST' && path.endsWith('/hooks')) {
+      created++
+      throw new Error('lost-effect')
+    }
+    if (init?.method === 'GET' && path.endsWith('/hooks')) return Response.json([hook])
+    if (path.endsWith('/pings')) pinged = true
+    if (path.endsWith('/deliveries'))
+      return Response.json(
+        pinged
+          ? [
+              {
+                guid: 'recovery-ping',
+                event: 'ping',
+                status_code: 200,
+                delivered_at: new Date().toISOString(),
+              },
+            ]
+          : [],
+      )
+    return normal(url, init)
   })
-  const originalRequest={operation:'create' as const,repo:effect.repo,webhookUrl:effect.webhookUrl,secret:effect.secret,events:effect.events}
-  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({code:'indeterminate'})
+  const originalRequest = {
+    operation: 'create' as const,
+    repo: effect.repo,
+    webhookUrl: effect.webhookUrl,
+    secret: effect.secret,
+    events: effect.events,
+  }
+  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({
+    code: 'indeterminate',
+  })
   await env.EVENTS_DB.exec('UPDATE github_hook_operations SET updated_at=updated_at-9000')
-  const rows=await inspectGitHubHookOperations(query,f.auth,{})
+  const rows = await inspectGitHubHookOperations(query, f.auth, {})
   expect(rows.operations).toHaveLength(1)
-  const row=rows.operations[0]!
+  const row = rows.operations[0]!
   expect(JSON.stringify(rows)).not.toContain(effect.webhookUrl)
-  const input={operationId:row.id,expectedUpdatedAt:row.updatedAt,requestHash:row.requestHash,originalRequest,acknowledgeUncertainOutcome:true,observation:'present' as const}
-  await expect(reconcileGitHubHookOperation(query,f.auth,{...input,originalRequest:{...originalRequest,secret:'wrong-private-input'}})).rejects.toMatchObject({code:'conflict'})
-  const result=await reconcileGitHubHookOperation(query,f.auth,input)
+  const input = {
+    operationId: row.id,
+    expectedUpdatedAt: row.updatedAt,
+    requestHash: row.requestHash,
+    originalRequest,
+    acknowledgeUncertainOutcome: true,
+    observation: 'present' as const,
+  }
+  await expect(
+    reconcileGitHubHookOperation(query, f.auth, {
+      ...input,
+      originalRequest: { ...originalRequest, secret: 'wrong-private-input' },
+    }),
+  ).rejects.toMatchObject({ code: 'conflict' })
+  const result = await reconcileGitHubHookOperation(query, f.auth, input)
   expect(result.observation).toBe('present')
   expect(result.historicalState).toBe('indeterminate')
   expect(created).toBe(1)
   expect(pinged).toBe(true)
-  expect((await inspectGitHubHookOperations(query,f.auth,{})).operations).toHaveLength(0)
-  const original=await env.EVENTS_DB.prepare('SELECT state FROM github_hook_operations WHERE id=?').bind(row.id).first()
+  expect((await inspectGitHubHookOperations(query, f.auth, {})).operations).toHaveLength(0)
+  const original = await env.EVENTS_DB.prepare(
+    'SELECT state FROM github_hook_operations WHERE id=?',
+  )
+    .bind(row.id)
+    .first()
   expect(original?.state).toBe('indeterminate')
 })
 
-it('retains the unresolved intent when current observations or authority do not support recovery',async () => {
-  const {inspectGitHubHookOperations,reconcileGitHubHookOperation}=await import('../../../../scripts/providers/github/operation-recovery')
-  const f=await fixture('app','active')
-  const normal=f.fetcher.getMockImplementation()!
-  f.fetcher.mockImplementation(async (url,init)=>init?.method==='DELETE' ? Promise.reject(new Error('lost-effect')) : normal(url,init))
-  const originalRequest={operation:'delete' as const,repo:effect.repo,hookId:10}
-  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({code:'indeterminate'})
+it('retains the unresolved intent when current observations or authority do not support recovery', async () => {
+  const { inspectGitHubHookOperations, reconcileGitHubHookOperation } =
+    await import('../../../../scripts/providers/github/operation-recovery')
+  const f = await fixture('app', 'active')
+  const normal = f.fetcher.getMockImplementation()!
+  f.fetcher.mockImplementation(async (url, init) =>
+    init?.method === 'DELETE' ? Promise.reject(new Error('lost-effect')) : normal(url, init),
+  )
+  const originalRequest = { operation: 'delete' as const, repo: effect.repo, hookId: 10 }
+  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({
+    code: 'indeterminate',
+  })
   await env.EVENTS_DB.exec('UPDATE github_hook_operations SET updated_at=updated_at-9000')
-  const row=(await inspectGitHubHookOperations(query,f.auth,{})).operations[0]!
-  const input={operationId:row.id,expectedUpdatedAt:row.updatedAt,requestHash:row.requestHash,originalRequest,acknowledgeUncertainOutcome:true,observation:'absent' as const}
-  f.fetcher.mockImplementation(async (url,init)=>new URL(String(url)).pathname.endsWith('/hooks') ? Response.json([hook]) : normal(url,init))
-  await expect(reconcileGitHubHookOperation(query,f.auth,input)).rejects.toMatchObject({code:'conflict'})
-  expect((await inspectGitHubHookOperations(query,f.auth,{})).operations).toHaveLength(1)
-  f.fetcher.mockImplementation(async (url,init)=>{
-    if(new URL(String(url)).pathname.endsWith('/hooks')) {
-      await env.EVENTS_DB.exec("UPDATE github_auth_descriptors SET revision=revision+1,metadata_json=json_set(metadata_json,'$.revision',revision+1)")
+  const row = (await inspectGitHubHookOperations(query, f.auth, {})).operations[0]!
+  const input = {
+    operationId: row.id,
+    expectedUpdatedAt: row.updatedAt,
+    requestHash: row.requestHash,
+    originalRequest,
+    acknowledgeUncertainOutcome: true,
+    observation: 'absent' as const,
+  }
+  f.fetcher.mockImplementation(async (url, init) =>
+    new URL(String(url)).pathname.endsWith('/hooks') ? Response.json([hook]) : normal(url, init),
+  )
+  await expect(reconcileGitHubHookOperation(query, f.auth, input)).rejects.toMatchObject({
+    code: 'conflict',
+  })
+  expect((await inspectGitHubHookOperations(query, f.auth, {})).operations).toHaveLength(1)
+  f.fetcher.mockImplementation(async (url, init) => {
+    if (new URL(String(url)).pathname.endsWith('/hooks')) {
+      await env.EVENTS_DB.exec(
+        "UPDATE github_auth_descriptors SET revision=revision+1,metadata_json=json_set(metadata_json,'$.revision',revision+1)",
+      )
       return Response.json([])
     }
-    return normal(url,init)
+    return normal(url, init)
   })
-  await expect(reconcileGitHubHookOperation(query,f.auth,input)).rejects.toMatchObject({code:'conflict'})
-  expect(await env.EVENTS_DB.prepare('SELECT count(*) AS n FROM github_hook_operation_reconciliations').first('n')).toBe(0)
+  await expect(reconcileGitHubHookOperation(query, f.auth, input)).rejects.toMatchObject({
+    code: 'conflict',
+  })
+  expect(
+    await env.EVENTS_DB.prepare(
+      'SELECT count(*) AS n FROM github_hook_operation_reconciliations',
+    ).first('n'),
+  ).toBe(0)
 })
 
-it('requires an explicit uncertainty acknowledgement and a completed local deadline before recording absence',async () => {
-  const {inspectGitHubHookOperations,reconcileGitHubHookOperation}=await import('../../../../scripts/providers/github/operation-recovery')
-  const f=await fixture('token','legacy')
-  const normal=f.fetcher.getMockImplementation()!
-  let deletes=0
-  f.fetcher.mockImplementation(async(url,init)=>{
-    if(init?.method==='DELETE'){deletes++;throw new Error('lost-effect')}
-    return normal(url,init)
+it('requires an explicit uncertainty acknowledgement and a completed local deadline before recording absence', async () => {
+  const { inspectGitHubHookOperations, reconcileGitHubHookOperation } =
+    await import('../../../../scripts/providers/github/operation-recovery')
+  const f = await fixture('token', 'legacy')
+  const normal = f.fetcher.getMockImplementation()!
+  let deletes = 0
+  f.fetcher.mockImplementation(async (url, init) => {
+    if (init?.method === 'DELETE') {
+      deletes++
+      throw new Error('lost-effect')
+    }
+    return normal(url, init)
   })
-  const originalRequest={operation:'delete' as const,repo:effect.repo,hookId:10}
-  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({code:'indeterminate'})
-  let row=(await inspectGitHubHookOperations(query,f.auth,{})).operations[0]!
-  let input={operationId:row.id,expectedUpdatedAt:row.updatedAt,requestHash:row.requestHash,originalRequest,acknowledgeUncertainOutcome:true,observation:'absent' as const}
-  await expect(reconcileGitHubHookOperation(query,f.auth,input)).rejects.toMatchObject({code:'conflict'})
+  const originalRequest = { operation: 'delete' as const, repo: effect.repo, hookId: 10 }
+  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({
+    code: 'indeterminate',
+  })
+  let row = (await inspectGitHubHookOperations(query, f.auth, {})).operations[0]!
+  let input = {
+    operationId: row.id,
+    expectedUpdatedAt: row.updatedAt,
+    requestHash: row.requestHash,
+    originalRequest,
+    acknowledgeUncertainOutcome: true,
+    observation: 'absent' as const,
+  }
+  await expect(reconcileGitHubHookOperation(query, f.auth, input)).rejects.toMatchObject({
+    code: 'conflict',
+  })
   await env.EVENTS_DB.exec('UPDATE github_hook_operations SET updated_at=updated_at-9000')
-  row=(await inspectGitHubHookOperations(query,f.auth,{})).operations[0]!
-  input={...input,expectedUpdatedAt:row.updatedAt}
-  await expect(reconcileGitHubHookOperation(query,f.auth,{...input,acknowledgeUncertainOutcome:false})).rejects.toMatchObject({code:'validation'})
-  expect((await reconcileGitHubHookOperation(query,f.auth,input)).observation).toBe('absent')
+  row = (await inspectGitHubHookOperations(query, f.auth, {})).operations[0]!
+  input = { ...input, expectedUpdatedAt: row.updatedAt }
+  await expect(
+    reconcileGitHubHookOperation(query, f.auth, { ...input, acknowledgeUncertainOutcome: false }),
+  ).rejects.toMatchObject({ code: 'validation' })
+  expect((await reconcileGitHubHookOperation(query, f.auth, input)).observation).toBe('absent')
   expect(deletes).toBe(1)
-  expect((await inspectGitHubHookOperations(query,f.auth,{all:true})).operations[0]?.historicalState).toBe('indeterminate')
+  expect(
+    (await inspectGitHubHookOperations(query, f.auth, { all: true })).operations[0]
+      ?.historicalState,
+  ).toBe('indeterminate')
   f.fetcher.mockImplementation(normal)
   await f.auth.transport.request(originalRequest)
-  expect(await env.EVENTS_DB.prepare("SELECT count(*) AS n FROM github_hook_operations WHERE state='accepted'").first('n')).toBe(1)
+  expect(
+    await env.EVENTS_DB.prepare(
+      "SELECT count(*) AS n FROM github_hook_operations WHERE state='accepted'",
+    ).first('n'),
+  ).toBe(1)
 })
-it('requires absence of an updated hook ID as well as its original URL',async () => {
-  const {inspectGitHubHookOperations,reconcileGitHubHookOperation}=await import('../../../../scripts/providers/github/operation-recovery')
-  const f=await fixture('app','active')
-  const normal=f.fetcher.getMockImplementation()!
-  f.fetcher.mockImplementation(async(url,init)=>{
-    if(init?.method==='PATCH')throw new Error('lost-effect')
-    if(new URL(String(url)).pathname.endsWith('/hooks'))return Response.json([{...hook,config:{...hook.config,url:'https://other.example/hook/github/another-private-slug'}}])
-    return normal(url,init)
+it('requires absence of an updated hook ID as well as its original URL', async () => {
+  const { inspectGitHubHookOperations, reconcileGitHubHookOperation } =
+    await import('../../../../scripts/providers/github/operation-recovery')
+  const f = await fixture('app', 'active')
+  const normal = f.fetcher.getMockImplementation()!
+  f.fetcher.mockImplementation(async (url, init) => {
+    if (init?.method === 'PATCH') throw new Error('lost-effect')
+    if (new URL(String(url)).pathname.endsWith('/hooks'))
+      return Response.json([
+        {
+          ...hook,
+          config: { ...hook.config, url: 'https://other.example/hook/github/another-private-slug' },
+        },
+      ])
+    return normal(url, init)
   })
-  const originalRequest={...effect,operation:'update' as const,active:true}
-  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({code:'indeterminate'})
+  const originalRequest = { ...effect, operation: 'update' as const, active: true }
+  await expect(f.auth.transport.request(originalRequest)).rejects.toMatchObject({
+    code: 'indeterminate',
+  })
   await env.EVENTS_DB.exec('UPDATE github_hook_operations SET updated_at=updated_at-9000')
-  const row=(await inspectGitHubHookOperations(query,f.auth,{})).operations[0]!
-  await expect(reconcileGitHubHookOperation(query,f.auth,{operationId:row.id,expectedUpdatedAt:row.updatedAt,requestHash:row.requestHash,originalRequest,acknowledgeUncertainOutcome:true,observation:'absent'})).rejects.toMatchObject({code:'conflict'})
+  const row = (await inspectGitHubHookOperations(query, f.auth, {})).operations[0]!
+  await expect(
+    reconcileGitHubHookOperation(query, f.auth, {
+      operationId: row.id,
+      expectedUpdatedAt: row.updatedAt,
+      requestHash: row.requestHash,
+      originalRequest,
+      acknowledgeUncertainOutcome: true,
+      observation: 'absent',
+    }),
+  ).rejects.toMatchObject({ code: 'conflict' })
+})
+it('keeps an unknown effect blocked across a reviewed repository rename by numeric identity', async () => {
+  const f = await fixture('app', 'active')
+  const normal = f.fetcher.getMockImplementation()!
+  let attempts = 0,
+    renamed = false,
+    verifiedPing = false
+  f.fetcher.mockImplementation(async (url, init) => {
+    if (init?.method === 'POST' && new URL(String(url)).pathname.endsWith('/hooks')) {
+      attempts++
+      throw new Error('lost-effect')
+    }
+    if (renamed && new URL(String(url)).pathname.endsWith('/pings')) {
+      verifiedPing = true
+      return new Response(null, { status: 204 })
+    }
+    if (renamed && new URL(String(url)).pathname.endsWith('/deliveries'))
+      return Response.json(
+        verifiedPing
+          ? [
+              {
+                guid: 'renamed-recovery-ping',
+                event: 'ping',
+                status_code: 200,
+                delivered_at: new Date().toISOString(),
+              },
+            ]
+          : [],
+      )
+    if (renamed && new URL(String(url)).pathname.endsWith('/hooks')) return Response.json([hook])
+    if (renamed && new URL(String(url)).pathname.endsWith('/access_tokens'))
+      return Response.json({
+        token: 'synthetic-renamed-token',
+        expires_at: new Date(Date.now() + 3600000).toISOString(),
+        permissions: JSON.parse(String(init?.body)).permissions,
+        repositories: [{ id: 101, full_name: 'owner/renamed', private: true, owner: { id: 50 } }],
+      })
+    return normal(url, init)
+  })
+  const original = {
+    operation: 'create' as const,
+    repo: effect.repo,
+    webhookUrl: effect.webhookUrl,
+    secret: effect.secret,
+    events: effect.events,
+  }
+  await expect(f.auth.transport.request(original)).rejects.toMatchObject({ code: 'indeterminate' })
+  await env.EVENTS_DB.exec(
+    "UPDATE github_auth_descriptors SET revision=2,metadata_json=json_set(metadata_json,'$.revision',2,'$.repositories[0].fullName','owner/renamed')",
+  )
+  renamed = true
+  const auth = await resolveOperatorGitHubAuth(f.options, f.deps)
+  await expect(
+    auth.transport.request({ ...original, repo: 'owner/renamed' }),
+  ).rejects.toMatchObject({ code: 'indeterminate' })
+  expect(attempts).toBe(1)
+  const { inspectGitHubHookOperations, reconcileGitHubHookOperation } =
+    await import('../../../../scripts/providers/github/operation-recovery')
+  await env.EVENTS_DB.exec('UPDATE github_hook_operations SET updated_at=updated_at-9000')
+  const row = (await inspectGitHubHookOperations(query, auth, {})).operations[0]!
+  const recovered = await reconcileGitHubHookOperation(query, auth, {
+    operationId: row.id,
+    expectedUpdatedAt: row.updatedAt,
+    requestHash: row.requestHash,
+    originalRequest: original,
+    acknowledgeUncertainOutcome: true,
+    observation: 'present',
+  })
+  expect(recovered.observation).toBe('present')
+  expect(attempts).toBe(1)
+  expect(verifiedPing).toBe(true)
 })
