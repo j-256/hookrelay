@@ -12,12 +12,13 @@ const WAIT_MS = 120_000
 const POLL_MS = 2_000
 const COMMAND_TIMEOUT_MS = 30_000
 const COMMAND_BYTES = 4 * 1024 * 1024
-const HELP = `Usage: node scripts/start-cover-checks.mjs PR_NUMBER
+const HELP = `Usage: node scripts/start-cover-checks.mjs PR_NUMBER HEAD_SHA
 
 Start normal CI for the exact generated-cover PR and print its checked head SHA
 Requires Node, gh, GH_TOKEN with scoped Actions write and repository/PR read,
 GITHUB_REPOSITORY, GITHUB_SHA for the source build, and COVER_WORKFLOWS as a
 comma-separated list of allowed workflow filenames
+HEAD_SHA is the exact candidate commit whose tree and artifact were checked locally
 Only same-repository bot PRs modifying the cover image are admitted
 Progress goes to stderr; no PR review or status-check bypass is performed
 -h, --help  Show help without provider access
@@ -26,16 +27,18 @@ Exit status: 0 verified workflows admitted, 1 runtime/verification failure,
 `
 
 export async function startCoverChecks({
-  repository, sourceSha, number, workflows, api,
+  repository, sourceSha, expectedHeadSha, number, workflows, api,
   now = Date.now, sleep = delay, log = console.error,
 }) {
   assert.match(repository, /^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/)
   assert.match(sourceSha, SHA)
+  assert.match(expectedHeadSha, SHA)
   assert.ok(Number.isSafeInteger(number) && number > 0)
   assert.ok(workflows.length > 0 && workflows.every(name => WORKFLOW.test(name)))
   const expected = new Set(workflows.map(name => `.github/workflows/${name}`))
   const prefix = `repos/${repository}`
-  async function verifyPr(headSha) {
+  const headSha = expectedHeadSha
+  async function verifyPr() {
     const pr = await api(`${prefix}/pulls/${number}`)
     assert.equal(pr.state, 'open')
     assert.equal(pr.draft, false)
@@ -44,7 +47,7 @@ export async function startCoverChecks({
     assert.equal(pr.base.repo.full_name, repository)
     assert.equal(pr.head.repo.full_name, repository)
     assert.match(pr.head.sha, SHA)
-    if (headSha) assert.equal(pr.head.sha, headSha, 'The generated-cover PR head changed')
+    assert.equal(pr.head.sha, headSha, 'The generated-cover PR head differs from the checked candidate')
     assert.equal(pr.user.login, 'github-actions[bot]')
     assert.equal(pr.head.ref, `automation/project-cover-${sourceSha}`)
     assert.equal(pr.changed_files, 1)
@@ -52,7 +55,7 @@ export async function startCoverChecks({
     assert.deepEqual(files.map(file => [file.filename, file.status]), [[COVER, 'modified']])
     return pr.head.sha
   }
-  const headSha = await verifyPr()
+  await verifyPr()
   const started = new Set()
   const deadline = now() + WAIT_MS
   while (now() < deadline) {
@@ -66,14 +69,14 @@ export async function startCoverChecks({
       assert.ok(run.pull_requests.some(item => item.number === number))
       if (run.conclusion === 'action_required') {
         assert.ok(Number.isSafeInteger(run.id) && run.id > 0)
-        await verifyPr(headSha)
+        await verifyPr()
         await api(`${prefix}/actions/runs/${run.id}/approve`, 'POST')
       }
       started.add(run.path)
       log(`Admitted ${run.path} for verified cover PR #${number}`)
     }
     if (started.size === expected.size) {
-      await verifyPr(headSha)
+      await verifyPr()
       return { headSha }
     }
     await sleep(POLL_MS)
@@ -90,10 +93,10 @@ async function main() {
     return 2
   }
   if (args.values.help) { console.log(HELP); return 0 }
-  const [value] = args.positionals
+  const [value, expectedHeadSha] = args.positionals
   const number = Number(value)
-  if (args.positionals.length !== 1 || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(number)) {
-    console.error('cover-checks: expected a PR number; see --help')
+  if (args.positionals.length !== 2 || !SHA.test(expectedHeadSha ?? '') || !/^[1-9][0-9]*$/.test(value) || !Number.isSafeInteger(number)) {
+    console.error('cover-checks: expected a PR number and checked candidate SHA; see --help')
     return 2
   }
   const { GH_TOKEN, GITHUB_REPOSITORY, GITHUB_SHA, COVER_WORKFLOWS } = process.env
@@ -105,7 +108,7 @@ async function main() {
   }
   try {
     const result = await startCoverChecks({
-      repository: GITHUB_REPOSITORY, sourceSha: GITHUB_SHA, number, workflows,
+      repository: GITHUB_REPOSITORY, sourceSha: GITHUB_SHA, expectedHeadSha, number, workflows,
       api(path, method = 'GET') {
         const text = execFileSync('gh', ['api', '--method', method, path], {
           encoding: 'utf8', timeout: COMMAND_TIMEOUT_MS, maxBuffer: COMMAND_BYTES,

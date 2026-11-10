@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import {readFileSync,writeFileSync,mkdtempSync,mkdirSync,rmSync,existsSync} from "node:fs";
+import {readFileSync,writeFileSync,mkdtempSync,mkdirSync,rmSync,existsSync,chmodSync} from "node:fs";
 import {tmpdir} from "node:os";
 import {join} from "node:path";
 import {spawnSync,execFileSync} from "node:child_process";
@@ -24,7 +24,7 @@ function fixture() {
   const data = { pr, files, runs: [run], writes };
   let time = 0;
   data.options = {
-    repository, sourceSha, number, workflows: ["ci.yml"],
+    repository, sourceSha, expectedHeadSha: headSha, number, workflows: ["ci.yml"],
     now: () => time, sleep: async milliseconds => { time += milliseconds; }, log: () => {},
     api: async (path, method = "GET") => {
       if (method === "POST") { writes.push(path); return null; }
@@ -61,6 +61,14 @@ for (const [name, tamper] of [
     assert.deepEqual(data.writes, []);
   });
 }
+
+test("refuses an initial PR head substituted after local candidate verification", async () => {
+  const data = fixture();
+  data.pr.head.sha = "c".repeat(40);
+  data.runs[0].head_sha = data.pr.head.sha;
+  await assert.rejects(startCoverChecks(data.options));
+  assert.deepEqual(data.writes, []);
+});
 
 test("does not approve an unrelated workflow", async () => {
   const data = fixture();
@@ -137,7 +145,8 @@ function publisherFixture(t){
   writeFileSync(join(bin,'gh'),`#!/usr/bin/env node
 const fs=require('node:fs'),cp=require('node:child_process');
 const file=process.env.COVER_TEST_STATE;const state=JSON.parse(fs.readFileSync(file,'utf8'));const args=process.argv.slice(2);
-const sha=cp.execFileSync('git',['rev-parse','HEAD'],{encoding:'utf8'}).trim();
+const branch='refs/heads/automation/project-cover-'+state.sourceSha;
+const sha=cp.execFileSync('git',['ls-remote','origin',branch],{encoding:'utf8'}).trim().split(/\\s+/)[0];
 const save=()=>fs.writeFileSync(file,JSON.stringify(state));
 const result=value=>process.stdout.write(typeof value==='string'?value:JSON.stringify(value));
 if(args[0]==='pr'&&args[1]==='list')result(state.created?'https://github.com/owner/project/pull/42':'');
@@ -158,7 +167,7 @@ else if(args[0]==='pr'&&args[1]==='merge'){
   const publisher=workflow.slice(workflow.indexOf('  publish-cover:'));
   const marker='        run: |\n';const body=publisher.slice(publisher.indexOf(marker)+marker.length).split('\n').map(line=>line.replace(/^          /,'')).join('\n');
   const run=()=>spawnSync('/bin/bash',['-e','-c',body],{cwd,encoding:'utf8',timeout:30000,env:{...process.env,PATH:bin+':'+process.env.PATH,GH_TOKEN:'synthetic-test-token',GITHUB_REPOSITORY:'owner/project',GITHUB_SERVER_URL:'https://github.com',GITHUB_SHA:sourceSha,GITHUB_RUN_ID:'synthetic-run',COVER_WORKFLOWS:'ci.yml',COVER_ARTIFACT:artifact,RUNNER_TEMP:root,COVER_TEST_STATE:stateFile}});
-  return {cwd,git,run,sourceSha,state:()=>JSON.parse(readFileSync(stateFile,'utf8')),publisher};
+  return {cwd,git,run,sourceSha,artifact,state:()=>JSON.parse(readFileSync(stateFile,'utf8')),publisher};
 }
 test('actual cover publisher reuses its image-only PR, approves only its workflow and never pushes main',t=>{
   const f=publisherFixture(t);
@@ -179,6 +188,20 @@ test('actual cover publisher skips a superseded source without a branch or PR wr
 test('actual cover publisher refuses a same-named automation branch containing source changes',t=>{
   const f=publisherFixture(t);writeFileSync(join(f.cwd,'unreviewed.txt'),'unreviewed source');f.git('add','unreviewed.txt');f.git('commit','--quiet','-m','Unreviewed source');f.git('push','--quiet','origin','HEAD:refs/heads/automation/project-cover-'+f.sourceSha);f.git('checkout','--quiet','--detach',f.sourceSha);
   const result=f.run();assert.notEqual(result.status,0);assert.deepEqual(f.state(),{sourceSha:f.sourceSha,created:0,approved:0,merged:0});assert.equal(f.git('rev-parse','origin/main'),f.sourceSha);
+});
+for (const tamper of ['different image', 'executable image']) test(`actual cover publisher refuses a same-named image-only branch with ${tamper}`, t => {
+  const f = publisherFixture(t);
+  const cover = join(f.cwd, 'docs/screenshots/cover.png');
+  writeFileSync(cover, tamper === 'different image' ? 'substituted-image' : readFileSync(f.artifact));
+  if (tamper === 'executable image') chmodSync(cover, 0o755);
+  f.git('add', 'docs/screenshots/cover.png');
+  f.git('commit', '--quiet', '-m', 'Substituted image');
+  f.git('push', '--quiet', 'origin', 'HEAD:refs/heads/automation/project-cover-' + f.sourceSha);
+  f.git('checkout', '--quiet', '--detach', f.sourceSha);
+  const result = f.run();
+  assert.notEqual(result.status, 0);
+  assert.deepEqual(f.state(), {sourceSha: f.sourceSha, created: 0, approved: 0, merged: 0});
+  assert.equal(f.git('rev-parse', 'origin/main'), f.sourceSha);
 });
 test('cover helper CLI has offline help, validates input and requires environment before provider calls',()=>{
   const run=(args,extra={})=>spawnSync(process.execPath,[helper.pathname,...args],{encoding:'utf8',env:{PATH:process.env.PATH,...extra}});
