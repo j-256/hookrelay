@@ -1,3 +1,4 @@
+import { handleGitHubAppKeyVerification, GITHUB_APP_KEY_VERIFICATION_PATH } from './management/github-app-key-verification'
 import { pruneGitHubSetupReviews } from './management/github-setup'
 import { handleHandoffPrivate } from './management/github-handoff-private'
 import { pruneHandoffHistory } from './management/github-handoff'
@@ -38,6 +39,7 @@ export interface Env {
   CF_ACCESS_AUD: string
   MANAGEMENT_CREDENTIALS?: string
   HOOK_SETUP_KEY?: string
+  CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string }
   GITHUB_AUTH_MODE?: string
   GITHUB_AUTH_DESCRIPTOR?: string
   HOOK_SETUP_GITHUB_TOKEN?: string
@@ -52,6 +54,7 @@ export interface Env {
 export default {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url)
+    if (url.pathname === GITHUB_APP_KEY_VERIFICATION_PATH) return handleGitHubAppKeyVerification(request, env)
     if (url.pathname === HANDOFF_PRIVATE_PATH) return handleHandoffPrivate(request, env)
     if (url.pathname === MANAGEMENT_PATH) {
       return handleManagement(request, env)

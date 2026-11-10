@@ -48,8 +48,8 @@ export async function prepareGitHubAuthCandidate(query: ConfigurationQuery, inpu
   if (new TextEncoder().encode(metadata).byteLength > GITHUB_APP_LIMITS.PRIVATE_BYTES) throw new GitHubAuthError('validation')
   const now = input.now ?? Date.now()
   const id = crypto.randomUUID()
-  const rows = await githubAuthQuery(query, `INSERT INTO github_auth_candidates(id,descriptor_id,prior_revision,metadata_json,account_id,worker_name,created_at,expires_at)
-    SELECT ?,?,?,?,?,?,?,? WHERE COALESCE((SELECT revision FROM github_auth_descriptors WHERE id=?),0)=?
+  const rows = await githubAuthQuery(query, `INSERT INTO github_auth_candidates(id,descriptor_id,prior_revision,metadata_json,account_id,worker_name,created_at,expires_at,prior_policy_revision)
+    SELECT ?,?,?,?,?,?,?,?,(SELECT revision FROM github_auth_runtime_policy WHERE id=1) WHERE COALESCE((SELECT revision FROM github_auth_descriptors WHERE id=?),0)=?
       AND (SELECT count(*) FROM github_auth_candidates WHERE state<>'active' AND expires_at>?)<?
       AND (EXISTS(SELECT 1 FROM github_auth_descriptors WHERE id=?) OR (SELECT count(*) FROM github_auth_descriptors)<?) RETURNING id`, [id, descriptor.id, input.expectedRevision, metadata, input.target.accountId, input.target.workerName, now, now + GITHUB_AUTH_REGISTRY_LIMITS.CANDIDATE_MS, descriptor.id, input.expectedRevision, now, GITHUB_AUTH_REGISTRY_LIMITS.PENDING_CANDIDATES, descriptor.id, GITHUB_AUTH_REGISTRY_LIMITS.DESCRIPTORS])
   if (!rows.length) conflict()
@@ -68,6 +68,7 @@ export async function activateGitHubAuthCandidate(query: ConfigurationQuery, inp
   const rows = await githubAuthQuery(query, `UPDATE github_auth_candidates SET state='active',attestation_id=?,activated_at=?,version_id=?
     WHERE id=? AND state IN ('prepared','staged','deployed','verified') AND expires_at>?
       AND COALESCE((SELECT revision FROM github_auth_descriptors WHERE id=descriptor_id),0)=prior_revision
+      AND (SELECT revision FROM github_auth_runtime_policy WHERE id=1)=prior_policy_revision
       AND EXISTS(SELECT 1 FROM github_auth_attestations a WHERE a.id=? AND a.candidate_id=github_auth_candidates.id AND a.account_id=github_auth_candidates.account_id AND a.worker_name=github_auth_candidates.worker_name
         AND a.version_id=? AND a.fingerprint=json_extract(github_auth_candidates.metadata_json,'$.fingerprint') AND a.expires_at>? AND a.verified_at<=? AND a.consumed_at IS NULL)
     RETURNING id`, [input.attestationId, now, deployment.versionId, current.id, now, input.attestationId, deployment.versionId, now, now])
@@ -109,4 +110,16 @@ export async function assertGitHubAuthCooldown(query: ConfigurationQuery, quotaK
 }
 export async function recordGitHubAuthCooldown(query: ConfigurationQuery, quotaKey: string, retryAt: number, now = Date.now()) {
   await githubAuthQuery(query, 'INSERT INTO github_auth_cooldowns(quota_key,retry_at) VALUES (?,?) ON CONFLICT(quota_key) DO UPDATE SET retry_at=max(retry_at,excluded.retry_at)', [quotaKey, Math.min(Math.max(now + GITHUB_APP_LIMITS.AUTHORITY_AGE_MS, retryAt), now + GITHUB_APP_LIMITS.COOLDOWN_MAX_MS)])
+}
+
+export async function readGitHubRuntimePolicy(query: ConfigurationQuery): Promise<{ mode: 'legacy' | 'registry'; revision: number }> {
+  const [row] = await githubAuthQuery<{ mode: 'legacy' | 'registry'; revision: number }>(query, 'SELECT mode,revision FROM github_auth_runtime_policy WHERE id=1')
+  if (!row || !['legacy', 'registry'].includes(row.mode) || !Number.isSafeInteger(row.revision)) throw new GitHubAuthError('unavailable')
+  return row
+}
+
+export async function listGitHubRuntimeDescriptors(query:ConfigurationQuery,workspaceId:string) {
+  const rows = await githubAuthQuery<DescriptorRow>(query,`SELECT id,revision,key_revision,metadata_json FROM github_auth_descriptors WHERE json_extract(metadata_json,'$.state')='active' AND EXISTS(SELECT 1 FROM json_each(metadata_json,'$.managementWorkspaces') WHERE value=?) ORDER BY id LIMIT ?`,[workspaceId,GITHUB_AUTH_REGISTRY_LIMITS.DESCRIPTORS + 1])
+  if (rows.length > GITHUB_AUTH_REGISTRY_LIMITS.DESCRIPTORS) throw new GitHubAuthError('unavailable')
+  return rows.map(parseDescriptor)
 }

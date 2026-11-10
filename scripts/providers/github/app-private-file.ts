@@ -11,6 +11,7 @@ export const githubAppRecoverySchema = z.object({
   privateKey: z.string().min(1).max(LIMITS.PRIVATE_BYTES), fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   webhookSecret: z.string().min(1).max(2048).regex(/^[\x21-\x7e]+$/).optional(),
   createdAt: z.iso.datetime(),
+  deploymentReceipts: z.array(z.object({ candidateId:z.uuid(),phase:z.string().min(1).max(40),versionId:z.string().max(160).nullable(),attestationId:z.uuid().nullable(),recordedAt:z.iso.datetime() }).strict()).max(100).optional(),
 }).strict()
 export type GitHubAppRecoveryFile = z.infer<typeof githubAppRecoverySchema>
 export function normalizeGitHubAppPrivateKey(input: string): { pkcs8: string; fingerprint: string } {
