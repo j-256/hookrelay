@@ -330,3 +330,9 @@ describe('GitHub repository hook pings', () => {
     })).rejects.toThrow(/timed out/)
   })
 })
+
+it('uses the explicit native transport for repository inventory without ambient CLI execution',async () => {
+  const transport={request:vi.fn(async () => [])}
+  expect(await listGitHubRepositoryHooks('owner/repo',transport as any)).toEqual([])
+  expect(transport.request).toHaveBeenCalledWith({operation:'list',repo:'owner/repo'})
+})

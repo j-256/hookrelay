@@ -1,4 +1,6 @@
+import { extractOperatorGitHubAuthArgs, resolveOperatorGitHubAuth, operatorGitHubExitCode, requireOperatorGitHubAuthentication, OPERATOR_GITHUB_AUTH_USAGE, type OperatorGitHubAuthOptions } from '../../../scripts/providers/github/auth'
 import {
+  authenticatedGitHubFleetDependencies,
   formatGitHubFleetPlan,
   planGitHubFleet,
   prepareGitHubFleet,
@@ -14,6 +16,7 @@ export function githubFleetUsage(): string {
     'usage: pnpm github:fleet <plan|prepare|apply|verify> --root <directory> [--root <directory> ...] --manifest <file> [options]',
     '',
     'options:',
+    '  '+OPERATOR_GITHUB_AUTH_USAGE,
     '  -r, --root <directory>        discover direct-child repositories, repeatable',
     '  -m, --manifest <file>         read the private fleet recovery manifest',
     '      --repo <owner/repo>       select a new repository, repeatable',
@@ -35,6 +38,9 @@ function optionValue(argv: string[], index: number, option: string): string {
 }
 
 export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
+  const authenticationArgs=extractOperatorGitHubAuthArgs(argv)
+  argv=authenticationArgs.args
+  const githubAuthentication=authenticationArgs.authentication
   const phase = argv[0]
   if (phase === '--help' || phase === '-h') throw new Error(githubFleetUsage())
   if (!phase || !['plan', 'prepare', 'apply', 'verify'].includes(phase)) throw new Error(githubFleetUsage())
@@ -108,6 +114,7 @@ export function parseGitHubFleetArgs(argv: string[]): GitHubFleetOptions {
   if (profiles && rotateSlugs) throw new Error('--rotate-slugs cannot be combined with --profiles')
   if (yes && phase !== 'apply') throw new Error('-y is only valid with apply')
   return {
+    ...(githubAuthentication ? {githubAuthentication} : {}),
     phase: phase as GitHubFleetPhase,
     roots,
     manifest,
@@ -132,49 +139,55 @@ async function main(): Promise<void> {
     ...parseGitHubFleetArgs(argv),
     progress: (message) => console.error(`PROGRESS ${message}`),
   }
+  if(!options.githubAuthentication)requireOperatorGitHubAuthentication()
+  const githubAuth=await resolveOperatorGitHubAuth(options.githubAuthentication)
+  console.log('GitHub authentication: '+JSON.stringify(githubAuth.metadata))
+  const planDependencies=authenticatedGitHubFleetDependencies(githubAuth)
   if (options.retire) {
     const {
+      authenticatedGitHubFleetRetirementDependencies,
       applyGitHubFleetRetirement,
       formatGitHubFleetRetirementPlan,
       planGitHubFleetRetirement,
       prepareGitHubFleetRetirement,
       verifyGitHubFleetRetirement,
     } = await import('./retirement')
+    const retirementDependencies=authenticatedGitHubFleetRetirementDependencies(githubAuth)
     if (options.phase === 'plan') {
-      const plan = await planGitHubFleetRetirement(options)
+      const plan = await planGitHubFleetRetirement(options,retirementDependencies)
       console.log(formatGitHubFleetRetirementPlan(plan))
       if (plan.blockers.length > 0) process.exitCode = 1
       return
     }
     if (options.phase === 'prepare') {
-      const result = await prepareGitHubFleetRetirement(options)
+      const result = await prepareGitHubFleetRetirement(options,retirementDependencies)
       console.log(`Prepared repository retirements: ${result.repositories.length}`)
       console.log(`Disabled local subscriptions: ${result.disabledSubscriptions}`)
       return
     }
     if (options.phase === 'apply') {
-      const plan = await planGitHubFleetRetirement(options)
+      const plan = await planGitHubFleetRetirement(options,retirementDependencies)
       console.log(formatGitHubFleetRetirementPlan(plan))
-      const result = await applyGitHubFleetRetirement(options)
+      const result = await applyGitHubFleetRetirement(options,retirementDependencies)
       console.log(`Deleted GitHub hooks: ${result.deletedHooks}`)
       console.log(`Deleted subscription routes: ${result.deletedRoutes}`)
       console.log(`Deleted repository HMACs: ${result.deletedSecrets}`)
       return
     }
-    const result = await verifyGitHubFleetRetirement(options)
+    const result = await verifyGitHubFleetRetirement(options,retirementDependencies)
     console.log(`Verified retired repositories: ${result.repositories.length}`)
     for (const issue of result.issues) console.log(`ISSUE ${issue}`)
     if (result.issues.length > 0) process.exitCode = 1
     return
   }
   if (options.phase === 'plan') {
-    const plan = await planGitHubFleet(options)
+    const plan = await planGitHubFleet(options,planDependencies)
     console.log(formatGitHubFleetPlan(plan))
     if (plan.blockers.length > 0) process.exitCode = 1
     return
   }
   if (options.phase === 'prepare') {
-    const result = await prepareGitHubFleet(options)
+    const result = await prepareGitHubFleet(options,planDependencies)
     console.log(`Prepared ${result.repositories.length} repositories`)
     console.log(`Manifest additions: ${result.manifestAdditions}`)
     console.log(`Local secret additions: ${result.devVarAdditions}`)
@@ -183,16 +196,17 @@ async function main(): Promise<void> {
     console.log(`Subscription slug rotations: ${result.subscriptionRotations}`)
     return
   }
-  const { applyGitHubFleet, verifyGitHubFleet } = await import('./reconcile')
+  const { applyGitHubFleet, verifyGitHubFleet,authenticatedGitHubFleetReconcileDependencies } = await import('./reconcile')
+  const reconcileDependencies=authenticatedGitHubFleetReconcileDependencies(githubAuth)
   if (options.phase === 'apply') {
-    const result = await applyGitHubFleet(options)
+    const result = await applyGitHubFleet(options,process.cwd(),reconcileDependencies)
     console.log(`Installed repository HMACs: ${result.installedSecrets}`)
     console.log(`Rotated repository HMACs: ${result.rotatedSecrets}`)
     console.log(`Reconciled GitHub hooks: ${result.reconciledHooks}`)
     console.log(`Rotated subscription slugs: ${result.rotatedSubscriptions}`)
     return
   }
-  const result = await verifyGitHubFleet(options)
+  const result = await verifyGitHubFleet(options,process.cwd(),reconcileDependencies)
   console.log(`Verified repositories: ${result.repositories.length}`)
   console.log(`Verified GitHub hooks: ${result.verifiedHooks}`)
   for (const issue of result.issues) console.log(`ISSUE ${issue}`)
@@ -202,6 +216,6 @@ async function main(): Promise<void> {
 if (import.meta.main) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err)
-    process.exit(1)
+    process.exit(operatorGitHubExitCode(err))
   })
 }

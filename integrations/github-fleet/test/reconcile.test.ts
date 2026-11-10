@@ -861,3 +861,21 @@ describe('GitHub fleet apply and verify', () => {
     }
   })
 })
+
+it('passes one native transport through fleet create, update and authenticated ping verification',async () => {
+  const {authenticatedGitHubFleetReconcileDependencies}=await import('../src/reconcile')
+  let pinged=false
+  const request=vi.fn(async (input:any) => {
+    if(input.operation==='list')return []
+    if(input.operation==='create')return {id:42}
+    if(input.operation==='ping'){pinged=true;return null}
+    if(input.operation==='deliveries')return pinged ? [{guid:'fresh-ping',event:'ping',status_code:200,delivered_at:'2026-11-10T00:00:00.000Z'}] : []
+    return null
+  })
+  const auth={metadata:{mode:'app' as const,descriptorId:'operator-auth',workspaceId:'alpha',revision:1,keyRevision:1},transport:{request},repository:vi.fn()}
+  const dependencies=authenticatedGitHubFleetReconcileDependencies(auth)
+  expect(await dependencies.createHook!('owner/repo','https://hooks.example/hook/github/abcdefghijklmnopqrstuv','synthetic-secret',parseGitHubEventSelection('push'))).toBe(42)
+  await dependencies.updateHook!('owner/repo',42,'https://hooks.example/hook/github/abcdefghijklmnopqrstuv',['push'],'synthetic-secret')
+  await dependencies.pingHook!('owner/repo',42,undefined,{timeoutMs:10,intervalMs:1})
+  expect(request.mock.calls.map(([input])=>input.operation)).toEqual(['list','create','update','deliveries','ping','deliveries'])
+})

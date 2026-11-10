@@ -1,3 +1,4 @@
+import { extractOperatorGitHubAuthArgs, resolveOperatorGitHubAuth, operatorGitHubExitCode, requireOperatorGitHubAuthentication, OPERATOR_GITHUB_AUTH_USAGE, type OperatorGitHubAuthOptions } from './auth'
 import { readFile } from 'node:fs/promises'
 import { isHandoffSubscription } from '../../../src/lib/github-handoff'
 import { resolve } from 'node:path'
@@ -49,10 +50,11 @@ export function githubEventSyncUsage(): string {
     'usage: pnpm github:sync [-y]',
     '',
     'Preview or apply saved event profiles for existing GitHub subscriptions in routes.jsonc.',
-    'The command reads .dev.vars for sender secrets and requires gh access to repository hooks.',
+    'The command reads .dev.vars for sender secrets and requires explicit GitHub authentication.',
     'Provider filtering is synchronized before GitHub webhook events are changed.',
     '',
     'options:',
+    '  '+OPERATOR_GITHUB_AUTH_USAGE,
     '  -y, --yes   apply provider filtering and changed GitHub webhook events',
     '  -h, --help  show this help',
     '',
@@ -60,7 +62,10 @@ export function githubEventSyncUsage(): string {
   ].join('\n')
 }
 
-export function parseGitHubEventSyncArgs(argv: readonly string[]): { yes: boolean; help?: boolean } {
+export function parseGitHubEventSyncArgs(argv: readonly string[]): { yes: boolean; help?: boolean; githubAuthentication?:OperatorGitHubAuthOptions } {
+  const authenticationArgs=extractOperatorGitHubAuthArgs(argv)
+  argv=authenticationArgs.args
+  const githubAuthentication=authenticationArgs.authentication
   let yes = false
   let help = false
   let endOfOptions = false
@@ -77,7 +82,7 @@ export function parseGitHubEventSyncArgs(argv: readonly string[]): { yes: boolea
       if (arg.includes('h')) help = true
     } else throw new Error(`unknown option: ${arg}`)
   }
-  return help ? { yes, help } : { yes }
+  return {yes,...(help ? {help} : {}),...(githubAuthentication ? {githubAuthentication} : {})}
 }
 
 function sameHookConfig(current: GitHubRepositoryHook, before: GitHubRepositoryHook): boolean {
@@ -236,7 +241,11 @@ async function main(): Promise<void> {
     readFile(routesPath, 'utf8'),
     readPrivateOptionalText(devVarsPath),
   ])
-  const plan = await planGitHubEventSync(routesText, devVarsText, listGitHubRepositoryHooks, (message) => {
+  const githubAuth=options.githubAuthentication ? await resolveOperatorGitHubAuth(options.githubAuthentication) : null
+  if(!githubAuth && parseRoutes(routesText).subs.some(sub=>sub.source==='github' && !isHandoffSubscription(sub)))requireOperatorGitHubAuthentication()
+  if(githubAuth)console.log('GitHub authentication: '+JSON.stringify(githubAuth.metadata))
+  const listHooks:ListHooks=repo=>listGitHubRepositoryHooks(repo,githubAuth?.transport)
+  const plan = await planGitHubEventSync(routesText, devVarsText, listHooks, (message) => {
     console.error(`PROGRESS ${message}`)
   })
   console.log(formatGitHubEventSyncPlan(plan))
@@ -256,8 +265,8 @@ async function main(): Promise<void> {
     throw new Error('Local configuration changed during preview; rerun pnpm github:sync')
   }
   const result = await applyGitHubEventSync(plan, {
-    listHooks: listGitHubRepositoryHooks,
-    updateHook: updateGitHubRepositoryHookEvents,
+    listHooks,
+    updateHook: (repo,hook,events,secret)=>updateGitHubRepositoryHookEvents(repo,hook,events,secret,githubAuth?.transport),
     syncProvider: async (apply, scope) => {
       console.log('\nProvider filters:')
       await runSync(apply, undefined, scope)
@@ -270,6 +279,6 @@ async function main(): Promise<void> {
 if (import.meta.main) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err)
-    process.exitCode = 1
+    process.exitCode = operatorGitHubExitCode(err)
   })
 }

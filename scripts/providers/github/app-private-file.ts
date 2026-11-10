@@ -91,3 +91,17 @@ function normalizeRecovery(value: unknown): GitHubAppRecoveryFile {
 }
 export async function readGitHubAppPrivateFile(path: string): Promise<GitHubAppRecoveryFile> { return normalizeRecovery((await readPrivateAppDocument(path)).value) }
 export async function writeNewGitHubAppPrivateFile(path: string, value: GitHubAppRecoveryFile): Promise<void> { await writeNewPrivateAppDocument(path, normalizeRecovery(value)) }
+
+export const githubTokenRecoverySchema = z.object({
+  version:z.literal(1),kind:z.literal('github-token'),token:z.string().min(1).max(LIMITS.MANUAL_TOKEN_BYTES).regex(/^[\x21-\x7e]+$/),
+  fingerprint:z.string().regex(/^[a-f0-9]{64}$/),createdAt:z.iso.datetime(),
+  deploymentReceipts:githubAppRecoverySchema.shape.deploymentReceipts,
+}).strict()
+export type GitHubTokenRecoveryFile = z.infer<typeof githubTokenRecoverySchema>
+export async function readGitHubTokenPrivateFile(path:string):Promise<GitHubTokenRecoveryFile> {
+  try {
+    const value=githubTokenRecoverySchema.parse((await readPrivateAppDocument(path)).value)
+    if(createHash('sha256').update(value.token).digest('hex') !== value.fingerprint) throw new Error()
+    return value
+  } catch {throw new GitHubAuthError('validation')}
+}

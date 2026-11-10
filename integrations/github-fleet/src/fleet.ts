@@ -1,3 +1,4 @@
+import type { GitHubOperatorAuth, OperatorGitHubAuthOptions } from '../../../scripts/providers/github/auth'
 import { readFile } from 'node:fs/promises'
 import { HANDOFF_LEGACY_MUTATION_ERROR } from '../../../src/lib/github-handoff'
 import { providerManagedRepositories } from './ownership'
@@ -64,6 +65,7 @@ const FORMATTING_OPTIONS: FormattingOptions = Object.freeze({ insertSpaces: true
 export type GitHubFleetPhase = 'plan' | 'prepare' | 'apply' | 'verify'
 
 export interface GitHubFleetOptions {
+  githubAuthentication?:OperatorGitHubAuthOptions
   phase: GitHubFleetPhase
   roots: readonly string[]
   manifest: string
@@ -857,4 +859,8 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
   for (const drift of plan.remoteRouteDrift) lines.push(`DRIFT ${drift}`)
   for (const blocker of plan.blockers) lines.push(`BLOCK ${blocker}`)
   return lines.join('\n')
+}
+
+export function authenticatedGitHubFleetDependencies(auth:GitHubOperatorAuth):GitHubFleetDependencies {
+  return {...DEFAULT_DEPENDENCIES,discover:(roots,options)=>discoverGitHubFleet(roots,{...options,readRepositoryMetadata:auth.repository}),listHooks:repo=>listGitHubRepositoryHooks(repo,auth.transport)}
 }

@@ -332,3 +332,8 @@ describe('GitHub hook payload', () => {
     )).toBeNull()
   })
 })
+
+it('retains an explicit provider authentication choice for automatic GitHub setup',() => {
+  const parsed=parseSubAddArgs(['repository','github','--repo','owner/repo','--github-auth','app','--github-descriptor','operator-auth','--github-workspace','alpha','--github-credential-file','private-input'])
+  expect(parsed.githubAuthentication).toMatchObject({mode:'app',descriptorId:'operator-auth',workspaceId:'alpha',credentialFile:'private-input'})
+})

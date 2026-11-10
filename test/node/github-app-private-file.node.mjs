@@ -32,3 +32,19 @@ test('writes new owner-only recovery files without overwriting, following links 
     await assert.rejects(writeNewGitHubAppPrivateFile(join(root, 'mismatch'), { ...recovery(), fingerprint: 'a'.repeat(64) }))
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+test('keeps token material in the same strict private-file boundary and rejects local scope claims',async () => {
+  const {writeNewPrivateAppDocument,readGitHubTokenPrivateFile}=await import('../../scripts/providers/github/app-private-file.ts')
+  const root=await mkdtemp(join(tmpdir(),'hookrelay-token-private-'))
+  try {
+    const token='synthetic-manual-token'
+    const value={version:1,kind:'github-token',token,fingerprint:createHash('sha256').update(token).digest('hex'),createdAt:new Date().toISOString()}
+    const file=join(root,'token.json')
+    await writeNewPrivateAppDocument(file,value)
+    assert.equal((await readGitHubTokenPrivateFile(file)).token,token)
+    const claimed=join(root,'claimed.json')
+    await writeNewPrivateAppDocument(claimed,{...value,repositories:['owner/extra']})
+    await assert.rejects(readGitHubTokenPrivateFile(claimed),{code:'validation'})
+    await chmod(file,0o644)
+    await assert.rejects(readGitHubTokenPrivateFile(file),{code:'validation'})
+  }finally {await rm(root,{recursive:true,force:true})}
+})

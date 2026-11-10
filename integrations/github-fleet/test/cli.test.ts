@@ -115,3 +115,7 @@ describe('GitHub fleet CLI', () => {
     expect(usage).toContain('--rotate-slugs')
   })
 })
+
+it('carries explicit provider authentication across fleet phases',() => {
+  for(const phase of ['plan','prepare','apply','verify'])expect(parseGitHubFleetArgs([phase,'--root','checkouts','--manifest','private-manifest','--github-auth','app','--github-descriptor','operator-auth','--github-workspace','alpha','--github-credential-file','private-input']).githubAuthentication).toMatchObject({mode:'app',descriptorId:'operator-auth'})
+})

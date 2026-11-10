@@ -164,3 +164,7 @@ describe('GitHub event sync', () => {
     expect(() => parseGitHubEventSyncArgs(['--repo', REPO])).toThrow(/unknown option/)
   })
 })
+
+it('requires an explicit authentication choice for native event reconciliation',() => {
+  expect(parseGitHubEventSyncArgs(['--github-auth','gh']).githubAuthentication).toMatchObject({mode:'gh'})
+})

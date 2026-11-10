@@ -1,3 +1,4 @@
+import { extractOperatorGitHubAuthArgs, resolveOperatorGitHubAuth, operatorGitHubExitCode, requireOperatorGitHubAuthentication, OPERATOR_GITHUB_AUTH_USAGE, type OperatorGitHubAuthOptions } from './auth'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
 import { applyEdits, modify, type FormattingOptions } from 'jsonc-parser'
@@ -29,6 +30,7 @@ const GITHUB_SUBSCRIPTION_EVENTS_OPTION_ALIASES: Readonly<Record<string, string>
 })
 
 export interface GitHubSubscriptionEventsOptions {
+  githubAuthentication?: OperatorGitHubAuthOptions
   name: string
   githubEvents?: GitHubEventSelection
   yes: boolean
@@ -49,6 +51,7 @@ export function githubSubscriptionEventsUsage(): string {
     'usage: pnpm github:events <subscription-name> [-e <profiles>] [-y]',
     '',
     'options:',
+    '  '+OPERATOR_GITHUB_AUTH_USAGE,
     '  -e, --events <profiles> replace the saved comma-separated GitHub profiles',
     '  -y, --yes              apply the GitHub webhook change without prompting',
     '  -h, --help             show this help',
@@ -65,6 +68,9 @@ function optionValue(argv: string[], index: number, option: string): string {
 }
 
 export function parseGitHubSubscriptionEventsArgs(argv: string[]): GitHubSubscriptionEventsOptions {
+  const authenticationArgs=extractOperatorGitHubAuthArgs(argv)
+  argv=authenticationArgs.args
+  const githubAuthentication=authenticationArgs.authentication
   const positional: string[] = []
   let githubEvents: GitHubEventSelection | undefined
   let yes = false
@@ -88,7 +94,7 @@ export function parseGitHubSubscriptionEventsArgs(argv: string[]): GitHubSubscri
   }
 
   if (positional.length !== 1) throw new Error(githubSubscriptionEventsUsage())
-  return { name: positional[0]!, githubEvents, yes }
+  return { name: positional[0]!, githubEvents, yes,...(githubAuthentication ? {githubAuthentication} : {}) }
 }
 
 function sameStrings(first: readonly string[], second: readonly string[]): boolean {
@@ -162,6 +168,10 @@ async function main(): Promise<void> {
   const routesText = await readFile(routesPath, 'utf8')
   const prepared = prepareGitHubSubscriptionEvents(routesText, options.name, options.githubEvents)
 
+  const githubAuth=options.githubAuthentication ? await resolveOperatorGitHubAuth(options.githubAuthentication) : null
+  if(prepared.githubEvents.kind!=='manual' && !githubAuth)requireOperatorGitHubAuthentication()
+  if(githubAuth)console.log('GitHub authentication: '+JSON.stringify(githubAuth.metadata))
+
   if (prepared.routesChanged) {
     await writeText(routesPath, prepared.routesText)
     console.log(
@@ -188,7 +198,7 @@ async function main(): Promise<void> {
     return
   }
 
-  const hooks = await listGitHubRepositoryHooks(prepared.repo)
+  const hooks = await listGitHubRepositoryHooks(prepared.repo,githubAuth!.transport)
   const hook = await requireMatchingGitHubRepositoryHook(
     hooks,
     prepared.slugHash,
@@ -214,13 +224,13 @@ async function main(): Promise<void> {
     return
   }
 
-  await updateGitHubRepositoryHookEvents(prepared.repo, hook, desiredEvents, webhookSecret)
+  await updateGitHubRepositoryHookEvents(prepared.repo, hook, desiredEvents, webhookSecret,githubAuth!.transport)
   console.log(`Updated GitHub webhook events in ${prepared.repo}`)
 }
 
 if (import.meta.main) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err)
-    process.exit(1)
+    process.exit(operatorGitHubExitCode(err))
   })
 }

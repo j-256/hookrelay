@@ -1,3 +1,4 @@
+import { extractOperatorGitHubAuthArgs, resolveOperatorGitHubAuth, operatorGitHubExitCode, requireOperatorGitHubAuthentication, OPERATOR_GITHUB_AUTH_USAGE, type OperatorGitHubAuthOptions } from './providers/github/auth'
 import { readFile } from 'node:fs/promises'
 import { HANDOFF_LEGACY_MUTATION_ERROR, isHandoffSubscription } from '../src/lib/github-handoff'
 import { resolve } from 'node:path'
@@ -39,6 +40,7 @@ const DEV_VARS_FILE = '.dev.vars'
 const SUBSCRIPTION_HASH_RE = /^[a-f0-9]{64}$/
 
 export interface SubscriptionRetirementOptions {
+  githubAuthentication?: OperatorGitHubAuthOptions
   name: string
   manifest: string
   routes?: string
@@ -87,6 +89,7 @@ export function subscriptionRetirementUsage(): string {
     '  --finalize  Archive recovery data, remove owned resources, and clean safe secrets',
     '',
     'options:',
+    '  '+OPERATOR_GITHUB_AUTH_USAGE,
     '  -m, --manifest <file>            Private versioned recovery manifest',
     '  -r, --routes <file>              Hash-only route configuration (default: routes.jsonc)',
     '  -d, --dev-vars <file>            Private local secret file (default: .dev.vars)',
@@ -103,6 +106,9 @@ function optionValue(argv: string[], index: number, option: string): string {
 }
 
 export function parseSubscriptionRetirementArgs(argv: string[]): SubscriptionRetirementOptions {
+  const authenticationArgs=extractOperatorGitHubAuthArgs(argv)
+  argv=authenticationArgs.args
+  const githubAuthentication=authenticationArgs.authentication
   let name: string | undefined
   let manifest: string | undefined
   let routes: string | undefined
@@ -140,6 +146,7 @@ export function parseSubscriptionRetirementArgs(argv: string[]): SubscriptionRet
     throw new Error('--expected-slug-hash must be a lowercase SHA-256 hash')
   }
   return {
+    ...(githubAuthentication ? {githubAuthentication} : {}),
     name,
     manifest,
     ...(routes ? { routes } : {}),
@@ -434,12 +441,18 @@ async function main(): Promise<void> {
     return
   }
   const options = parseSubscriptionRetirementArgs(argv)
-  await runSubscriptionRetirement(options)
+  const githubAuth=options.githubAuthentication ? await resolveOperatorGitHubAuth(options.githubAuthentication) : null
+  const routes=parseRoutes(await readFile(resolve(options.routes ?? ROUTES_FILE),'utf8'))
+  const archived=options.finalize ? parseRetirementManifest(await readPrivateOptionalText(resolve(options.manifest))).subscriptions[options.name]?.subscription : undefined
+  const selected=routes.subs.find(sub=>sub.name===options.name) ?? archived
+  if(options.finalize && selected?.setup?.github && !githubAuth)requireOperatorGitHubAuthentication()
+  if(githubAuth)console.log('GitHub authentication: '+JSON.stringify(githubAuth.metadata))
+  await runSubscriptionRetirement(options,githubAuth ? {...DEFAULT_DEPENDENCIES,listHooks:repo=>listGitHubRepositoryHooks(repo,githubAuth.transport),deleteHook:(repo,id)=>deleteGitHubRepositoryHook(repo,id,githubAuth.transport)} : DEFAULT_DEPENDENCIES)
 }
 
 if (import.meta.main) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err)
-    process.exit(1)
+    process.exit(operatorGitHubExitCode(err))
   })
 }

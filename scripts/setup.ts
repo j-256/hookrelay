@@ -31,6 +31,7 @@ export type ProductionResult = 'local-only' | 'previewed' | 'applied'
 
 export const WRANGLER_BULK_SECRET_LIMIT = 100
 export const PROVIDER_SYNC_SCOPE_ENV = 'HOOKRELAY_PROVIDER_SYNC_SCOPE'
+const PROCESS_TERMINATION_GRACE_MS = 1000
 const PRIVATE_PROCESS_ENV = Object.freeze({
   WRANGLER_LOG_SANITIZE: 'true',
   WRANGLER_WRITE_LOGS: 'false',
@@ -38,6 +39,8 @@ const PRIVATE_PROCESS_ENV = Object.freeze({
 })
 
 interface ProcessOptions {
+  timeoutMs?: number
+  maxOutputBytes?: number
   input?: string
   captureStdout?: boolean
   privateOutput?: boolean
@@ -253,6 +256,7 @@ export async function readSecret(prompt: string): Promise<string> {
 }
 
 export async function runProcess(command: string, args: string[], options: ProcessOptions = {}): Promise<string> {
+  if ((options.timeoutMs !== undefined && (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs <= 0)) || (options.maxOutputBytes !== undefined && (!Number.isSafeInteger(options.maxOutputBytes) || options.maxOutputBytes <= 0))) throw new Error('Process limits must be positive integers')
   return new Promise<string>((resolve, reject) => {
     const child = spawn(command, args, {
       ...(options.privateOutput || options.privateInput || options.environment
@@ -271,10 +275,31 @@ export async function runProcess(command: string, args: string[], options: Proce
       ],
     })
     const stdout: Buffer[] = []
-
-    child.once('error', reject)
-    child.stdout?.on('data', (chunk: Buffer) => stdout.push(chunk))
+    let size = 0
+    let failed = false
+    let killTimer:ReturnType<typeof setTimeout>|undefined
+    const fail = (reason:string) => {
+      if (failed) return
+      failed = true
+      stdout.length = 0
+      child.kill('SIGTERM')
+      killTimer = setTimeout(() => child.kill('SIGKILL'),PROCESS_TERMINATION_GRACE_MS)
+      killTimer.unref()
+      reject(new Error(command + ': ' + reason))
+    }
+    const timer = options.timeoutMs === undefined ? undefined : setTimeout(() => fail('process deadline exceeded'),options.timeoutMs)
+    child.once('error', error => {if(timer)clearTimeout(timer);if(killTimer)clearTimeout(killTimer);reject(error)})
+    child.stdin?.on('error', () => fail('private input could not be delivered'))
+    child.stdout?.on('data', (chunk: Buffer) => {
+      if (failed) return
+      size += chunk.length
+      if (options.maxOutputBytes !== undefined && size > options.maxOutputBytes) {fail('output limit exceeded');return}
+      stdout.push(chunk)
+    })
     child.once('close', (code, signal) => {
+      if(timer)clearTimeout(timer)
+      if(killTimer)clearTimeout(killTimer)
+      if(failed)return
       if (code === 0) {
         resolve(Buffer.concat(stdout).toString('utf8'))
         return
