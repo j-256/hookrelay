@@ -95,10 +95,10 @@ export async function recordGitHubAuthAuthority(query: ConfigurationQuery, input
 export async function invalidateGitHubAuthAuthority(query: ConfigurationQuery, descriptorId: string) {
   await githubAuthQuery(query, "UPDATE github_auth_authority SET generation=generation+1,state='unknown',digest=NULL,observed_at=NULL,valid_until=NULL,write_id=? WHERE descriptor_id=?", [crypto.randomUUID(), descriptorId])
 }
-export function githubAuthFencePredicate(fence: GitHubAuthFence, now = Date.now()) {
+export function githubAuthFencePredicate(fence: GitHubAuthFence, now = Date.now(), freshness:'required'|'metadata' = 'required') {
   return { sql: `EXISTS(SELECT 1 FROM github_auth_descriptors d JOIN github_auth_authority a ON a.descriptor_id=d.id WHERE d.id=? AND d.revision=? AND d.key_revision=? AND json_extract(d.metadata_json,'$.state')='active'
     AND EXISTS(SELECT 1 FROM json_each(d.metadata_json,'$.managementWorkspaces') WHERE value=?) AND EXISTS(SELECT 1 FROM json_each(d.metadata_json,'$.repositories') WHERE json_extract(value,'$.id')=? AND json_extract(value,'$.fullName')=?)
-    AND EXISTS(SELECT 1 FROM json_each(d.metadata_json,'$.capabilities') WHERE value=?) AND a.repository_id=? AND a.capability=? AND a.generation=? AND a.state='allowed' AND a.revision=d.revision AND a.key_revision=d.key_revision AND a.valid_until>?)`, params: [fence.descriptorId, fence.revision, fence.keyRevision, fence.workspaceId, fence.repositoryId, fence.repositoryFullName, fence.capability, fence.repositoryId, fence.capability, fence.generation, now] }
+    AND EXISTS(SELECT 1 FROM json_each(d.metadata_json,'$.capabilities') WHERE value=? OR (?='repository-hooks-read' AND value='repository-hooks-write')) AND a.repository_id=? AND a.capability=? AND a.generation=? AND a.state='allowed' AND a.revision=d.revision AND a.key_revision=d.key_revision ${freshness === 'required' ? 'AND a.valid_until>?' : ''})`, params: [fence.descriptorId, fence.revision, fence.keyRevision, fence.workspaceId, fence.repositoryId, fence.repositoryFullName, fence.capability, fence.capability, fence.repositoryId, fence.capability, fence.generation, ...(freshness === 'required' ? [now] : [])] }
 }
 export async function assertGitHubAuthFence(query: ConfigurationQuery, fence: GitHubAuthFence, now = Date.now()): Promise<void> {
   const guard = githubAuthFencePredicate(fence, now)

@@ -1,3 +1,15 @@
+import { fetchGitHubWithDeadline } from '../lib/github-http'
+import {
+  createRuntimeGitHubAuthentication,
+  readGitHubAuthStatus,
+  selectRuntimeGitHubAuth,
+  type RuntimeGitHubAuthentication,
+} from './github-auth'
+import { githubAuthFencePredicate } from '../configuration/github-auth'
+import {
+  GitHubAuthError,
+  type GitHubAuthFence,
+} from '../lib/github-app-contract'
 import { z } from 'zod'
 import type { Env } from '../index'
 import type { Subscription } from '../types'
@@ -36,6 +48,15 @@ export const GITHUB_SETUP_LIMITS = Object.freeze({
   TIMEOUT_MS: 8000,
   DELIVERY_EVENTS: 25,
 })
+const PUBLIC_SETUP_ERRORS = new Set([
+  'github_rejected',
+  'github_unavailable',
+  'github_limited',
+])
+const INTERNAL_SETUP_ERRORS = Object.freeze({
+  AUTHORITY_CHANGED: 'authority_changed',
+  ACKNOWLEDGED_UNVERIFIED: 'acknowledged_unverified',
+})
 type Input = z.infer<typeof managementInputs.github_setup_plan>
 type Row = {
   id: string
@@ -49,6 +70,7 @@ type Row = {
   action: 'create' | 'install'
   input_hash: string
   configuration_digest: string
+  auth_fence_json: string | null
   input_json: string
   state: string
   webhook_id: number | null
@@ -82,6 +104,31 @@ const conflict = () =>
     'Setup changed; keep the draft and prepare a fresh review',
   )
 
+function authGuard(auth: RuntimeGitHubAuthentication) {
+  return auth.initial
+    ? githubAuthFencePredicate(auth.initial.fence)
+    : { sql: '1=1', params: [] as (string | number | null)[] }
+}
+async function setupDigest(
+  config: ReturnType<typeof configuration>,
+  auth: RuntimeGitHubAuthentication,
+) {
+  return configurationDigest(
+    auth.identity
+      ? { key: config.key, origin: config.origin, authority: auth.identity }
+      : config,
+  )
+}
+function savedFence(row: Row): GitHubAuthFence | null {
+  try {
+    return row.auth_fence_json
+      ? (JSON.parse(row.auth_fence_json) as GitHubAuthFence)
+      : null
+  } catch {
+    throw conflict()
+  }
+}
+
 function configuration(env: Env) {
   const key = env.HOOK_SETUP_KEY ?? ''
   const token = env.HOOK_SETUP_GITHUB_TOKEN ?? ''
@@ -102,10 +149,7 @@ function configuration(env: Env) {
     origin.hash ||
     origin.pathname !== '/' ||
     key.length < 32 ||
-    key.length > 4096 ||
-    !token ||
-    token.length > 4096 ||
-    /[\s\x00-\x1f\x7f]/.test(token)
+    key.length > 4096
   ) {
     throw new ConfigurationError(
       'unavailable',
@@ -118,19 +162,32 @@ function configuration(env: Env) {
 export async function readGitHubSetupConfiguration(
   env: Env,
   principal: ManagementPrincipal,
+  workspaceId = principal.workspaceIds[0]!,
 ) {
   const state = await readConfigurationState(configurationQuery(env.EVENTS_DB))
   let reason:
-    | 'ready'
-    | 'inactive'
-    | 'grant_required'
-    | 'provider_setup_required' = 'ready'
+    'ready' | 'inactive' | 'grant_required' | 'provider_setup_required' =
+    'ready'
   if (state.mode !== 'active') reason = 'inactive'
   else if (!principal.capabilities.includes('provision'))
     reason = 'grant_required'
   else {
     try {
       configuration(env)
+      const status = await readGitHubAuthStatus(env, principal, {
+        workspaceId,
+        actorId: 'setup-metadata',
+      })
+      if (
+        status.state === 'unavailable' ||
+        (status.capabilities &&
+          !status.capabilities.includes('repository-hooks-write')) ||
+        (status.descriptors &&
+          !status.descriptors.some((item) =>
+            item.capabilities.includes('repository-hooks-write'),
+          ))
+      )
+        throw new Error()
     } catch {
       reason = 'provider_setup_required'
     }
@@ -202,79 +259,109 @@ async function privateDetails(env: Env, resourceId: string) {
 }
 
 async function github(
-  config: ReturnType<typeof configuration>,
+  auth: RuntimeGitHubAuthentication,
   repository: string,
   signal: AbortSignal,
   page: number,
   body?: unknown,
+  onDispatch?: (sent: boolean, acknowledged?: boolean) => void,
 ) {
-  const response = await fetch(
-    `https://api.github.com/repos/${repository}/hooks${body ? '' : `?per_page=${GITHUB_SETUP_LIMITS.PAGE_SIZE}&page=${page}`}`,
-    {
-      method: body ? 'POST' : 'GET',
-      redirect: 'manual',
+  const serialized = body ? JSON.stringify(body) : undefined
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const credential = await auth.resolve(
+      body ? 'effect' : 'read',
       signal,
-      headers: {
-        authorization: `Bearer ${config.token}`,
-        accept: 'application/vnd.github+json',
-        'x-github-api-version': '2026-03-10',
-        'user-agent': 'Hookrelay',
-        'content-type': 'application/json',
-      },
-      ...(body ? { body: JSON.stringify(body) } : {}),
-    },
-  )
-  if (response.status !== (body ? 201 : 200)) {
-    void response.body?.cancel().catch(() => {})
-    throw new ManagementError(
-      [400, 401, 403, 404, 422, 429].includes(response.status)
-        ? 'github_rejected'
-        : 'github_unavailable',
-      503,
-      'GitHub could not confirm the requested hook operation',
+      attempt > 0,
     )
-  }
-  const reader = response.body?.getReader()
-  if (!reader) throw new Error('GitHub metadata unavailable')
-  const chunks: Uint8Array[] = []
-  let size = 0
-  try {
-    for (;;) {
-      const { value, done } = await reader.read()
-      if (done) break
-      size += value.length
-      if (size > GITHUB_SETUP_LIMITS.RESPONSE_BYTES) {
-        void reader.cancel().catch(() => {})
-        throw new Error('GitHub metadata limit')
-      }
-      chunks.push(value)
+    if (signal.aborted) throw new GitHubAuthError('not_sent')
+    const response = await fetchGitHubWithDeadline(
+      fetch,
+      `https://api.github.com/repos/${repository}/hooks${body ? '' : `?per_page=${GITHUB_SETUP_LIMITS.PAGE_SIZE}&page=${page}`}`,
+      {
+        method: body ? 'POST' : 'GET',
+        redirect: 'manual',
+        signal,
+        headers: {
+          authorization: 'Bearer ' + credential.token,
+          accept: 'application/vnd.github+json',
+          'x-github-api-version': '2026-03-10',
+          'user-agent': 'Hookrelay',
+          'content-type': 'application/json',
+        },
+        ...(serialized ? { body: serialized } : {}),
+      },
+      body ? () => onDispatch?.(true) : undefined,
+    )
+    if (body && response.status === 201) onDispatch?.(true, true)
+    await auth.recordResponse(response)
+    if (response.status === 401 && auth.renewable && attempt === 0) {
+      void response.body?.cancel().catch(() => {})
+      if (body) onDispatch?.(false)
+      continue
     }
-  } finally {
-    reader.releaseLock()
+    if (response.status !== (body ? 201 : 200)) {
+      void response.body?.cancel().catch(() => {})
+      throw new ManagementError(
+        [400, 401, 403, 404, 422, 429].includes(response.status)
+          ? 'github_rejected'
+          : 'github_unavailable',
+        503,
+        'GitHub could not confirm the requested hook operation',
+      )
+    }
+    const reader = response.body?.getReader()
+    if (!reader) throw new Error('GitHub metadata unavailable')
+    const chunks: Uint8Array[] = []
+    let size = 0
+    let abort: (() => void) | undefined
+    const aborted = new Promise<never>((_, reject) => {
+      abort = () => {
+        void reader.cancel().catch(() => {})
+        reject(new Error('GitHub metadata unavailable'))
+      }
+      signal.addEventListener('abort', abort, { once: true })
+    })
+    try {
+      if (signal.aborted) throw new Error('GitHub metadata unavailable')
+      for (;;) {
+        const next = await Promise.race([reader.read(), aborted])
+        if (next.done) break
+        size += next.value.length
+        if (size > GITHUB_SETUP_LIMITS.RESPONSE_BYTES)
+          throw new Error('GitHub metadata limit')
+        chunks.push(next.value)
+      }
+    } finally {
+      if (abort) signal.removeEventListener('abort', abort)
+      void reader.cancel().catch(() => {})
+      reader.releaseLock()
+    }
+    const bytes = new Uint8Array(size)
+    let offset = 0
+    for (const chunk of chunks) {
+      bytes.set(chunk, offset)
+      offset += chunk.length
+    }
+    const value = JSON.parse(
+      new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes),
+    ) as unknown
+    if (!body) await auth.assert()
+    return value
   }
-  const bytes = new Uint8Array(size)
-  let offset = 0
-  for (const chunk of chunks) {
-    bytes.set(chunk, offset)
-    offset += chunk.length
-  }
-  return JSON.parse(
-    new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes),
-  ) as unknown
+  throw new GitHubAuthError('unavailable')
 }
 
 async function inspectHooks(
   details: Awaited<ReturnType<typeof privateDetails>>,
   signal: AbortSignal,
+  auth: RuntimeGitHubAuthentication,
 ) {
   const matches: Hook[] = []
   for (let page = 1; page <= GITHUB_SETUP_LIMITS.PAGES; page++) {
     const hooks = z
       .array(hookSchema)
       .max(GITHUB_SETUP_LIMITS.PAGE_SIZE)
-      .parse(
-        await github(details.config, details.metadata.repository, signal, page),
-      )
+      .parse(await github(auth, details.metadata.repository, signal, page))
     matches.push(...hooks.filter((hook) => hook.config.url === details.url))
     if (hooks.length < GITHUB_SETUP_LIMITS.PAGE_SIZE)
       return { matches, complete: true }
@@ -323,6 +410,38 @@ async function result(
             state.revision !== row.revision
           ? 'conflict'
           : 'ready'
+  if (['ready', 'configured'].includes(status)) {
+    try {
+      const selected = await selectRuntimeGitHubAuth(
+        env,
+        context.workspaceId,
+        input.repository,
+        'repository-hooks-write',
+      )
+      const fence = savedFence(row)
+      if (!principal.capabilities.includes('provision')) status = 'conflict'
+      else if (fence) {
+        const guard = githubAuthFencePredicate(fence, Date.now(), 'metadata')
+        if (
+          selected?.descriptorId !== fence.descriptorId ||
+          !(
+            await query({
+              sql: `SELECT 1 WHERE ${guard.sql}`,
+              params: guard.params,
+            })
+          ).length
+        )
+          status = 'conflict'
+      } else if (
+        selected ||
+        (await configurationDigest(configuration(env))) !==
+          row.configuration_digest
+      )
+        status = 'conflict'
+    } catch {
+      status = 'conflict'
+    }
+  }
   return {
     planId: row.id,
     resourceId: row.resource_id,
@@ -332,7 +451,12 @@ async function result(
     sinks: input.sinks,
     action: row.action,
     status,
-    errorCode: row.error_code,
+    errorCode:
+      row.error_code === null
+        ? null
+        : PUBLIC_SETUP_ERRORS.has(row.error_code)
+          ? row.error_code
+          : 'github_unavailable',
     createdAt: row.created_at,
     expiresAt: row.expires_at,
     updatedAt: row.updated_at,
@@ -359,6 +483,13 @@ export async function planGitHubSetup(
     return result(env, principal, input, previous)
   }
   const config = configuration(env)
+  const auth = await createRuntimeGitHubAuthentication(
+    env,
+    principal,
+    input,
+    input.repository,
+  )
+  const guard = authGuard(auth)
   const state = await readConfigurationState(query)
   if (
     state.mode !== 'active' ||
@@ -421,10 +552,11 @@ export async function planGitHubSetup(
   ).toISOString()
   await env.EVENTS_DB.prepare(
     `INSERT INTO github_setup_reviews
-    (id,client_id,client_revision,workspace_id,actor_id,authority_id,revision,resource_id,action,input_hash,configuration_digest,input_json,created_at,expires_at,updated_at)
-    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS
+    (id,client_id,client_revision,workspace_id,actor_id,authority_id,revision,resource_id,action,input_hash,configuration_digest,input_json,created_at,expires_at,updated_at,auth_fence_json)
+    SELECT ?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,? WHERE EXISTS
       (SELECT 1 FROM configuration_authority WHERE authority_id=? AND revision=? AND mode='active')
       AND (SELECT count(*) FROM github_setup_reviews WHERE client_id=? AND expires_at>? AND state='ready')<?
+      AND (${guard.sql})
     ON CONFLICT(id) DO NOTHING`,
   )
     .bind(
@@ -438,16 +570,18 @@ export async function planGitHubSetup(
       input.resourceId ?? crypto.randomUUID(),
       input.resourceId ? 'install' : 'create',
       inputHash,
-      await configurationDigest(config),
+      await setupDigest(config, auth),
       JSON.stringify(input),
       now,
       expires,
       now,
+      auth.initial ? JSON.stringify(auth.initial.fence) : null,
       state.authorityId,
       state.revision,
       principal.id,
       now,
       CONFIGURATION_LIMITS.PENDING_REVIEWS,
+      ...guard.params,
     )
     .run()
   const saved = await find(env, principal, input, input.planId)
@@ -471,11 +605,22 @@ export async function applyGitHubSetup(
       'Setup review expired; review installation again',
     )
   const config = configuration(env)
-  if ((await configurationDigest(config)) !== row.configuration_digest)
-    throw conflict()
   const input = managementInputs.github_setup_plan.parse(
     JSON.parse(row.input_json),
   )
+  const auth = await createRuntimeGitHubAuthentication(
+    env,
+    principal,
+    context,
+    input.repository,
+  )
+  if (
+    (await setupDigest(config, auth)) !== row.configuration_digest ||
+    JSON.stringify(auth.initial?.fence ?? null) !==
+      JSON.stringify(savedFence(row))
+  )
+    throw conflict()
+  const guard = authGuard(auth)
   const query = configurationQuery(env.EVENTS_DB)
   if (row.action === 'create') {
     const key = await subscriptionKvKeyForSlug(
@@ -539,8 +684,10 @@ export async function applyGitHubSetup(
     GITHUB_SETUP_LIMITS.TIMEOUT_MS,
   )
   let claimed = false
+  let dispatched = false
+  let acknowledged = false
   try {
-    const existing = await inspectHooks(details, controller.signal)
+    const existing = await inspectHooks(details, controller.signal, auth)
     if (!existing.complete)
       throw new ManagementError(
         'github_limited',
@@ -554,17 +701,18 @@ export async function applyGitHubSetup(
       )
         throw conflict()
       await env.EVENTS_DB.prepare(
-        "UPDATE github_setup_reviews SET state='installed',webhook_id=?,updated_at=? WHERE id=? AND state IN ('ready','configured')",
+        `UPDATE github_setup_reviews SET state='installed',webhook_id=?,error_code=NULL,updated_at=? WHERE id=? AND state IN ('ready','configured') AND (${guard.sql})`,
       )
-        .bind(existing.matches[0]!.id, timestamp(), row.id)
+        .bind(existing.matches[0]!.id, timestamp(), row.id, ...guard.params)
         .run()
     } else {
-      authorizeProvision(principal, context.workspaceId)
+      await auth.assert()
       const claim = await env.EVENTS_DB.prepare(
         `UPDATE github_setup_reviews SET state='installing',attempted_at=?,updated_at=?
         WHERE id=? AND state IN ('ready','configured') AND julianday(expires_at)>julianday('now')
           AND EXISTS (SELECT 1 FROM configuration_authority WHERE authority_id=? AND revision=? AND mode='active')
           AND NOT EXISTS (SELECT 1 FROM github_setup_reviews AS other WHERE other.resource_id=? AND other.id!=? AND (other.state IN ('installing','indeterminate') OR other.attempted_at>=github_setup_reviews.created_at))
+          AND (${guard.sql})
         RETURNING id`,
       )
         .bind(
@@ -575,6 +723,7 @@ export async function applyGitHubSetup(
           state.revision,
           row.resource_id,
           row.id,
+          ...guard.params,
         )
         .first()
       if (!claim)
@@ -586,36 +735,57 @@ export async function applyGitHubSetup(
         )
       claimed = true
       const hook = hookSchema.parse(
-        await github(config, input.repository, controller.signal, 1, {
-          name: 'web',
-          active: true,
-          events: input.events,
-          config: {
-            url: details.url,
-            content_type: 'json',
-            insecure_ssl: '0',
-            secret: await deriveGitHubSetupSecret(
-              config.key,
-              row.resource_id,
-              'signature',
-            ),
+        await github(
+          auth,
+          input.repository,
+          controller.signal,
+          1,
+          {
+            name: 'web',
+            active: true,
+            events: input.events,
+            config: {
+              url: details.url,
+              content_type: 'json',
+              insecure_ssl: '0',
+              secret: await deriveGitHubSetupSecret(
+                config.key,
+                row.resource_id,
+                'signature',
+              ),
+            },
           },
-        }),
+          (sent, accepted = false) => {
+            dispatched = sent
+            acknowledged ||= accepted
+          },
+        ),
       )
       if (hook.config.url !== details.url || !installed(hook, input.events))
         throw new Error('GitHub metadata differs')
+      let authorized = true
+      try {
+        await auth.assert()
+      } catch {
+        authorized = false
+      }
       await env.EVENTS_DB.prepare(
-        "UPDATE github_setup_reviews SET state='installed',webhook_id=?,updated_at=? WHERE id=? AND state='installing'",
+        `UPDATE github_setup_reviews SET state='installed',webhook_id=?,error_code=CASE WHEN ?=1 AND (${guard.sql}) THEN NULL ELSE ? END,updated_at=? WHERE id=? AND state='installing'`,
       )
-        .bind(hook.id, timestamp(), row.id)
+        .bind(
+          hook.id,
+          authorized ? 1 : 0,
+          ...guard.params,
+          INTERNAL_SETUP_ERRORS.AUTHORITY_CHANGED,
+          timestamp(),
+          row.id,
+        )
         .run()
     }
   } catch (error) {
-    const code =
-      error instanceof ManagementError &&
-      ['github_rejected', 'github_unavailable', 'github_limited'].includes(
-        error.code,
-      )
+    const code = acknowledged
+      ? INTERNAL_SETUP_ERRORS.ACKNOWLEDGED_UNVERIFIED
+      : error instanceof ManagementError && PUBLIC_SETUP_ERRORS.has(error.code)
         ? error.code
         : 'github_unavailable'
     if (claimed)
@@ -623,7 +793,9 @@ export async function applyGitHubSetup(
         "UPDATE github_setup_reviews SET state=?,error_code=?,updated_at=? WHERE id=? AND state='installing'",
       )
         .bind(
-          code === 'github_rejected' ? 'rejected' : 'indeterminate',
+          !dispatched || code === 'github_rejected'
+            ? 'rejected'
+            : 'indeterminate',
           code,
           timestamp(),
           row.id,
@@ -642,22 +814,40 @@ export async function applyGitHubSetup(
         operationId: row.id,
         resourceId: row.resource_id,
         code,
-        attempted: claimed,
+        intentClaimed: claimed,
+        dispatched,
+        acknowledged,
+        authCode: error instanceof GitHubAuthError ? error.code : null,
         elapsedMs: Date.now() - started,
       }),
     )
   } finally {
     clearTimeout(timer)
   }
-  return result(
-    env,
-    principal,
-    context,
-    (await find(env, principal, context, row.id))!,
+  const saved = (await find(env, principal, context, row.id))!
+  if (
+    dispatched &&
+    saved.error_code === INTERNAL_SETUP_ERRORS.AUTHORITY_CHANGED
   )
+    console.warn(
+      JSON.stringify({
+        level: 'warn',
+        msg: 'github.setup.authority_changed',
+        operationId: row.id,
+        resourceId: row.resource_id,
+        acknowledged,
+        elapsedMs: Date.now() - started,
+      }),
+    )
+  return result(env, principal, context, saved)
 }
 
-export async function readGitHubSetupStatus(env: Env, resourceId: string) {
+export async function readGitHubSetupStatus(
+  env: Env,
+  resourceId: string,
+  principal: ManagementPrincipal,
+  context: ManagementContext,
+) {
   const query = configurationQuery(env.EVENTS_DB)
   const before = await readConfigurationState(query)
   const saved = await entry(env, resourceId)
@@ -677,7 +867,14 @@ export async function readGitHubSetupStatus(env: Env, resourceId: string) {
   )
   try {
     const details = await privateDetails(env, resourceId)
-    const inspected = await inspectHooks(details, controller.signal)
+    const auth = await createRuntimeGitHubAuthentication(
+      env,
+      principal,
+      context,
+      details.metadata.repository,
+      false,
+    )
+    const inspected = await inspectHooks(details, controller.signal, auth)
     webhook = !inspected.complete
       ? 'limited'
       : !inspected.matches.length
@@ -743,16 +940,24 @@ export async function getGitHubSetup(
         JSON.stringify(details.metadata.events) !== JSON.stringify(input.events)
       )
         throw conflict()
-      const inspected = await inspectHooks(details, controller.signal)
+      const auth = await createRuntimeGitHubAuthentication(
+        env,
+        principal,
+        context,
+        details.metadata.repository,
+        false,
+      )
+      const guard = authGuard(auth)
+      const inspected = await inspectHooks(details, controller.signal, auth)
       if (
         inspected.complete &&
         inspected.matches.length === 1 &&
         installed(inspected.matches[0]!, details.metadata.events)
       ) {
         await env.EVENTS_DB.prepare(
-          "UPDATE github_setup_reviews SET state='installed',webhook_id=?,error_code=NULL,updated_at=? WHERE id=? AND state IN ('installing','indeterminate')",
+          `UPDATE github_setup_reviews SET state='installed',webhook_id=?,error_code=NULL,updated_at=? WHERE id=? AND state IN ('installing','indeterminate') AND (${guard.sql})`,
         )
-          .bind(inspected.matches[0]!.id, timestamp(), row.id)
+          .bind(inspected.matches[0]!.id, timestamp(), row.id, ...guard.params)
           .run()
       }
     } catch {

@@ -1,3 +1,5 @@
+import { githubRetryAt } from './github-rate-limit'
+import { fetchGitHubWithDeadline } from './github-http'
 import { z } from 'zod'
 import { GITHUB_APP_LIMITS as LIMITS, GitHubAuthError, githubProviderId, githubRepository, githubHookCapability, type GitHubHookCapability } from './github-app-contract'
 
@@ -59,7 +61,7 @@ export async function readGitHubAppJson(response: Response, signal?: AbortSignal
 export type GitHubInstallationVerification = {
   appId: number; installationId: number; accountId: number; privateKey: string; fingerprint: string;
   repositories: z.infer<typeof githubRepository>[]; capability: GitHubHookCapability;
-  now?: () => number; fetch?: typeof fetch; remainingBudgetMs?: () => number
+  now?: () => number; fetch?: typeof fetch; remainingBudgetMs?: () => number; signal?:AbortSignal
 }
 export type GitHubTokenRequest = GitHubInstallationVerification & { cache?: boolean }
 export type GitHubInstallationObservation = { appId: number; installationId: number; accountId: number; permissions: Record<string, 'read' | 'write' | 'admin'> }
@@ -75,21 +77,19 @@ async function validate(input: GitHubInstallationVerification) {
 async function request(input: GitHubInstallationVerification, token: boolean) {
   const budget = Math.min(LIMITS.REQUEST_MS, input.remainingBudgetMs?.() ?? LIMITS.REQUEST_MS)
   if (!Number.isFinite(budget) || budget <= 0) throw new GitHubAuthError('not_sent')
-  const signal = AbortSignal.timeout(Math.max(1, Math.floor(budget)))
+  const timeout = AbortSignal.timeout(Math.max(1, Math.floor(budget)))
+  const signal = input.signal ? AbortSignal.any([timeout,input.signal]) : timeout
   const authorization = await signGitHubAppJwt(input.privateKey, input.appId, (input.now ?? Date.now)())
   if (signal.aborted || (input.remainingBudgetMs?.() ?? 1) <= 0) throw new GitHubAuthError('not_sent')
   try {
-    const response = await (input.fetch ?? fetch)(`${API_ORIGIN}/app/installations/${input.installationId}${token ? '/access_tokens' : ''}`, {
+    const response = await fetchGitHubWithDeadline(input.fetch ?? fetch,`${API_ORIGIN}/app/installations/${input.installationId}${token ? '/access_tokens' : ''}`, {
       method: token ? 'POST' : 'GET', redirect: 'manual', signal,
       headers: { Authorization: 'Bearer ' + authorization, Accept: 'application/vnd.github+json', 'X-GitHub-Api-Version': API_VERSION, 'User-Agent': 'hookrelay', ...(token ? { 'Content-Type': 'application/json' } : {}) },
       ...(token ? { body: JSON.stringify({ repository_ids: input.repositories.map(row => row.id).sort((a, b) => a - b), permissions: { repository_hooks: requiredPermission(input.capability) } }) } : {}),
     })
     if (!response.ok) void response.body?.cancel().catch(() => {})
-    if (response.status === 429 || (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0')) {
-      const reset = Number(response.headers.get('x-ratelimit-reset')) * 1000
-      const now = (input.now ?? Date.now)()
-      throw new GitHubAuthError('rate_limited', Math.max(now + LIMITS.AUTHORITY_AGE_MS, Math.min(Number.isFinite(reset) ? reset : now, now + LIMITS.COOLDOWN_MAX_MS)))
-    }
+    const retryAt=githubRetryAt(response,(input.now ?? Date.now)())
+    if (retryAt !== null) throw new GitHubAuthError('rate_limited',retryAt)
     if ([401, 403, 404].includes(response.status)) throw new GitHubAuthError('denied')
     if (!response.ok || response.status >= 300) throw new GitHubAuthError('unavailable')
     return await readGitHubAppJson(response, signal)

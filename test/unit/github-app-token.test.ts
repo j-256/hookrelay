@@ -57,3 +57,14 @@ describe('native App token protocol', () => {
     await expect(mintGitHubInstallationToken({ ...base, repositories: [] })).rejects.toThrow()
   })
 })
+it('honors secondary-limit Retry-After responses from installation endpoints',async () => {
+  const input=await request(async () => Response.json({},{status:403,headers:{'retry-after':'3600'}}))
+  await expect(mintGitHubInstallationToken(input)).rejects.toMatchObject({code:'rate_limited',retryAt:now+3600000})
+})
+it('bounds a transport that never resolves headers even if it ignores the abort signal',async () => {
+  const fetcher=vi.fn(() => new Promise<Response>(() => {}))
+  const input={...await request(fetcher),remainingBudgetMs:() => 50}
+  const outcome=await Promise.race([mintGitHubInstallationToken(input).then(() => 'success',error => (error as {code:string}).code),new Promise(resolve => setTimeout(() => resolve('not_bounded'),500))])
+  expect(fetcher).toHaveBeenCalledTimes(1)
+  expect(outcome).toBe('unavailable')
+})
