@@ -339,3 +339,7 @@ describe('subscription retirement', () => {
     }
   })
 })
+
+it('carries an explicit App identity into repository-hook retirement',() => {
+  expect(parseSubscriptionRetirementArgs(['subscription','--manifest','private-manifest','--github-auth','app','--github-descriptor','operator-auth','--github-workspace','alpha','--github-credential-file','private-input']).githubAuthentication).toMatchObject({mode:'app',descriptorId:'operator-auth'})
+})

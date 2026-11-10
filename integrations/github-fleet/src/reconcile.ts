@@ -1,3 +1,6 @@
+import { GitHubAuthError } from '../../../src/lib/github-app-contract'
+import type { GitHubOperatorAuth } from '../../../scripts/providers/github/auth'
+import { authenticatedGitHubFleetDependencies } from './fleet'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { assertLegacyFleetSelection } from './ownership'
@@ -387,6 +390,7 @@ async function retryMutation<T>(
     try {
       return await action()
     } catch (err) {
+      if(err instanceof GitHubAuthError)throw err
       lastError = err
       if (attempt < dependencies.mutationAttempts) await dependencies.sleep(dependencies.mutationRetryMs * attempt)
     }
@@ -408,6 +412,7 @@ async function pingWithRetry(repo: string, hookId: number, dependencies: Resolve
       await dependencies.pingHook(repo, hookId)
       return
     } catch (err) {
+      if(err instanceof GitHubAuthError)throw err
       lastError = err
       const message = err instanceof Error ? err.message : String(err)
       if (/status (?:401|403)\b/.test(message)) throw err
@@ -736,4 +741,8 @@ export async function verifyGitHubFleet(
     }
   }
   return { repositories, verifiedHooks, issues }
+}
+
+export function authenticatedGitHubFleetReconcileDependencies(auth:GitHubOperatorAuth):GitHubFleetReconcileDependencies {
+  return {planDependencies:authenticatedGitHubFleetDependencies(auth),listHooks:repo=>listGitHubRepositoryHooks(repo,auth.transport),createHook:(repo,url,secret,selection)=>createGitHubRepositoryHook(repo,url,secret,selection,auth.transport),updateHook:(repo,id,url,events,secret)=>updateGitHubRepositoryHook(repo,id,url,events,secret,auth.transport),pingHook:(repo,id,_runner,polling)=>pingAndVerifyGitHubRepositoryHook(repo,id,auth.transport,polling)}
 }

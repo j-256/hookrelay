@@ -138,3 +138,7 @@ describe('prepareGitHubSubscriptionEvents', () => {
     )).toThrow(/sender secret/)
   })
 })
+
+it('retains the selected App credential without placing its value in event arguments',() => {
+  expect(parseGitHubSubscriptionEventsArgs(['subscription','--github-auth','app','--github-descriptor','operator-auth','--github-workspace','alpha','--github-credential-file','private-input']).githubAuthentication).toMatchObject({mode:'app',descriptorId:'operator-auth'})
+})

@@ -1,3 +1,4 @@
+import { extractOperatorGitHubAuthArgs, resolveOperatorGitHubAuth, operatorGitHubExitCode, requireOperatorGitHubAuthentication, OPERATOR_GITHUB_AUTH_USAGE, type OperatorGitHubAuthOptions } from './providers/github/auth'
 import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -53,6 +54,7 @@ const SUB_ADD_OPTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
 })
 
 export interface SubAddOptions {
+  githubAuthentication?: OperatorGitHubAuthOptions
   name: string
   source: string
   sinks: string[]
@@ -110,6 +112,7 @@ export function subAddUsage(): string {
     'usage: pnpm sub:add <name> <source> [options]',
     '',
     'options:',
+    '  '+OPERATOR_GITHUB_AUTH_USAGE,
     '  -s, --sink <name>       select a sink, repeatable',
     '  -b, --base-url <url>    set the Hookrelay base URL',
     '      --fallback-url <url> use when an event has no specific URL',
@@ -132,6 +135,9 @@ function optionValue(argv: string[], index: number, option: string): string {
 }
 
 export function parseSubAddArgs(argv: string[]): SubAddOptions {
+  const authenticationArgs=extractOperatorGitHubAuthArgs(argv)
+  argv=authenticationArgs.args
+  const githubAuthentication=authenticationArgs.authentication
   const positional: string[] = []
   const sinks: string[] = []
   let baseUrl: string | undefined
@@ -194,7 +200,7 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   if (source === 'github') {
     if (!repo) throw new Error('GitHub subscriptions require --repo <owner/repo>')
     validateGitHubRepo(repo)
-  } else if (repo || githubEventsSpecified) {
+  } else if (repo || githubEventsSpecified || githubAuthentication) {
     throw new Error('--repo and --events are only valid for GitHub subscriptions')
   }
 
@@ -213,6 +219,7 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   }
 
   return {
+    ...(githubAuthentication ? {githubAuthentication} : {}),
     name,
     source,
     sinks,
@@ -445,6 +452,8 @@ async function main(): Promise<void> {
         ...options,
         baseUrl: await resolveSubscriptionBaseUrl(routesText, options.baseUrl),
       }
+  const githubAuth=options.githubAuthentication ? await resolveOperatorGitHubAuth(options.githubAuthentication) : null
+  if(options.source==='github')console.log('GitHub authentication: '+(githubAuth ? JSON.stringify(githubAuth.metadata) : 'manual upstream setup'))
   const prepared = await prepareSubscription(routesText, devVarsText, resolvedOptions)
 
   await writeText(routesPath, prepared.routesText)
@@ -481,6 +490,7 @@ async function main(): Promise<void> {
     return
   }
 
+  if(!githubAuth){console.log('No GitHub authentication selected; create the upstream webhook using the private prepared fields');return}
   if (!prepared.senderSecret || !prepared.webhookUrl || !options.repo) {
     throw new Error('GitHub setup is missing sender authentication, webhook URL, or repository')
   }
@@ -499,6 +509,7 @@ async function main(): Promise<void> {
     prepared.webhookUrl,
     prepared.senderSecret.value,
     options.githubEvents,
+    githubAuth.transport,
   )
   console.log(`Created GitHub webhook ${hookId} in ${options.repo}`)
 }
@@ -506,6 +517,6 @@ async function main(): Promise<void> {
 if (import.meta.main) {
   main().catch((err) => {
     console.error(err instanceof Error ? err.message : err)
-    process.exit(1)
+    process.exit(operatorGitHubExitCode(err))
   })
 }

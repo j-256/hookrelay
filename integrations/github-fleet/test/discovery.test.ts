@@ -222,3 +222,20 @@ describe('GitHub fleet discovery', () => {
     }
   })
 })
+
+it('uses native hook-administration evidence without inventing a human viewer role or invoking gh',async () => {
+  const root=await mkdtemp(join(tmpdir(),'hookrelay-native-discovery-'))
+  try {
+    const checkout=join(root,'repository');await mkdir(checkout)
+    const commands:string[]=[]
+    const metadata=async ()=>({nameWithOwner:'owner/repo',visibility:'PUBLIC',isArchived:false,isFork:false,viewerPermission:null,hookAdministration:true})
+    const discovered=await discoverGitHubFleet([root],{readRepositoryMetadata:metadata},async (command,args)=>{
+      commands.push(command)
+      if(command!=='git')throw new Error('ambient authentication must not run')
+      return args.includes('--show-toplevel') ? checkout : 'https://github.com/owner/repo.git'
+    })
+    expect(discovered.repositories.map(repo=>repo.nameWithOwner)).toEqual(['owner/repo'])
+    expect(discovered.blockers).toEqual([])
+    expect(commands.every(command=>command==='git')).toBe(true)
+  }finally {await rm(root,{recursive:true,force:true})}
+})

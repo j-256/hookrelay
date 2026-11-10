@@ -1,6 +1,8 @@
+import type { GitHubHookTransport } from './auth'
+import { GitHubAuthError } from '../../../src/lib/github-app-contract'
 import { SUBSCRIPTION_SLUG_RE, hashSubscriptionSlug } from '../../../src/lib/subscription'
 import type { GitHubEventSelection } from './event-profiles'
-import { runProcess } from '../../setup'
+import type { runProcess } from '../../setup'
 
 const GITHUB_API_VERSION = '2022-11-28'
 const GITHUB_REPOSITORY_RE = /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9._-]+$/
@@ -50,7 +52,7 @@ function gitHubApiArgs(method: string, path: string): string[] {
 }
 
 export function validateGitHubRepo(repo: string): void {
-  if (!GITHUB_REPOSITORY_RE.test(repo)) throw new Error(`invalid GitHub repository: ${repo}`)
+  if (!GITHUB_REPOSITORY_RE.test(repo) || ['.','..'].includes(repo.split('/')[1]!)) throw new Error(`invalid GitHub repository: ${repo}`)
 }
 
 function parseGitHubRepositoryHook(value: unknown): GitHubRepositoryHook {
@@ -100,9 +102,13 @@ export function parseGitHubRepositoryHookPages(text: string): GitHubRepositoryHo
 
 export async function listGitHubRepositoryHooks(
   repo: string,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
 ): Promise<GitHubRepositoryHook[]> {
   validateGitHubRepo(repo)
+  if (typeof runner !== 'function') {
+    if (!runner) throw new GitHubAuthError('validation')
+    return parseGitHubRepositoryHookPages(JSON.stringify([await runner.request({operation:'list',repo})]))
+  }
   const stdout = await runner(
     'gh',
     [
@@ -223,7 +229,7 @@ export async function createGitHubRepositoryHook(
   webhookUrl: string,
   secret: string,
   selection: GitHubEventSelection,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
 ): Promise<number> {
   validateGitHubRepo(repo)
   const payload = githubHookPayload(webhookUrl, secret, selection)
@@ -231,6 +237,12 @@ export async function createGitHubRepositoryHook(
   const hooks = await listGitHubRepositoryHooks(repo, runner)
   if (hooks.some((hook) => hook.config.url === webhookUrl)) {
     throw new Error(`GitHub webhook already exists for the requested subscription in ${repo}`)
+  }
+  if (typeof runner !== 'function') {
+    if (!runner || !selection.events) throw new GitHubAuthError('validation')
+    const created=await runner.request({operation:'create',repo,webhookUrl,secret,events:[...selection.events]}) as {id?:unknown}
+    if(!Number.isSafeInteger(created.id) || (created.id as number)<=0) throw new Error('GitHub created the webhook without returning a valid id')
+    return created.id as number
   }
   const output = await runner('gh', [...gitHubApiArgs('POST', `repos/${repo}/hooks`), '--input', '-'], {
     input: JSON.stringify(payload),
@@ -249,11 +261,12 @@ export async function updateGitHubRepositoryHook(
   webhookUrl: string,
   events: readonly string[],
   secret: string,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
 ): Promise<void> {
   validateGitHubRepo(repo)
   if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
   if (!secret) throw new Error('GitHub webhook secret is empty')
+  if (typeof runner !== 'function') {if(!runner)throw new GitHubAuthError('validation');await runner.request({operation:'update',repo,hookId,webhookUrl,secret,events:[...events],active:true});return}
   await runner(
     'gh',
     [...gitHubApiArgs('PATCH', `repos/${repo}/hooks/${hookId}`), '--silent', '--input', '-'],
@@ -266,11 +279,12 @@ export async function updateGitHubRepositoryHookEvents(
   hook: GitHubRepositoryHook,
   events: readonly string[],
   secret: string,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
 ): Promise<void> {
   validateGitHubRepo(repo)
   if (!Number.isSafeInteger(hook.id) || hook.id <= 0) throw new Error('invalid GitHub webhook id')
   if (!secret) throw new Error('GitHub webhook secret is empty')
+  if (typeof runner !== 'function') {if(!runner)throw new GitHubAuthError('validation');await runner.request({operation:'events',repo,hookId:hook.id,webhookUrl:hook.config.url,secret,events:[...events],active:hook.active});return}
   // GitHub clears an existing secret unless the general webhook update supplies it again
   await runner(
     'gh',
@@ -303,10 +317,11 @@ export async function updateGitHubRepositoryHookEvents(
 export async function deleteGitHubRepositoryHook(
   repo: string,
   hookId: number,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
 ): Promise<void> {
   validateGitHubRepo(repo)
   if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
+  if (typeof runner !== 'function') {if(!runner)throw new GitHubAuthError('validation');await runner.request({operation:'delete',repo,hookId});return}
   await runner('gh', [...gitHubApiArgs('DELETE', `repos/${repo}/hooks/${hookId}`), '--silent'])
 }
 
@@ -346,10 +361,11 @@ export function parseGitHubRepositoryHookDeliveryPages(text: string): GitHubRepo
 export async function listGitHubRepositoryHookDeliveries(
   repo: string,
   hookId: number,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
 ): Promise<GitHubRepositoryHookDelivery[]> {
   validateGitHubRepo(repo)
   if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
+  if (typeof runner !== 'function') {if(!runner)throw new GitHubAuthError('validation');return parseGitHubRepositoryHookDeliveryPages(JSON.stringify([await runner.request({operation:'deliveries',repo,hookId})]))}
   const output = await runner('gh', [
     ...gitHubApiArgs('GET', `repos/${repo}/hooks/${hookId}/deliveries?per_page=100`),
     '--paginate',
@@ -361,17 +377,18 @@ export async function listGitHubRepositoryHookDeliveries(
 export async function triggerGitHubRepositoryHookPing(
   repo: string,
   hookId: number,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
 ): Promise<void> {
   validateGitHubRepo(repo)
   if (!Number.isSafeInteger(hookId) || hookId <= 0) throw new Error('invalid GitHub webhook id')
+  if (typeof runner !== 'function') {if(!runner)throw new GitHubAuthError('validation');await runner.request({operation:'ping',repo,hookId});return}
   await runner('gh', [...gitHubApiArgs('POST', `repos/${repo}/hooks/${hookId}/pings`), '--silent'])
 }
 
 export async function pingAndVerifyGitHubRepositoryHook(
   repo: string,
   hookId: number,
-  runner: ProcessRunner = runProcess,
+  runner?: ProcessRunner | GitHubHookTransport,
   polling: GitHubHookPollingOptions = {},
 ): Promise<GitHubRepositoryHookDelivery> {
   const timeoutMs = polling.timeoutMs ?? DEFAULT_PING_TIMEOUT_MS

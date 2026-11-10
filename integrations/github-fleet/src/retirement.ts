@@ -1,3 +1,4 @@
+import type { GitHubOperatorAuth } from '../../../scripts/providers/github/auth'
 import { randomUUID } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { assertLegacyFleetSelection } from './ownership'
@@ -800,4 +801,8 @@ export async function verifyGitHubFleetRetirement(
     }
   }
   return { repositories: selected, issues }
+}
+
+export function authenticatedGitHubFleetRetirementDependencies(auth:GitHubOperatorAuth):GitHubFleetRetirementDependencies {
+  return {...DEFAULT_DEPENDENCIES,discover:(roots,options)=>discoverGitHubFleet(roots,{...options,readRepositoryMetadata:auth.repository}),listHooks:repo=>listGitHubRepositoryHooks(repo,auth.transport),deleteHook:(repo,id)=>deleteGitHubRepositoryHook(repo,id,auth.transport)}
 }

@@ -528,3 +528,13 @@ describe('GitHub fleet retirement', () => {
     }
   })
 })
+
+it('passes the selected native transport through owned-hook retirement',async () => {
+  const {authenticatedGitHubFleetRetirementDependencies}=await import('../src/retirement')
+  const request=vi.fn(async (input:any)=>input.operation==='list' ? [] : null)
+  const auth={metadata:{mode:'app' as const,descriptorId:'operator-auth',workspaceId:'alpha',revision:1,keyRevision:1},transport:{request},repository:vi.fn()}
+  const dependencies=authenticatedGitHubFleetRetirementDependencies(auth)
+  await dependencies.listHooks('owner/repo')
+  await dependencies.deleteHook('owner/repo',42)
+  expect(request.mock.calls.map(([input])=>input.operation)).toEqual(['list','delete'])
+})

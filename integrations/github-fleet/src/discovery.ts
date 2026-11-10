@@ -32,6 +32,7 @@ export interface GitHubFleetDiscovery {
 export interface GitHubFleetDiscoveryOptions {
   privateRepositories?: ReadonlySet<string>
   progress?: GitHubFleetProgress
+  readRepositoryMetadata?:(repo:string)=>Promise<GitHubRepositoryMetadata>
 }
 
 export type GitHubFleetCommandRunner = (command: string, args: string[]) => Promise<string>
@@ -41,12 +42,13 @@ const defaultRunner: GitHubFleetCommandRunner = async (command, args) => {
   return stdout
 }
 
-interface GitHubRepositoryMetadata {
+export interface GitHubRepositoryMetadata {
   nameWithOwner: string
   visibility: string
   isArchived: boolean
   isFork: boolean
-  viewerPermission: string
+  viewerPermission: string | null
+  hookAdministration?:boolean
 }
 
 interface GitHubFleetCandidate {
@@ -195,6 +197,9 @@ export async function discoverGitHubFleet(
 
     let metadata: GitHubRepositoryMetadata
     try {
+      if(options.readRepositoryMetadata) metadata=await options.readRepositoryMetadata(remoteRepo)
+      else {
+      if(runner===defaultRunner)throw new Error('Select explicit GitHub authentication for fleet discovery')
       metadata = parseRepositoryMetadata(await runner('gh', [
         'repo',
         'view',
@@ -202,6 +207,7 @@ export async function discoverGitHubFleet(
         '--json',
         'nameWithOwner,visibility,isArchived,isFork,viewerPermission',
       ]))
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
       blockers.push(`${remoteRepo}: metadata lookup failed (${message})`)
@@ -217,7 +223,7 @@ export async function discoverGitHubFleet(
       blockers.push(`${metadata.nameWithOwner}: repository is archived`)
       continue
     }
-    if (metadata.viewerPermission !== 'ADMIN') {
+    if (metadata.hookAdministration !== true && metadata.viewerPermission !== 'ADMIN') {
       blockers.push(`${metadata.nameWithOwner}: admin permission is required`)
       continue
     }
