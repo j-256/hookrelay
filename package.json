@@ -36,7 +36,8 @@
     "preversion": "node scripts/version-preflight.mjs && npm run typecheck && npm test",
     "retag": "tsx scripts/retag.ts",
     "capture:cover": "node --import tsx tools/cover/capture.mjs",
-    "github:app": "tsx scripts/github-app.ts"
+    "github:app": "tsx scripts/github-app.ts",
+    "github:operations": "tsx scripts/github-operations.ts"
   },
   "devDependencies": {
     "@cloudflare/vitest-pool-workers": "^0.23.0",

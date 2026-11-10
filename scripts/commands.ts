@@ -16,6 +16,8 @@ export function commandReference(): string {
     '      Activation is explicit; lifecycle commands below follow the selected KV or D1 authority',
     '',
     'Guided setup',
+    '  pnpm github:operations --help',
+    '      Inspect native hook receipts and reconcile uncertain outcomes using a protected review',
     '  pnpm github:app --help',
     '      Register or import a separate App, retain protected recovery, then stage and verify activation',
     '  pnpm sink:add <name> <discord|webhook>',
