@@ -7,6 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { hmacSha256Hex } from '../../../src/lib/hmac'
 import { hashSubscriptionSlug, subscriptionKvKey } from '../../../src/lib/subscription'
 import type { GitHubFleetDependencies, GitHubFleetOptions } from '../src/fleet'
+import {scopedDiscoveryFixture} from './scoped-discovery-helper'
 import {
   applyGitHubFleet,
   verifyGitHubFleet,
@@ -878,4 +879,29 @@ it('passes one native transport through fleet create, update and authenticated p
   await dependencies.updateHook!('owner/repo',42,'https://hooks.example/hook/github/abcdefghijklmnopqrstuv',['push'],'synthetic-secret')
   await dependencies.pingHook!('owner/repo',42,undefined,{timeoutMs:10,intervalMs:1})
   expect(request.mock.calls.map(([input])=>input.operation)).toEqual(['list','create','update','deliveries','ping','deliveries'])
+})
+
+it.each(['app','token'])('applies and verifies %s managed hooks in a mixed checkout root without broader authority',async mode=>{
+  const fileSystem=modeAwareFileSystem()
+  const entry=manifestEntry(REPO,'scope')
+  const manifest:GitHubFleetManifest={version:2,repositories:{[REPO]:entry},retiredRepositories:{}}
+  const directory=await writeProject(manifest,fileSystem)
+  try {
+    const scoped=await scopedDiscoveryFixture(directory,REPO,mode as 'app'|'token')
+    const secrets=new Set(['SINK_ACTIVITY','SINK_STARS','SINK_ALERTS',entry.hmac.name])
+    const routes=parseRoutes(await readFile(join(directory,'routes.jsonc'),'utf8'))
+    const plan=computePlan(routes,{subs:{},sinks:{}})
+    const remote={subs:Object.fromEntries(plan.subPuts.map(e=>[e.key,e.value])),sinks:Object.fromEntries(plan.sinkPuts.map(e=>[e.key,e.value]))}
+    const hooks=GITHUB_FLEET_PROFILE_NAMES.map((profile,i)=>hookFor(entry,REPO,profile,i+1))
+    const listHooks=async()=>hooks
+    const listSecrets=async()=>new Set(secrets)
+    const readKv=async()=>cloneKv(remote)
+    const planDependencies={discover:scoped.discover,listHooks,listSecrets,readKv,fileSystem}
+    const dependencies:GitHubFleetReconcileDependencies={planDependencies,listHooks,listSecrets,readKv,fetch:acceptSignedRoute,sleep:async()=>{},pingHook:async()=>({id:'scope-ping',event:'ping',statusCode:200,deliveredAt:null}),putSecrets:async()=>new Set(secrets)}
+    const selected={...fleetOptions('apply',[REPO]),roots:[scoped.root]}
+    expect(await applyGitHubFleet(selected,directory,dependencies)).toMatchObject({reconciledHooks:3})
+    expect(await verifyGitHubFleet({...selected,phase:'verify'},directory,dependencies)).toMatchObject({issues:[],verifiedHooks:3})
+    expect(scoped.reads.every(repo=>repo===REPO)).toBe(true)
+    await expect(applyGitHubFleet({...selected,repositories:[scoped.unrelated]},directory,dependencies)).rejects.toThrow(/required repository is outside selected authentication scope/)
+  }finally{await rm(directory,{recursive:true,force:true})}
 })

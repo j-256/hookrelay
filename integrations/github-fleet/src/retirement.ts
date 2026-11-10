@@ -172,6 +172,7 @@ function paths(options: GitHubFleetOptions, projectRoot: string) {
 
 function discoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscoveryOptions {
   return {
+    requiredRepositories: new Set(options.repositories),
     privateRepositories: new Set(options.includePrivate ? options.repositories : []),
     progress: options.progress,
   }
@@ -803,6 +804,13 @@ export async function verifyGitHubFleetRetirement(
   return { repositories: selected, issues }
 }
 
-export function authenticatedGitHubFleetRetirementDependencies(auth:GitHubOperatorAuth):GitHubFleetRetirementDependencies {
-  return {...DEFAULT_DEPENDENCIES,discover:(roots,options)=>discoverGitHubFleet(roots,{...options,readRepositoryMetadata:auth.repository}),listHooks:repo=>listGitHubRepositoryHooks(repo,auth.transport),deleteHook:(repo,id)=>deleteGitHubRepositoryHook(repo,id,auth.transport)}
+export function authenticatedGitHubFleetRetirementDependencies(auth: GitHubOperatorAuth): GitHubFleetRetirementDependencies {
+  return {
+    ...DEFAULT_DEPENDENCIES,
+    discover: (roots, options) => discoverGitHubFleet(roots, {
+      ...options, readRepositoryMetadata: auth.repository, admittedRepositories: auth.admittedRepositories,
+    }),
+    listHooks: repo => listGitHubRepositoryHooks(repo, auth.transport),
+    deleteHook: (repo, id) => deleteGitHubRepositoryHook(repo, id, auth.transport),
+  }
 }
