@@ -82,6 +82,11 @@ const requestSchema = z.discriminatedUnion('operation', [
     z.object({ operation: z.literal(operation), repo, hookId }).strict(),
   ),
 ])
+export function parseGitHubHookRequest(input:unknown) {
+  const value=requestSchema.safeParse(input)
+  if(!value.success)throw new GitHubAuthError('validation')
+  return value.data
+}
 export type GitHubHookRequest = z.input<typeof requestSchema>
 export interface GitHubHookTransport {
   request(input: GitHubHookRequest): Promise<unknown>
@@ -105,6 +110,7 @@ export type GitHubOperatorAuth = {
     fingerprint?: string
   }
   transport: GitHubHookTransport
+  verifyRepositoryAuthority?:(repo:string)=>Promise<GitHubAuthLease['fence']>
   repository(repo: string): Promise<{
     nameWithOwner: string
     visibility: string
@@ -372,8 +378,8 @@ export async function resolveOperatorGitHubAuth(
           const inserted = await githubAuthQuery(
             query,
             `INSERT INTO github_hook_operations(id,descriptor_id,workspace_id,repository_id,operation,hook_id,request_hash,target_hash,auth_fence_json,state,created_at,updated_at)
-            SELECT ?,?,?,?,?,?,?,?,?,'prepared',?,? WHERE (SELECT count(*) FROM github_hook_operations WHERE descriptor_id=? AND state IN ('prepared','submitting','indeterminate'))<?
-            AND (?='ping' OR NOT EXISTS(SELECT 1 FROM github_hook_operations WHERE descriptor_id=? AND repository_id=? AND target_hash=? AND state IN ('prepared','submitting','indeterminate'))) RETURNING id`,
+            SELECT ?,?,?,?,?,?,?,?,?,'prepared',?,? WHERE (SELECT count(*) FROM github_hook_operations WHERE descriptor_id=? AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id))<?
+            AND (?='ping' OR NOT EXISTS(SELECT 1 FROM github_hook_operations WHERE descriptor_id=? AND repository_id=? AND target_hash=? AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id))) RETURNING id`,
             [
               operationId,
               captured.id,
@@ -398,7 +404,7 @@ export async function resolveOperatorGitHubAuth(
             operationId = null
             const [pending] = await githubAuthQuery<{ id: string }>(
               query,
-              "SELECT id FROM github_hook_operations WHERE descriptor_id=? AND repository_id=? AND target_hash=? AND state IN ('prepared','submitting','indeterminate') ORDER BY created_at LIMIT 1",
+              "SELECT id FROM github_hook_operations WHERE descriptor_id=? AND repository_id=? AND target_hash=? AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id) ORDER BY created_at LIMIT 1",
               [captured.id, current.fence.repositoryId, targetHash],
             )
             if (pending) throw new GitHubHookOperationError('indeterminate', pending.id)
@@ -410,7 +416,7 @@ export async function resolveOperatorGitHubAuth(
             !(
               await githubAuthQuery(
                 query,
-                `UPDATE github_hook_operations SET state='submitting',auth_fence_json=?,updated_at=? WHERE id=? AND state='prepared' AND (${guard.sql}) RETURNING id`,
+                `UPDATE github_hook_operations SET state='submitting',auth_fence_json=?,updated_at=? WHERE id=? AND state='prepared' AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id) AND (${guard.sql}) RETURNING id`,
                 [JSON.stringify(current.fence), Date.now(), operationId, ...guard.params],
               )
             ).length
@@ -623,6 +629,7 @@ export async function resolveOperatorGitHubAuth(
           : {}),
     },
     transport: { request },
+    verifyRepositoryAuthority:async repo=>(await lease(repo,'repository-hooks-write','effect',AbortSignal.timeout(GITHUB_APP_LIMITS.REQUEST_MS))).fence,
     repository: async (repository) => {
       const value = z
         .object({
