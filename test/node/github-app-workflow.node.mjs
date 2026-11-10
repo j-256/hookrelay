@@ -47,16 +47,11 @@ test('guided local preparation survives lost staging, deployment and hook acknow
       .privateKey.export({ type: 'pkcs1', format: 'pem' })
       .toString()
     const recoveryFile = join(root, 'recovery.json')
-    const decode = (value) =>
-      value
-        .replaceAll('&quot;', '"')
-        .replaceAll('&#39;', "'")
-        .replaceAll('&amp;', '&')
-        .replaceAll('&lt;', '<')
-        .replaceAll('&gt;', '>')
+    const decode = value => value.replace(/&(?:quot|#39|amp|lt|gt);/g,
+      entity => ({ '&quot;': '"', '&#39;': "'", '&amp;': '&', '&lt;': '<', '&gt;': '>' })[entity])
     const registered = await runGitHubAppRegistration({
       account: { login: 'example', type: 'Organization' },
-      name: 'Synthetic workflow',
+      name: 'Synthetic &lt; workflow',
       visibility: 'public',
       homepage: 'https://hooks.example',
       capability: 'repository-hooks-write',
@@ -73,6 +68,7 @@ test('guided local preparation survives lost staging, deployment and hook acknow
       openBrowser: async (url) => {
         const html = await (await fetch(url)).text()
         const manifest = JSON.parse(decode(/value="([^"]+)"/.exec(html)[1]))
+        assert.equal(manifest.name, 'Synthetic &lt; workflow')
         assert.equal(manifest.hook_attributes.active, false)
         assert.deepEqual(manifest.default_events, [])
         const action = new URL(decode(/action="([^"]+)"/.exec(html)[1]))

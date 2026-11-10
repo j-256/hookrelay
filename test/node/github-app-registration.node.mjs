@@ -9,9 +9,10 @@ import { promisify } from 'node:util'
 import { runGitHubAppRegistration } from '../../scripts/providers/github/app-registration.ts'
 import { parseGitHubAppArgs } from '../../scripts/github-app.ts'
 const exec = promisify(execFile)
+const CONVERSION_URL = /^https:\/\/api\.github\.com\/app-manifests\/[A-Za-z0-9]+\/conversions$/
 const pair = generateKeyPairSync('rsa', { modulusLength: 2048 })
 const pem = pair.privateKey.export({ type: 'pkcs1', format: 'pem' }).toString()
-const input = { account: { login: 'example', type: 'Organization' }, name: 'Provider App', visibility: 'public', homepage: 'https://hooks.example', capability: 'repository-hooks-write' }
+const input = { account: { login: 'example', type: 'Organization' }, name: 'Provider &lt; App', visibility: 'public', homepage: 'https://hooks.example', capability: 'repository-hooks-write' }
 const converted = () => ({ id: 42, slug: 'provider-app', owner: { id: 50, login: 'example', type: 'Organization' }, pem, webhook_secret: 'synthetic-manifest-secret', client_secret: 'discard-oauth-canary' })
 async function withRoot(run) { const root = await mkdtemp(join(tmpdir(), 'hookrelay-app-registration-')); try { await run(root) } finally { await rm(root, { recursive: true, force: true }) } }
 async function manifest(url) {
@@ -19,10 +20,12 @@ async function manifest(url) {
   const html = await response.text()
   assert.equal(response.headers.get('cache-control'), 'no-store')
   assert.equal(html.includes(pem), false)
-  const decode = value => value.replaceAll('&quot;', '"').replaceAll('&#39;', "'").replaceAll('&amp;', '&').replaceAll('&lt;', '<').replaceAll('&gt;', '>')
+  const decode = value => value.replace(/&(?:quot|#39|amp|lt|gt);/g,
+    entity => ({ '&quot;': '"', '&#39;': "'", '&amp;': '&', '&lt;': '<', '&gt;': '>' })[entity])
   const form = decode(/value="([^"]+)"/.exec(html)[1])
   const data = JSON.parse(form)
   const action = new URL(decode(/action="([^"]+)"/.exec(html)[1]))
+  assert.equal(data.name, input.name)
   assert.equal(data.hook_attributes.active, false)
   assert.deepEqual(data.default_permissions, { repository_hooks: 'write' })
   assert.deepEqual(data.default_events, [])
@@ -32,7 +35,7 @@ test('pins callback host, path and state and claims conversion only once before 
   let exchanges = 0
   let release
   const gate = new Promise(resolve => { release = resolve })
-  const result = await runGitHubAppRegistration({ ...input, attemptFile: join(root, 'attempt.json'), outputFile: join(root, 'recovery.json'), fetch: async (url, options) => { exchanges++; assert.match(String(url), /^https:\/\/api.github.com\/app-manifests\/[A-Za-z0-9]+\/conversions$/); assert.equal(options.redirect, 'manual'); await gate; return Response.json(converted()) }, openBrowser: async browserUrl => {
+  const result = await runGitHubAppRegistration({ ...input, attemptFile: join(root, 'attempt.json'), outputFile: join(root, 'recovery.json'), fetch: async (url, options) => { exchanges++; assert.match(String(url), CONVERSION_URL); assert.equal(options.redirect, 'manual'); await gate; return Response.json(converted()) }, openBrowser: async browserUrl => {
     const prepared = await manifest(browserUrl)
     const wrong = new URL(prepared.url); wrong.searchParams.set('state', 'wrong'); wrong.searchParams.set('code', 'synthetic-code')
     assert.equal((await fetch(wrong)).status, 403)
@@ -116,3 +119,7 @@ test('imports a matching App into a new protected file without retaining OAuth m
   assert.equal(JSON.stringify(result).includes('PRIVATE KEY'),false)
   await assert.rejects(importGitHubAppMaterial({version:1,appId:43,privateKey:pem},join(root,'wrong.json'),async () => Response.json(converted())))
 }))
+
+test('conversion fixture refuses lookalike GitHub hosts', () => {
+  assert.equal(CONVERSION_URL.test('https://apiXgithub.com/app-manifests/code/conversions'), false)
+})
