@@ -1,5 +1,7 @@
 # Provider-owned configuration
 
+See [GitHub authentication](github-apps.md) for separate App registration, protected import, explicit App/token/gh choices, scoped activation and deliberate token rollback. Provider API authentication is independent of signed repository receivers and manual-handoff custody.
+
 Hookrelay can own runtime configuration in D1 so online policy edits and provider lifecycle commands use one revisioned authority. Deployment does not import local files, activate this authority or widen management credentials. The initial mode is `legacy`; activation is a separate reviewed provider operation. Activation changes the storage authority, not who is allowed to manage Hookrelay.
 
 ## Supported controls

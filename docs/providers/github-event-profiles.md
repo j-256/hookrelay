@@ -1,12 +1,14 @@
 # GitHub event profiles
 
+See [GitHub authentication](../github-apps.md) for separate App registration, protected import, explicit App/token/gh choices, scoped activation and deliberate token rollback. Provider API authentication is independent of signed repository receivers and manual-handoff custody.
+
 `pnpm sub:add` accepts a comma-separated GitHub event selection:
 
 ```sh
 pnpm sub:add github:example-owner/example-repo github --repo example-owner/example-repo --events activity,alerts
 ```
 
-Existing subscriptions accept the same selection through `pnpm github:events <subscription> --events <profiles>`. Omit `--events` to reconcile one selection edited directly in `routes.jsonc`. Use `pnpm github:sync` to preview all saved GitHub selections and `pnpm github:sync -y` to reconcile their provider filters and changed repository hooks together.
+Append an explicit `--github-auth app|token|gh` choice to commands that manage GitHub hooks; App/token also need the scoped descriptor, workspace and protected credential file. Existing subscriptions accept the same selection through `pnpm github:events <subscription> --events <profiles>`. Omit `--events` to reconcile one selection edited directly in `routes.jsonc`. Use `pnpm github:sync` to preview all saved GitHub selections and `pnpm github:sync -y` to reconcile their provider filters and changed repository hooks together.
 
 Composable names expand in the order supplied, and duplicate raw events are removed. Profiles can intentionally overlap, so `activity,workflows` still creates only one `workflow_run` subscription. `push` is the default. `recommended` can be combined with profiles, for example `recommended,stars`. The `all` and `manual` presets are exclusive and cannot be combined with another name.
 
@@ -58,4 +60,4 @@ GitHub repository hooks select `push` and `pull_request` as whole event families
 
 Security summaries never copy the raw secret value from a `secret_scanning_alert`. The original authenticated payload remains subject to Hookrelay's normal restricted persistence model.
 
-The selected profile names and repository are saved under `subs[].setup.github` in local `routes.jsonc`. They are setup metadata and are not copied into runtime provider configuration. `pnpm sync` compiles shared profile rules, or an explicit subscription override, into the selected authority's runtime filter configuration. `pnpm github:events` applies only one subscription's `filter` field before changing GitHub. `pnpm github:sync` applies only the saved GitHub subscriptions' `filter` fields, then updates event arrays that differ. Both preserve other online policy and require the sender secret in `.dev.vars` for changed hooks because GitHub's general webhook update clears an omitted secret; they resend that secret and the unchanged hook config through stdin. `manual` changes the provider filter but leaves GitHub's remote selection unchanged.
+The selected profile names and repository are saved under `subs[].setup.github` in local `routes.jsonc`. They are setup metadata and are not copied into runtime provider configuration. `pnpm sync` compiles shared profile rules, or an explicit subscription override, into the selected authority's runtime filter configuration. `pnpm github:events` applies only one subscription's `filter` field before changing GitHub. `pnpm github:sync` applies only the saved GitHub subscriptions' `filter` fields, then updates event arrays that differ. Both preserve other online policy and require the sender secret in `.dev.vars` for changed hooks because GitHub's general webhook update clears an omitted secret; they resend that secret and the unchanged hook config through a private request body; explicit `gh` mode uses stdin. `manual` changes the provider filter but leaves GitHub's remote selection unchanged.

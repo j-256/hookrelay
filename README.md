@@ -1,5 +1,7 @@
 # hookrelay
 
+[GitHub authentication](docs/github-apps.md) supports a separate App, explicit manual tokens and standalone `gh` mode, with protected registration, activation and recovery.
+
 [Manual GitHub handoff](docs/github-handoff.md) creates reviewed receivers for trusted external administrators, with protected URL/secret retrieval, immutable encrypted custody and compatible local recovery. Its guide records restoration requirements and Free-plan estimates.
 
 Run `pnpm commands` for a one-screen reference to routine setup, sync, development, and deployment commands.
@@ -84,7 +86,7 @@ Steps:
    ```sh
    pnpm sink:add discord discord
    ```
-8. Add subscriptions. Each command writes the hash-only route locally, prints the raw slug under a password-manager key, and offers to install any sender secret and sync the selected provider authority. GitHub's non-manual event selections create the repository webhook only after the route is live:
+8. Add subscriptions. Each command writes the hash-only route locally, saves private receiver recovery, and offers to install any sender secret and sync the selected provider authority. GitHub's non-manual event selections create the repository webhook only after the route is live:
    ```sh
    pnpm sub:add claude-status statuspage --fallback-url https://status.claude.com/
    pnpm sub:add github-yourname-yourrepo github --repo yourname/yourrepo --events activity,alerts
@@ -197,12 +199,12 @@ Incoming HTTP slugs, email plus-route tokens, and Discord webhook URLs are beare
 
 1. Read and validate gitignored `routes.jsonc` and `.dev.vars`. `sink:add` reads the destination URL through concealed input. `sub:add` generates its private values and resolves the HTTP origin or email base address for the selected source.
 2. Write the local desired state. Routing and hash-only subscription data go to `routes.jsonc`; Worker-readable secrets go to `.dev.vars`, which is kept at mode `600`. The commands do not populate Miniflare's local KV.
-3. Print anything that belongs in your password manager. In particular, the raw incoming slug is not added to `.dev.vars`, because the Worker only needs its hash.
+3. Save receiver custody to a new owner-only file under ignored `.hookrelay-private/`, or at `--private-export <new-private-file>`. Copy the bearer URL, email route and HMAC from that protected artifact into appropriate private custody. Routine output names the artifact; the raw incoming slug is not added to `.dev.vars`, because the Worker only needs its hash.
 4. Ask before changing production. Approval installs any new Wrangler secret, then runs a scoped `pnpm sync` comparison for the selected provider resource.
 5. Ask whether to apply that plan. Approval writes only that exact resource to legacy KV or active D1.
 6. For a non-manual GitHub selection, ask whether to create the repository webhook. This only happens after the remote sender secret and subscription route are live.
 
-If every prompt is approved, no later sync is needed. Declining a production prompt or encountering a remote error leaves the completed local files in place. Install any deferred Wrangler secret, preview the named resource with `pnpm sync --put-sink <name>` or `pnpm sync --put-sub <name>`, then add `-y` to apply it. Those commands finish Worker state only; if automatic GitHub hook creation was skipped, create the hook manually from the fields printed by `sub:add`. Passing `-y` or `--yes` skips the approvals but keeps the same local-first order.
+If every prompt is approved, no later sync is needed. Declining a production prompt or encountering a remote error leaves the completed local files in place. Install any deferred Wrangler secret, preview the named resource with `pnpm sync --put-sink <name>` or `pnpm sync --put-sub <name>`, then add `-y` to apply it. Those commands finish Worker state only; if automatic GitHub hook creation was skipped, create the hook manually from the protected receiver recovery saved by `sub:add`. Passing `-y` or `--yes` skips the approvals but keeps the same local-first order.
 
 ## Adding a sink
 
@@ -259,9 +261,9 @@ Run the guided command after the destination sink exists:
 pnpm sub:add <subscription-name> <source> [-s <sink-name>]
 ```
 
-If exactly one sink exists, it is selected automatically. Repeat `-s` or `--sink` to route to several sinks. The command generates a private incoming slug, stores only its SHA-256 hash in `routes.jsonc`, and prints the raw slug as `SUB_<NAME>_SLUG` for your password manager. Signed providers also get a per-subscription sender secret, mirrored into `.dev.vars` and offered to Wrangler. Production changes are previewed and confirmed unless `-y` or `--yes` is supplied.
+If exactly one sink exists, it is selected automatically. Repeat `-s` or `--sink` to route to several sinks. The command generates a private incoming slug, stores only its SHA-256 hash in `routes.jsonc`, and saves the raw slug in protected receiver recovery for your password manager. Signed providers also get a per-subscription sender secret, mirrored into `.dev.vars` and offered to Wrangler. Production changes are previewed and confirmed unless `-y` or `--yes` is supplied.
 
-`sub:add` also accepts `-b` for `--base-url`, `--fallback-url` for a public target used when an event has no specific URL, `--email-base` for an Email Routing address, repeated `--allow-sender` filters, repeated `--primary-link-label` selectors, `-r` for `--repo`, and `-e` for `--events`. Run any setup command with `-h` or `--help` for its complete usage.
+`sub:add` also accepts `-b` for `--base-url`, `--fallback-url` for a public target used when an event has no specific URL, `--email-base` for an Email Routing address, repeated `--allow-sender` filters, repeated `--primary-link-label` selectors, `-r` for `--repo`, and `-e` for `--events`. `--private-export <new-private-file>` selects receiver recovery custody. Run any setup command with `-h` or `--help` for its complete usage.
 
 `fallbackUrl` never replaces an event URL supplied by an adapter. For example, a Statuspage incident keeps its incident shortlink while a component status change can link to the provider's canonical status page.
 
@@ -298,7 +300,7 @@ The `--events` value accepts comma-separated profiles. Profiles compose by set u
 
 The base URL resolves from an explicit `--base-url`, then the value already saved in `routes.jsonc`, then the single production custom domain attached to the Worker named in `wrangler.jsonc`. Automatic discovery uses `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`; an absent or ambiguous domain produces an error asking for `--base-url`.
 
-With `manual`, use the printed payload URL and sender secret, choose JSON content, and keep SSL verification enabled. In every other selection, the command checks for an existing hook with the same URL and creates the hook through authenticated `gh` only after the Worker secret and provider route are live.
+With `manual`, copy the payload URL and sender secret from protected receiver recovery, choose JSON content, and keep SSL verification enabled. With an explicit `--github-auth app|token|gh` choice and a non-manual profile, the command checks for an existing hook with the same URL and creates it only after the Worker secret and provider route are live. App/token modes require a provider descriptor, admitted workspace and protected credential file; see [GitHub authentication](docs/github-apps.md). With no authentication choice, create the upstream hook manually.
 
 ## Provider-specific setup
 
@@ -334,7 +336,7 @@ Cloudflare setup is one-time:
 1. Deploy this Worker, then open Compute > Email Service > Email Routing in the Cloudflare dashboard. Onboard the zone or, preferably, [add a dedicated routing subdomain](https://developers.cloudflare.com/email-service/configuration/subdomains/) such as `mail.example.com` so existing apex-domain mail remains untouched.
 2. In Email Routing > Settings, enable [subaddressing](https://developers.cloudflare.com/email-service/configuration/email-routing-addresses/#subaddressing).
 3. In Routing Rules, create the base address, such as `relay@mail.example.com`, choose `Send to a Worker`, and select the Hookrelay Worker. One rule handles every generated `relay+<route>@mail.example.com` address because Cloudflare preserves the plus detail in `message.to`.
-4. Add and sync a subscription, then paste the printed email address into the provider's email subscription form:
+4. Add and sync a subscription, then copy the email address from protected receiver recovery into the provider's email subscription form:
 
    ```sh
    pnpm sub:add openai-status email --email-base relay@mail.example.com \
@@ -363,7 +365,7 @@ Treat each generated address as a bearer route. Cloudflare preserves the full pl
 Use the saved subscription name to replace an existing webhook's event selection:
 
 ```sh
-pnpm github:events github:example-owner/example-repo --events recommended,stars
+pnpm github:events github:example-owner/example-repo --events recommended,stars --github-auth gh
 ```
 
 The command updates only `setup.github.eventProfiles` in local `routes.jsonc`, preserving its comments, applies the selected subscription's compiled `filter` field to provider configuration, then finds the exact repository hook by hashing each Hookrelay URL slug and comparing it with the subscription's saved `slugHash`. It changes GitHub only after the provider filter is accepted, previews the GitHub change, and asks before applying it; pass `-y` or `--yes` to skip confirmations. Neither the private URL nor its slug is printed.
@@ -371,14 +373,14 @@ The command updates only `setup.github.eventProfiles` in local `routes.jsonc`, p
 If you edit `eventProfiles` in `routes.jsonc` yourself, omit `--events` to reconcile that saved selection:
 
 ```sh
-pnpm github:events github:example-owner/example-repo
+pnpm github:events github:example-owner/example-repo --github-auth gh
 ```
 
 For several edited subscriptions, preview the saved selections together, then apply the reviewed plan:
 
 ```sh
-pnpm github:sync
-pnpm github:sync -y
+pnpm github:sync --github-auth gh
+pnpm github:sync --github-auth gh -y
 ```
 
 `github:sync` reads only the GitHub subscriptions already saved in `routes.jsonc`; it does not discover or enroll repositories. It checks matching hooks for non-manual selections and the secrets needed for changed hooks before writing, applies only the GitHub subscriptions' provider `filter` fields, and changes only webhook event arrays that differ. It rechecks hook state before applying and verifies the updated hooks afterward. Each run shows one provider configuration plan when GitHub subscriptions exist; a provider plan with no changes can still precede GitHub hook updates. The preview prints subscription names and event selections without webhook URLs or secrets. The `manual` preset leaves GitHub's event selection unchanged.
@@ -405,7 +407,7 @@ Both finalizers write recovery data before provider configuration or secret dele
 
 Higher-level operators that own Hookrelay's deployment files may pass `--routes <file>` and `--dev-vars <file>` to `sub:retire`; the selected route path is also used by each scoped sync preview and apply. Pass `--expected-slug-hash <hash>` when another control plane owns the raw route slug so a same-named but differently owned route or archive is rejected before mutation. `pnpm sync --routes <file>` provides the corresponding read-only comparison for an explicit hash-only route file; complete active changes through the owning lifecycle command or an exact `--put-*` selection.
 
-`pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It only prints a hash-only stub and private URL; it intentionally does not modify local files, Wrangler secrets, provider configuration, or provider hooks. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
+`pnpm new-sub <name> <source>` remains available as a low-level generator for HTTP sources. It prints a hash-only stub and saves the private URL in protected receiver recovery; it leaves routing files, Worker secrets, provider configuration and provider hooks unchanged. Email sources require `pnpm sub:add` because their route also needs a base address and email-specific configuration.
 
 Statuspage incident and scheduled-maintenance updates use the same `statuspage` subscription. No second hook is needed for maintenance.
 
@@ -516,7 +518,7 @@ curl -s -X POST \
 
 Expected for each webhook command: it returns `{"ok":true,"eventId":"..."}` after the event and delivery intent are durable. The event appears at `/admin/events`, normally moving from `queued` or `processing` to `delivered` within seconds.
 
-For email, send a message to the address printed by `pnpm sub:add`, or complete a provider's email-subscription confirmation flow. If an allowlist is active, send from an allowed identity. Email has no HTTP response to inspect; the event should appear with source `email` and type `email.received`.
+For email, send a message to the address saved in protected receiver recovery by `pnpm sub:add`, or complete a provider's email-subscription confirmation flow. If an allowlist is active, send from an allowed identity. Email has no HTTP response to inspect; the event should appear with source `email` and type `email.received`.
 
 ## Writing an adapter
 

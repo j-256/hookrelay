@@ -1,5 +1,7 @@
 # Reviewed GitHub hook setup
 
+See [GitHub authentication](github-apps.md) for separate App registration, protected import, explicit App/token/gh choices, scoped activation and deliberate token rollback. Provider API authentication is independent of signed repository receivers and manual-handoff custody.
+
 Hookrelay provides reviewed GitHub subscription creation and repository webhook installation through its [scoped management API](management.md). Any authorized operator client with `read` and `provision` capabilities and the required workspace scope can implement this workflow using existing destinations. Hookrelay owns configuration acceptance, upstream installation and recovery through its active D1 configuration authority. The setup implementation supports GitHub repository webhooks.
 
 A dashboard backend, CLI tool or MCP service can call the same Hookrelay contract with its own scoped credential. Each client authenticates its users, authorizes their workspace access, presents the review for explicit acceptance and retains the plan ID for recovery. Browser interfaces call their trusted backend; browser users never receive the machine credential. Maintainer HQ is one integration, adding repository expectations, project associations and operation history for its browser, CLI and MCP clients. Other clients do not require Maintainer HQ. Deploying Hookrelay or a client does not activate configuration authority, add provider grants or install hooks.

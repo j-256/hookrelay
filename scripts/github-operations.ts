@@ -41,7 +41,7 @@ export function githubOperationsUsage() {
     'App/token modes require the live descriptor, workspace and protected credential file. gh has no registry journal.',
     'Private recovery schema: {operationId,expectedUpdatedAt,requestHash,originalRequest,acknowledgeUncertainOutcome:true,observation:"present"|"absent",expectedWebhookUrl?:string}.',
     'originalRequest is the exact create/update/events/delete/ping request, including private URL/HMAC when applicable.',
-    'Ping recovery also requires expectedWebhookUrl. Delete recovery requires absent. Present recovery requires a fresh signed ping and matching active hook configuration.',
+    'Ping recovery also requires expectedWebhookUrl. Delete recovery requires absent. Present recovery requires a fresh signed ping and matching hook configuration.',
     'Wait for the original local request deadline before reconciling. A later observation does not prove how the original request ended or prevent a late provider effect.',
     'Historical outcomes remain unchanged. Reconciliation does not repeat the original mutation or deliver notifications to sinks.',
     'Never pass URL, HMAC or token values as arguments. Output and previews contain metadata only.',

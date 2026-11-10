@@ -54,6 +54,8 @@ export function commandReference(): string {
     '      Require the managed lifecycle rule to match exactly',
     '',
     `Sources: ${sources}`,
+    'GitHub auth: --github-auth app|token|gh; App/token also require --github-descriptor, --github-workspace and --github-credential-file',
+    'Private receiver custody: sub:add and new-sub accept --private-export <new-protected-file>',
     'sub:add options: -s/--sink, -b/--base-url, --fallback-url, --email-base, --allow-sender, --primary-link-label, -r/--repo, -e/--events, -y/--yes',
     'github:events options: -e/--events, -y/--yes',
     'github:sync options: -y/--yes',
