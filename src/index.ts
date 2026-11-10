@@ -1,4 +1,6 @@
 import { handleGitHubAppKeyVerification, GITHUB_APP_KEY_VERIFICATION_PATH } from './management/github-app-key-verification'
+import { pruneGitHubAuthHistory } from './configuration/github-auth'
+import { configurationQuery } from './configuration/authority'
 import { pruneGitHubSetupReviews } from './management/github-setup'
 import { handleHandoffPrivate } from './management/github-handoff-private'
 import { pruneHandoffHistory } from './management/github-handoff'
@@ -142,6 +144,7 @@ export default {
     try {
       await pruneManagementReceipts(env)
       await pruneGitHubSetupReviews(env)
+      await pruneGitHubAuthHistory(configurationQuery(env.EVENTS_DB))
       await pruneHandoffHistory(env)
       await pruneConfigurationReviews(env)
     } catch {

@@ -1,7 +1,10 @@
 import { parseArgs } from 'node:util'
 import { z } from 'zod'
 import { GitHubAuthError, GITHUB_APP_LIMITS } from '../src/lib/github-app-contract'
-import { importGitHubAppMaterial, runGitHubAppRegistration } from './providers/github/app-registration'
+import {
+  importGitHubAppMaterial,
+  runGitHubAppRegistration,
+} from './providers/github/app-registration'
 import {
   readGitHubAppPrivateFile,
   readGitHubCredentialPrivateFile,
@@ -65,9 +68,10 @@ export function githubAppUsage() {
     'import-token -i <private-file|-> -o <new-private-file> Save a manual token locally; no provider access or activation',
     'inspect -i <private-file>                         Show metadata from a recovery file or registration attempt',
     'prepare -i <recovery> -p <metadata-input>          Review an inactive provider registry candidate',
-    '    Metadata: {descriptor,expectedRevision,baseVersionId,verificationOrigin}. Select a reviewed, uploaded code version.',
+    '    Metadata: {descriptor,expectedRevision,baseVersionId,verificationOrigin,variableLimit?:64|128}. Select a reviewed, uploaded code version.',
     '    Descriptor: explicit App/install/account IDs, numeric repositories, managementWorkspaces and hook capabilities.',
     '    Include id, revision, keyRevision, a NEW keySecretName, public fingerprint, mode app and state active. Token descriptors use mode token and a NEW tokenSecretName.',
+    '    Variable capacity defaults to Free 64; explicitly review 128 for Paid. New secret material is bounded to 5000 bytes.',
     '    The uploaded version must bind EVENTS_DB and CF_VERSION_METADATA. Prepare stages no secret and deploys no code.',
     'stage -i <recovery> -d <candidate> [-y]            Stage a named key/version without serving it',
     'deploy -i <recovery> -d <candidate> [-y]           Deploy the exact staged version [provider write]',
@@ -127,10 +131,23 @@ export function parseGitHubAppArgs(args: string[]): GitHubAppOptions | null {
           throw new Error()
         seen.add(token.name)
       }
-    if (positionals.length !== 1 || !COMMANDS.includes(positionals[0] as GitHubAppOptions['command'])) throw new Error()
+    if (
+      positionals.length !== 1 ||
+      !COMMANDS.includes(positionals[0] as GitHubAppOptions['command'])
+    )
+      throw new Error()
     const command = positionals[0] as GitHubAppOptions['command']
     const required = {
-      register: ['account', 'account-type', 'name', 'visibility', 'homepage', 'capability', 'output', 'attempt'],
+      register: [
+        'account',
+        'account-type',
+        'name',
+        'visibility',
+        'homepage',
+        'capability',
+        'output',
+        'attempt',
+      ],
       import: ['file', 'output'],
       'import-token': ['file', 'output'],
       inspect: ['file'],
@@ -144,16 +161,23 @@ export function parseGitHubAppArgs(args: string[]): GitHubAppOptions | null {
     } as const
     const allowed = new Set<string>([
       ...required[command],
-      ...(['register', 'stage', 'deploy', 'activate', 'disconnect'].includes(command) ? ['yes'] : []),
+      ...(['register', 'stage', 'deploy', 'activate', 'disconnect'].includes(command)
+        ? ['yes']
+        : []),
       ...(!['register', 'import', 'import-token', 'inspect'].includes(command) ? ['config'] : []),
     ])
-    if (required[command].some((key) => !values[key]) || [...seen].some((key) => !allowed.has(key))) throw new Error()
-    if (values['account-type'] && !['User', 'Organization'].includes(values['account-type'])) throw new Error()
+    if (required[command].some((key) => !values[key]) || [...seen].some((key) => !allowed.has(key)))
+      throw new Error()
+    if (values['account-type'] && !['User', 'Organization'].includes(values['account-type']))
+      throw new Error()
     if (values.visibility && !['private', 'public'].includes(values.visibility)) throw new Error()
-    if (values.capability && !['repository-hooks-read', 'repository-hooks-write'].includes(values.capability))
+    if (
+      values.capability &&
+      !['repository-hooks-read', 'repository-hooks-write'].includes(values.capability)
+    )
       throw new Error()
     if (values.candidate && !z.uuid().safeParse(values.candidate).success) throw new Error()
-    if (values.file === '-' && !['import','import-token'].includes(command)) throw new Error()
+    if (values.file === '-' && !['import', 'import-token'].includes(command)) throw new Error()
     const { help: _help, 'account-type': accountType, ...selected } = values
     return {
       ...selected,
@@ -188,7 +212,8 @@ async function privateInput(path: string) {
   }
 }
 export async function runGitHubAppCommand(options: GitHubAppOptions) {
-  if (options.command==='import-token')return importGitHubTokenMaterial(await privateInput(options.file!),options.output!)
+  if (options.command === 'import-token')
+    return importGitHubTokenMaterial(await privateInput(options.file!), options.output!)
   if (options.command === 'inspect') {
     const document = (await readPrivateAppDocument(options.file!)).value
     const attempt = z
@@ -208,12 +233,18 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
         recoveryMaterialRetained: attempt.data.recovery !== undefined,
       }
     const recovery = await readGitHubCredentialPrivateFile(options.file!)
-    if(recovery.kind==='github-token')return {kind:recovery.kind,fingerprint:recovery.fingerprint}
+    if (recovery.kind === 'github-token')
+      return {
+        kind: recovery.kind,
+        fingerprint: recovery.fingerprint,
+        deploymentReceipts: recovery.deploymentReceipts ?? [],
+      }
     return {
       appId: recovery.app.id,
       slug: recovery.app.slug,
       fingerprint: recovery.fingerprint,
       lifecycleIngress: 'inactive',
+      deploymentReceipts: recovery.deploymentReceipts ?? [],
     }
   }
   if (options.command === 'import') {
@@ -238,10 +269,14 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
         name: options.name,
         visibility: options.visibility,
         capability: options.capability,
-        effects: ['GitHub App registration after browser confirmation', 'local protected recovery files'],
+        effects: [
+          'GitHub App registration after browser confirmation',
+          'local protected recovery files',
+        ],
       }),
     )
-    if (!options.yes && !(await confirm('Open this App registration ceremony?'))) return { cancelled: true }
+    if (!options.yes && !(await confirm('Open this App registration ceremony?')))
+      return { cancelled: true }
     const signal = new AbortController()
     const abort = () => signal.abort()
     process.once('SIGINT', abort)
@@ -279,7 +314,8 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
         ],
       }),
     )
-    if (!options.yes && !(await confirm('Disconnect this exact provider descriptor?'))) return { cancelled: true }
+    if (!options.yes && !(await confirm('Disconnect this exact provider descriptor?')))
+      return { cancelled: true }
     return disconnectGitHubAppDescriptor(query, before.descriptorId, before.revision)
   }
   const document = await readPrivateAppDocument(options.file!)
@@ -297,7 +333,14 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
       !input ||
       Array.isArray(input) ||
       Object.keys(input).some(
-        (key) => !['descriptor', 'expectedRevision', 'baseVersionId', 'verificationOrigin'].includes(key),
+        (key) =>
+          ![
+            'descriptor',
+            'expectedRevision',
+            'baseVersionId',
+            'verificationOrigin',
+            'variableLimit',
+          ].includes(key),
       )
     )
       throw new GitHubAuthError('validation')
@@ -345,7 +388,9 @@ export async function runGitHubAppCommand(options: GitHubAppOptions) {
   await replacePrivateAppDocument(options.file!, document.digest, {
     ...recovery,
     deploymentReceipts: [
-      ...(recovery.deploymentReceipts ?? []).filter((item) => item.candidateId !== options.candidate),
+      ...(recovery.deploymentReceipts ?? []).filter(
+        (item) => item.candidateId !== options.candidate,
+      ),
       recorded,
     ],
   })

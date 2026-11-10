@@ -1,6 +1,10 @@
 import { z } from 'zod'
 import { configurationDigest, type ConfigurationQuery } from '../../../src/configuration/authority'
-import { githubAuthQuery, githubAuthFencePredicate } from '../../../src/configuration/github-auth'
+import {
+  githubAuthQuery,
+  githubAuthFencePredicate,
+  readGitHubAuthDescriptor,
+} from '../../../src/configuration/github-auth'
 import {
   GITHUB_APP_LIMITS,
   GitHubAuthError,
@@ -131,17 +135,25 @@ async function reviewed(query: ConfigurationQuery, auth: GitHubOperatorAuth, inp
       (review.observation !== 'present' || !review.expectedWebhookUrl))
   )
     throw new GitHubAuthError('validation')
-  return { review, original, row }
+  const descriptor = await readGitHubAuthDescriptor(query, {
+    mode: auth.metadata.mode,
+    descriptorId: auth.metadata.descriptorId!,
+  })
+  const repository = descriptor.repositories.find((repo) => repo.id === row.repository_id)
+  if (!repository || !descriptor.managementWorkspaces.includes(auth.metadata.workspaceId!))
+    conflict()
+  return { review, original, row, repositoryName: repository.fullName }
 }
 export async function previewGitHubHookOperationRecovery(
   query: ConfigurationQuery,
   auth: GitHubOperatorAuth,
   input: unknown,
 ) {
-  const { review, original, row } = await reviewed(query, auth, input)
+  const { review, original, row, repositoryName } = await reviewed(query, auth, input)
   return {
     ...metadata(row),
     repository: original.repo,
+    currentRepository: repositoryName,
     observation: review.observation,
     effects:
       review.observation === 'present'
@@ -158,12 +170,12 @@ export async function reconcileGitHubHookOperation(
   auth: GitHubOperatorAuth,
   input: unknown,
 ) {
-  const { review, original, row } = await reviewed(query, auth, input)
+  const { review, original, row, repositoryName } = await reviewed(query, auth, input)
   if (!auth.verifyRepositoryAuthority) throw new GitHubAuthError('unavailable')
   const observedAt = Date.now()
-  const before = await auth.verifyRepositoryAuthority(original.repo)
+  const before = await auth.verifyRepositoryAuthority(repositoryName)
   if (before.repositoryId !== row.repository_id) conflict()
-  const hooks = await listGitHubRepositoryHooks(original.repo, auth.transport)
+  const hooks = await listGitHubRepositoryHooks(repositoryName, auth.transport)
   let hookId: number | null = null
   let pingProof: unknown = null
   if (original.operation === 'delete') {
@@ -195,11 +207,11 @@ export async function reconcileGitHubHookOperation(
       )
         conflict()
       hookId = hook.id
-      const ping = await pingAndVerifyGitHubRepositoryHook(original.repo, hook.id, auth.transport)
+      const ping = await pingAndVerifyGitHubRepositoryHook(repositoryName, hook.id, auth.transport)
       pingProof = { id: ping.id, statusCode: ping.statusCode, deliveredAt: ping.deliveredAt }
     }
   }
-  const fence = await auth.verifyRepositoryAuthority(original.repo)
+  const fence = await auth.verifyRepositoryAuthority(repositoryName)
   if (
     fence.repositoryId !== row.repository_id ||
     observedAt <= Date.now() - GITHUB_APP_LIMITS.AUTHORITY_AGE_MS
