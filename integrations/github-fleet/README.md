@@ -1,5 +1,7 @@
 # Optional GitHub fleet integration
 
+Every phase requires an explicit GitHub authentication choice. Prefer `--github-auth app --github-descriptor <id> --github-workspace <workspace> --github-credential-file <protected-recovery>`, repeated unchanged across plan/prepare/apply/verify. `token` uses the same scoped registry boundary with protected manual-token recovery; `--github-auth gh` deliberately uses existing local GitHub CLI custody. Read [GitHub authentication](../../docs/github-apps.md) for independent registration, activation, rotation, rollback and uncertain-operation recovery. A local recovery file cannot expand the live descriptor's repository or workspace grants.
+
 [Manual handoff recovery](../../docs/github-handoff.md#local-recovery-mirror) imports a private provider export into a v5 manifest and optional explicitly selected golden routes. Provider-managed entries keep their HMAC and reserved slugs; ordinary legacy lifecycle writers skip or reject them before mutation. Use `pnpm github:handoff:recovery --help` for private-file and encryption prerequisites. Unrelated legacy records retain the workflow below.
 
 This directory contains the repository-fleet operations tooling used to dogfood Hookrelay across many GitHub repositories. It is optional: Hookrelay does not require this integration to receive GitHub webhooks, and ordinary GitHub subscriptions use the core GitHub adapter plus `pnpm sub:add`, `pnpm github:events`, and `pnpm github:sync`.
@@ -8,14 +10,14 @@ The integration discovers repositories, maintains a private recovery manifest, p
 
 ## Prerequisites
 
-This integration supports legacy KV and active D1 provider configuration. Every phase reads the authority mode and revision. Active enrollment, reconciliation, rotation, and retirement use exact revision-bound D1 changes; they do not grant GitHub or lifecycle authority to an online policy client. Apply migrations through `0007_configuration_lifecycle.sql` before deploying this version. Reads require D1 Read, active changes require D1 Write, and legacy changes require the corresponding KV permissions. See [provider-owned configuration](../../docs/configuration-authority.md) for activation and recovery boundaries.
+This integration supports legacy KV and active D1 provider configuration. Every phase reads the authority mode and revision. Active enrollment, reconciliation, rotation, and retirement use exact revision-bound D1 changes; they do not grant GitHub or lifecycle authority to an online policy client. Apply all checked-in D1 migrations before deployment. Reads require D1 Read, active changes require D1 Write, and legacy changes require the corresponding KV permissions. See [provider-owned configuration](../../docs/configuration-authority.md) for activation and recovery boundaries.
 
 Run every command from the Hookrelay repository root. Before managing a fleet, provide:
 
 - A deployed Hookrelay Worker with its custom domain and Cloudflare resources configured
 - `routes.jsonc` and `.dev.vars` for that deployment
 - Wrangler access through `CLOUDFLARE_ACCOUNT_ID` and `CLOUDFLARE_API_TOKEN`
-- An authenticated `gh` CLI identity with repository administration access for every managed repository
+- An active scoped App/token descriptor with protected recovery, or an explicitly selected `gh` identity with repository administration access
 - One or more checkout roots whose immediate children are the repositories to discover
 - An explicit private manifest path for recoverable repository HMACs and raw subscription slugs
 - The sinks required by each selected profile: `discord:repo-activity`, `discord:github-stars`, and `discord:repo-alerts`
@@ -71,11 +73,11 @@ Preparation writes missing entries and refuses unknown fields, malformed values,
 Use the phases in order with identical roots, manifest, repository, visibility, and profile arguments. Repeat `--root` for each explicit checkout root; discovery does not recurse beyond their direct children:
 
 ```sh
-pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
-pnpm github:fleet prepare --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
-pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
-pnpm github:fleet apply --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
-pnpm github:fleet verify --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection]
+pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection] --github-auth gh
+pnpm github:fleet prepare --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection] --github-auth gh
+pnpm github:fleet plan --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection] --github-auth gh
+pnpm github:fleet apply --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection] --github-auth gh
+pnpm github:fleet verify --root <checkout-root> [--root <additional-root> ...] --manifest <private-manifest> [selection] --github-auth gh
 pnpm sync
 ```
 
@@ -98,7 +100,7 @@ Repeat `--repo <owner/repo>` to limit new enrollment for a canary. Omit it to se
 Use `--profiles <comma-separated names>` with explicit repository selectors to enroll a subset:
 
 ```sh
-pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --profiles alerts
+pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --profiles alerts --github-auth gh
 ```
 
 Repeat the same repository and profile selectors through every phase. Planning and verification require excluded profile routes, Hookrelay-owned hooks, and provider entries to be absent.
@@ -106,7 +108,7 @@ Repeat the same repository and profile selectors through every phase. Planning a
 Private admission is explicit. `--include-private` requires at least one `--repo`, admits only the named private repositories, and must be repeated on later audits:
 
 ```sh
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/private-repo --include-private
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/private-repo --include-private --github-auth gh
 ```
 
 Review the configured sinks before private admission because webhook payloads can contain non-public repository activity and security details.
@@ -116,11 +118,11 @@ Review the configured sinks before private admission because webhook payloads ca
 For an intentional HMAC replacement already recorded in the private manifest, add `--rotate-hmac` to the otherwise identical explicit repository selection in every phase:
 
 ```sh
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac
-pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac
-pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac
-pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac --github-auth gh
+pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac --github-auth gh
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac --github-auth gh
+pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac --github-auth gh
+pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-hmac --github-auth gh
 pnpm sync
 ```
 
@@ -131,11 +133,11 @@ Preparation replaces private local values only for the selected repositories. Ap
 Use `--rotate-slugs <profiles>` to replace the bearer paths for selected profiles of explicitly selected repositories. Group repositories by the profile subset that needs rotation and use identical arguments for each phase:
 
 ```sh
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
-pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
-pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
-pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts --github-auth gh
+pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts --github-auth gh
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts --github-auth gh
+pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts --github-auth gh
+pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> --repo owner/repo --rotate-slugs activity,alerts --github-auth gh
 pnpm sync
 ```
 
@@ -148,11 +150,11 @@ Apply puts and authenticates every replacement route before changing GitHub. It 
 Retirement uses the same phase order with an explicit repository selection on every command. Add `--include-private` on every phase for a private repository:
 
 ```sh
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire
-pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire
-pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire
-pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire
-pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire --github-auth gh
+pnpm github:fleet prepare --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire --github-auth gh
+pnpm github:fleet plan --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire --github-auth gh
+pnpm github:fleet apply --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire --github-auth gh
+pnpm github:fleet verify --root <checkout-root> --manifest <private-manifest> --repo owner/repo --retire --github-auth gh
 pnpm sync
 ```
 

@@ -337,3 +337,12 @@ it('retains an explicit provider authentication choice for automatic GitHub setu
   const parsed=parseSubAddArgs(['repository','github','--repo','owner/repo','--github-auth','app','--github-descriptor','operator-auth','--github-workspace','alpha','--github-credential-file','private-input'])
   expect(parsed.githubAuthentication).toMatchObject({mode:'app',descriptorId:'operator-auth',workspaceId:'alpha',credentialFile:'private-input'})
 })
+it('keeps receiver custody in a protected artifact while routine setup output stays metadata-only',async () => {
+  const {formatPreparedSubscription}=await import('../../scripts/sub-add')
+  const options=parseSubAddArgs(['repository','github','--repo','owner/repo','--base-url','https://hooks.example'])
+  const output=formatPreparedSubscription(options,'private-recovery.json')
+  expect(output).toContain('private-recovery.json')
+  expect(output).not.toContain(RAW_SLUG)
+  expect(output).not.toContain(HMAC_SECRET)
+  expect(output).not.toContain('/hook/github/')
+})

@@ -17,3 +17,6 @@ dist/
 # Brainstorming specs + implementation plans -- kept locally during implementation, not tracked
 docs/superpowers/specs/
 docs/superpowers/plans/
+
+# Owner-only subscription recovery exports
+.hookrelay-private/

@@ -1,5 +1,7 @@
 # Manual GitHub webhook handoff
 
+See [GitHub authentication](github-apps.md) for separate App registration, protected import, explicit App/token/gh choices, scoped activation and deliberate token rollback. Provider API authentication is independent of signed repository receivers and manual-handoff custody.
+
 Use manual handoff when a trusted third-party repository administrator will install the GitHub webhook. Hookrelay creates the authenticated receiver and retains recoverable credentials; the operator privately hands the URL, signing secret and event selection to that administrator. This workflow requires no local repository checkout or GitHub administrator token. [Automatic setup](github-setup.md) remains available when Hookrelay itself should install the upstream hook.
 
 ## Provider custody and grants

@@ -1,4 +1,5 @@
 import { extractOperatorGitHubAuthArgs, resolveOperatorGitHubAuth, operatorGitHubExitCode, requireOperatorGitHubAuthentication, OPERATOR_GITHUB_AUTH_USAGE, type OperatorGitHubAuthOptions } from './providers/github/auth'
+import { savePrivateSubscriptionSetup } from './subscription-private-output'
 import { randomBytes } from 'node:crypto'
 import { readFile } from 'node:fs/promises'
 import { resolve } from 'node:path'
@@ -54,6 +55,7 @@ const SUB_ADD_OPTION_ALIASES: Readonly<Record<string, string>> = Object.freeze({
 })
 
 export interface SubAddOptions {
+  privateExport?:string
   githubAuthentication?: OperatorGitHubAuthOptions
   name: string
   source: string
@@ -112,6 +114,7 @@ export function subAddUsage(): string {
     'usage: pnpm sub:add <name> <source> [options]',
     '',
     'options:',
+    '      --private-export <file> Save receiver recovery to a new protected file (default .hookrelay-private/)',
     '  '+OPERATOR_GITHUB_AUTH_USAGE,
     '  -s, --sink <name>       select a sink, repeatable',
     '  -b, --base-url <url>    set the Hookrelay base URL',
@@ -140,6 +143,7 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   const githubAuthentication=authenticationArgs.authentication
   const positional: string[] = []
   const sinks: string[] = []
+  let privateExport:string|undefined
   let baseUrl: string | undefined
   let fallbackUrl: string | undefined
   let emailBaseAddress: string | undefined
@@ -153,7 +157,10 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   for (let i = 0; i < argv.length; i += 1) {
     const arg = argv[i]!
     const option = SUB_ADD_OPTION_ALIASES[arg] ?? arg
-    if (option === '--sink') {
+    if(option==='--private-export') {
+      if(privateExport!==undefined)throw new Error('--private-export may only be supplied once')
+      privateExport=optionValue(argv,i,arg);i+=1
+    } else if (option === '--sink') {
       sinks.push(optionValue(argv, i, arg))
       i += 1
     } else if (option === '--base-url') {
@@ -219,6 +226,7 @@ export function parseSubAddArgs(argv: string[]): SubAddOptions {
   }
 
   return {
+    ...(privateExport ? {privateExport} : {}),
     ...(githubAuthentication ? {githubAuthentication} : {}),
     name,
     source,
@@ -407,27 +415,14 @@ export async function prepareSubscription(
   }
 }
 
-function printPrepared(options: SubAddOptions, prepared: PreparedSubscription): void {
-  console.log(`Prepared subscription ${options.name}`)
-  console.log('')
-  console.log('Save in your secret store:')
-  console.log(`  ${prepared.slugSecretName}=${prepared.rawSlug}`)
-  if (prepared.senderSecret) console.log(`  ${prepared.senderSecret.name}=${prepared.senderSecret.value}`)
-  console.log('')
-  if (prepared.emailAddress) console.log(`Email address: ${prepared.emailAddress}`)
-  if (prepared.webhookUrl) console.log(`Webhook URL: ${prepared.webhookUrl}`)
-
-  if (options.source === 'github') {
-    console.log(`GitHub repository: ${options.repo}`)
-    console.log('Content type: application/json')
-    console.log('SSL verification: enabled')
-    console.log(`Event profiles: ${options.githubEvents.names.join(', ')}`)
-    if (options.githubEvents.events) console.log(`Events: ${options.githubEvents.events.join(', ')}`)
+export function formatPreparedSubscription(options:SubAddOptions,recoveryFile:string):string {
+  const lines=[`Prepared subscription ${options.name}`,`Private receiver recovery saved to: ${recoveryFile}`,'Copy the receiver fields from that protected file into your secret store or upstream settings']
+  if(options.source==='github') {
+    lines.push(`GitHub repository: ${options.repo}`,'Content type: application/json','SSL verification: enabled',`Event profiles: ${options.githubEvents.names.join(', ')}`)
+    if(options.githubEvents.events)lines.push(`Events: ${options.githubEvents.events.join(', ')}`)
   }
-  if (options.source === 'cloudevents') {
-    console.log('Content type: application/cloudevents+json')
-    console.log('Signature header: X-Hookrelay-Signature-256: sha256=<lowercase HMAC-SHA256 over exact request bytes>')
-  }
+  if(options.source==='cloudevents')lines.push('Content type: application/cloudevents+json','Signature header: X-Hookrelay-Signature-256: sha256=<lowercase HMAC-SHA256 over exact request bytes>')
+  return lines.join('\n')
 }
 
 async function main(): Promise<void> {
@@ -456,9 +451,10 @@ async function main(): Promise<void> {
   if(options.source==='github')console.log('GitHub authentication: '+(githubAuth ? JSON.stringify(githubAuth.metadata) : 'manual upstream setup'))
   const prepared = await prepareSubscription(routesText, devVarsText, resolvedOptions)
 
+  const recoveryFile=await savePrivateSubscriptionSetup({name:options.name,source:options.source,slugSecretName:prepared.slugSecretName,rawSlug:prepared.rawSlug,webhookUrl:prepared.webhookUrl,emailAddress:prepared.emailAddress,senderSecret:prepared.senderSecret,subscription:prepared.subscription},options.privateExport)
   await writeText(routesPath, prepared.routesText)
   if (prepared.senderSecret) await writePrivateText(devVarsPath, prepared.devVarsText)
-  printPrepared(resolvedOptions, prepared)
+  console.log(formatPreparedSubscription(resolvedOptions,recoveryFile))
 
   const production = await prepareProduction(prepared.senderSecret, options.yes, {
     puts: [{ namespace: 'SUBS', key: subscriptionKvKey(prepared.subscription.slugHash) }],

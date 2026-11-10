@@ -37,3 +37,10 @@ describe('commandReference', () => {
     for (const profile of Object.keys(GITHUB_EVENT_PROFILES)) expect(reference).toContain(profile)
   })
 })
+it('makes all explicit GitHub modes and protected setup custody discoverable',() => {
+  const reference=commandReference()
+  expect(reference).toContain('--github-auth app|token|gh')
+  expect(reference).toContain('--github-credential-file')
+  expect(reference).toContain('--private-export')
+  expect(reference).toContain('github:operations')
+})

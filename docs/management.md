@@ -1,5 +1,7 @@
 # Scoped management API
 
+See [GitHub authentication](github-apps.md) for separate App registration, protected import, explicit App/token/gh choices, scoped activation and deliberate token rollback. Provider API authentication is independent of signed repository receivers and manual-handoff custody.
+
 Hookrelay owns subscriptions, sinks, delivery state, and the queue engine. Any authorized operator client, including a dashboard backend, CLI tool or MCP service, can inspect selected metadata, review one exhausted delivery for retry, and optionally edit a bounded policy surface through `POST /admin/api/v1`. Policy access can enable or disable an existing subscription, select existing sinks, and change delivery filters. It cannot create, retire, rename, rotate credentials, manage upstream hooks, expose raw events, or confer access to HTML administration. A separate `provision` grant enables [reviewed GitHub hook setup](github-setup.md), which creates a subscription using existing destinations and installs its upstream hook. Hookrelay's local commands own the remaining lifecycle operations. Keep public ingress behind the deployment's admin Access policy; a Worker service binding can call it directly with its own scoped credential.
 
 ## Credentials and caller identity
