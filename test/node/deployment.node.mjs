@@ -89,20 +89,25 @@ test('refuses incomplete, ambiguous, wrong-worker, wrong-version and split-traff
   }
 })
 
-test('version preparation runs offline and rejects a non-main branch', (t) => {
+test('version preparation checks run only after the clean PR branch guard', (t) => {
   const { cwd, git } = repository(t)
   const { scripts } = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8'))
-  const bin = join(cwd, 'bin')
-  mkdirSync(bin)
+  const bin = mkdtempSync(join(tmpdir(), 'hookrelay-version-bin-'))
+  t.after(() => rmSync(bin, { recursive: true, force: true }))
   writeFileSync(join(bin, 'npm'), '#!/bin/sh\nprintf "%s\\n" "$*"\n', { mode: 0o755 })
-  writeFileSync(join(bin, 'pnpm'), '#!/bin/sh\nexit 91\n', { mode: 0o755 })
-  const env = { PATH: `${bin}:${process.env.PATH}`, HOME: cwd }
+  const guard = new URL('../../scripts/version-preflight.mjs', import.meta.url)
+  if (existsSync(guard)) {
+    mkdirSync(join(cwd, 'scripts'), { recursive: true })
+    writeFileSync(join(cwd, 'scripts/version-preflight.mjs'), readFileSync(guard))
+    git('add', 'scripts/version-preflight.mjs'); git('commit', '-qm', 'Synthetic guard')
+  }
+  const env = { PATH: `${bin}:${process.env.PATH}`, npm_config_git_tag_version: '' }
   const run = () => spawnSync('/bin/sh', ['-c', scripts.preversion], { cwd, env, encoding: 'utf8' })
+  assert.notEqual(run().status, 0)
+  git('checkout', '-qb', 'version-next')
   const result = run()
   assert.equal(result.status, 0, result.stderr)
   assert.equal(result.stdout, 'run typecheck\ntest\n')
-  git('checkout', '-qb', 'feature')
-  assert.notEqual(run().status, 0)
 })
 
 // CLI parsing runs in native Node because workerd does not implement util.parseArgs
