@@ -30,6 +30,8 @@ export interface GitHubFleetDiscovery {
 }
 
 export interface GitHubFleetDiscoveryOptions {
+  admittedRepositories?: ReadonlySet<string>
+  requiredRepositories?: ReadonlySet<string>
   privateRepositories?: ReadonlySet<string>
   progress?: GitHubFleetProgress
   readRepositoryMetadata?:(repo:string)=>Promise<GitHubRepositoryMetadata>
@@ -192,6 +194,13 @@ export async function discoverGitHubFleet(
     if (!remoteRepo) {
       if (referencesGitHubHost(remote)) blockers.push(`${child}: malformed GitHub origin`)
       else exclusions.push({ child, reason: 'origin is not GitHub' })
+      continue
+    }
+
+    if (options.admittedRepositories && ![...options.admittedRepositories].some(repo => repo.toLowerCase() === remoteRepo.toLowerCase())) {
+      if ([...(options.requiredRepositories ?? [])].some(repo => repo.toLowerCase() === remoteRepo.toLowerCase()))
+        blockers.push(`${remoteRepo}: required repository is outside selected authentication scope`)
+      else exclusions.push({ child, reason: 'outside selected authentication scope' })
       continue
     }
 

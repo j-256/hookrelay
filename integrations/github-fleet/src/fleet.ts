@@ -160,6 +160,7 @@ interface FleetPaths {
 
 function fleetDiscoveryOptions(options: GitHubFleetOptions): GitHubFleetDiscoveryOptions {
   return {
+    requiredRepositories: new Set(options.repositories),
     privateRepositories: new Set(options.includePrivate ? options.repositories : []),
     progress: options.progress,
   }
@@ -284,9 +285,7 @@ async function loadLocalState(
   generateSelected: boolean,
 ): Promise<FleetLocalState> {
   const paths = fleetPaths(options, projectRoot)
-  options.progress?.('Discovering repository checkouts')
-  const discovery = await dependencies.discover(paths.roots, fleetDiscoveryOptions(options))
-  const blockers = [...discovery.blockers]
+  const blockers: string[] = []
   const manifestIssue = await privateFileIssue(paths.manifest, dependencies.fileSystem)
   const devVarsIssue = await privateFileIssue(paths.devVars, dependencies.fileSystem)
   if (manifestIssue) blockers.push(manifestIssue)
@@ -304,6 +303,21 @@ async function loadLocalState(
   let manifest = parseGitHubFleetManifest(manifestText)
   const providerManaged = providerManagedRepositories(manifest, routes)
   const providerKeys = new Set(providerManaged.map(repository => repository.toLowerCase()))
+  const requiredRepositories = new Set([
+    ...options.repositories,
+    ...Object.entries(manifest.repositories)
+      .filter(([repo, entry]) => entry.state !== 'retiring' && !providerKeys.has(repo.toLowerCase()))
+      .map(([repo]) => repo),
+    ...routes.subs.flatMap(sub => {
+      const repo = sub.setup?.github?.repo
+      return repo && !providerKeys.has(repo.toLowerCase()) ? [repo] : []
+    }),
+  ])
+  options.progress?.('Discovering repository checkouts')
+  const discovery = await dependencies.discover(paths.roots, {
+    ...fleetDiscoveryOptions(options), requiredRepositories,
+  })
+  blockers.push(...discovery.blockers)
   const discoveredNames = new Set(discovery.repositories.map((repo) => repo.nameWithOwner))
   const requested = new Set(options.repositories.length > 0 ? options.repositories : discoveredNames)
   for (const repo of requested) {
@@ -861,6 +875,12 @@ export function formatGitHubFleetPlan(plan: GitHubFleetPlan): string {
   return lines.join('\n')
 }
 
-export function authenticatedGitHubFleetDependencies(auth:GitHubOperatorAuth):GitHubFleetDependencies {
-  return {...DEFAULT_DEPENDENCIES,discover:(roots,options)=>discoverGitHubFleet(roots,{...options,readRepositoryMetadata:auth.repository}),listHooks:repo=>listGitHubRepositoryHooks(repo,auth.transport)}
+export function authenticatedGitHubFleetDependencies(auth: GitHubOperatorAuth): GitHubFleetDependencies {
+  return {
+    ...DEFAULT_DEPENDENCIES,
+    discover: (roots, options) => discoverGitHubFleet(roots, {
+      ...options, readRepositoryMetadata: auth.repository, admittedRepositories: auth.admittedRepositories,
+    }),
+    listHooks: repo => listGitHubRepositoryHooks(repo, auth.transport),
+  }
 }

@@ -24,6 +24,7 @@ import type { GitHubRepositoryHook } from '../../../scripts/providers/github/rep
 import { writePrivateText } from '../../../scripts/setup'
 import type { AtomicFileSystem } from '../../../scripts/setup'
 import { parseRoutes } from '../../../scripts/sync'
+import {scopedDiscoveryFixture} from './scoped-discovery-helper'
 
 const REPO = 'example-owner/example-plugin'
 const OTHER_REPO = 'example-owner/example-repo'
@@ -556,4 +557,21 @@ describe('existing GitHub fleet import', () => {
       await rm(directory, { recursive: true, force: true })
     }
   })
+})
+
+it.each(['app','token'])('keeps %s canary planning and preparation scoped while retaining managed audit blockers',async mode=>{
+  const directory=await project()
+  try {
+    const scoped=await scopedDiscoveryFixture(directory,REPO,mode as 'app'|'token')
+    const deps={...dependencies(),discover:scoped.discover}
+    const selected={...options([REPO]),roots:[scoped.root]}
+    expect((await planGitHubFleet({...selected,phase:'plan'},deps,directory)).blockers).toEqual([])
+    await prepareGitHubFleet({...selected,phase:'prepare'},deps,directory)
+    expect(scoped.reads.every(repo=>repo===REPO)).toBe(true)
+    const denied=await planGitHubFleet({...selected,phase:'plan',repositories:[scoped.unrelated]},deps,directory)
+    expect(denied.blockers.join(' ')).toContain('required repository is outside selected authentication scope')
+    const reduced=scoped.discoverWithAuthority({...scoped.auth,admittedRepositories:new Set([scoped.unrelated])})
+    const missingManaged=await planGitHubFleet({...selected,phase:'plan',repositories:[]},{...deps,discover:reduced},directory)
+    expect(missingManaged.blockers.join(' ')).toContain(REPO+': required repository is outside selected authentication scope')
+  }finally{await rm(directory,{recursive:true,force:true})}
 })

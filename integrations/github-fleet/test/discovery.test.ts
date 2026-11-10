@@ -239,3 +239,33 @@ it('uses native hook-administration evidence without inventing a human viewer ro
     expect(commands.every(command=>command==='git')).toBe(true)
   }finally {await rm(root,{recursive:true,force:true})}
 })
+
+it.each(['app','token'])('excludes unrelated checkouts before %s metadata but blocks selected or managed authority gaps',async mode=>{
+  const root=await mkdtemp(join(tmpdir(),'hookrelay-scoped-discovery-'))
+  try {
+    for(const child of ['allowed','unrelated'])await mkdir(join(root,child))
+    const reads:string[]=[]
+    const runner=async(command:string,args:string[])=>{
+      expect(command).toBe('git')
+      return args.includes('--show-toplevel')?args[1]!: 'https://github.com/owner/'+args[1]!.split('/').at(-1)+'.git'
+    }
+    const config={
+      admittedRepositories:new Set(['owner/allowed']),
+      requiredRepositories:new Set(['owner/allowed']),
+      readRepositoryMetadata:async(repo:string)=>{
+        reads.push(repo)
+        if(repo!=='owner/allowed')throw new Error(mode+' scope denied')
+        return {nameWithOwner:repo,visibility:'PUBLIC',isArchived:false,isFork:false,viewerPermission:null,hookAdministration:true}
+      },
+    }
+    const result=await discoverGitHubFleet([root],config,runner)
+    expect(result.blockers).toEqual([])
+    expect(reads).toEqual(['owner/allowed'])
+    expect(result.exclusions).toContainEqual({child:'unrelated',reason:'outside selected authentication scope'})
+    for(const reason of ['explicit selection','already managed']) {
+      const blocked=await discoverGitHubFleet([root],{...config,requiredRepositories:new Set(['owner/allowed','owner/unrelated'])},runner)
+      expect(blocked.blockers.join(' '),reason).toContain('owner/unrelated: required repository is outside selected authentication scope')
+    }
+    expect(reads.every(repo=>repo==='owner/allowed')).toBe(true)
+  }finally{await rm(root,{recursive:true,force:true})}
+})

@@ -99,6 +99,7 @@ export type OperatorGitHubAuthOptions = {
   config?: string
 }
 export type GitHubOperatorAuth = {
+  admittedRepositories?: ReadonlySet<string>
   metadata: {
     mode: OperatorGitHubAuthOptions['mode']
     descriptorId: string | null
@@ -612,6 +613,7 @@ export async function resolveOperatorGitHubAuth(
     }
   }
   return {
+    admittedRepositories: captured ? new Set(captured.repositories.map(repo => repo.fullName)) : undefined,
     metadata: {
       mode: options.mode,
       descriptorId: captured?.id ?? null,

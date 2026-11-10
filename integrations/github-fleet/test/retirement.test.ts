@@ -12,6 +12,7 @@ import {
   type GitHubFleetRetirementDependencies,
 } from '../src/retirement'
 import type { GitHubFleetOptions } from '../src/fleet'
+import {scopedDiscoveryFixture} from './scoped-discovery-helper'
 import {
   githubFleetManifestProfiles,
   parseGitHubFleetManifest,
@@ -537,4 +538,22 @@ it('passes the selected native transport through owned-hook retirement',async ()
   await dependencies.listHooks('owner/repo')
   await dependencies.deleteHook('owner/repo',42)
   expect(request.mock.calls.map(([input])=>input.operation)).toEqual(['list','delete'])
+})
+
+it.each(['app','token'])('retains scoped %s retirement checks without consulting unrelated repository metadata',async mode=>{
+  const fileSystem=modeAwareFileSystem()
+  const {directory,routesText}=await fixture(fileSystem)
+  try {
+    const scoped=await scopedDiscoveryFixture(directory,REPO,mode as 'app'|'token')
+    const remote={subs:{} as Record<string,string>,sinks:{} as Record<string,string>}
+    applyPlan(routesText,remote)
+    const hooks=GITHUB_FLEET_PROFILE_NAMES.map((profile,i)=>hook(profile,i+1))
+    const test=harness(directory,remote,hooks,new Set([ENTRY.hmac.name]),fileSystem)
+    test.dependencies.discover=scoped.discover
+    const selected={...options('plan'),roots:[scoped.root]}
+    expect((await planGitHubFleetRetirement(selected,test.dependencies,directory)).blockers).toEqual([])
+    const denied=await planGitHubFleetRetirement({...selected,repositories:[scoped.unrelated]},test.dependencies,directory)
+    expect(denied.blockers.join(' ')).toContain('required repository is outside selected authentication scope')
+    expect(scoped.reads.every(repo=>repo===REPO)).toBe(true)
+  }finally{await rm(directory,{recursive:true,force:true})}
 })
