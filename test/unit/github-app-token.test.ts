@@ -1,10 +1,12 @@
 import { beforeAll, describe, expect, it, vi } from 'vitest'
 import {
   githubAppKeyFingerprint,
+  evictGitHubInstallationToken,
   mintGitHubInstallationToken,
   signGitHubAppJwt,
   verifyGitHubInstallation,
 } from '../../src/lib/github-app-token'
+import { githubAuthIdentity, githubAuthDescriptorSchema } from '../../src/lib/github-auth'
 let key: string
 let publicKey: CryptoKey
 const now = Date.parse('2026-11-10T12:00:00Z')
@@ -54,6 +56,7 @@ const request = async (fetcher: typeof fetch) => ({
   now: () => now,
   fetch: fetcher,
   cache: false,
+  authorityIdentity: 'a'.repeat(64),
 })
 describe('native App token protocol', () => {
   it('signs verifiable RS256 claims with bounded skew and expiry', async () => {
@@ -217,4 +220,88 @@ it('refreshes provider evidence without reusing an old token and makes the new t
   expect(fresh.token).not.toBe(old.token)
   expect((await mintGitHubInstallationToken(base)).token).toBe(fresh.token)
   expect(calls).toBe(2)
+})
+
+it.each(['descriptor', 'revision', 'key revision', 'generation', 'workspace', 'caller'])(
+  'isolates cached token material by local authority %s while sharing installation quota', async dimension => {
+    let calls = 0
+    const base = { ...(await request(async () => Response.json(response({ token: 'synthetic-identity-' + ++calls })))), cache: true }
+    const descriptor = githubAuthDescriptorSchema.parse({
+      id: 'cache-auth', revision: 1, keyRevision: 1, mode: 'app',
+      appId: base.appId, installationId: base.installationId, accountId: base.accountId,
+      fingerprint: base.fingerprint, repositories: base.repositories,
+      keySecretName: 'GITHUB_APP_A', managementWorkspaces: ['alpha', 'beta'],
+      capabilities: ['repository-hooks-write'], state: 'active',
+    })
+    const first = await githubAuthIdentity(descriptor, 1, 'alpha', 'caller', 101, base.capability)
+    const changed = await githubAuthIdentity(
+      { ...descriptor, ...(dimension === 'descriptor' ? { id: 'other-auth' } : {}),
+        ...(dimension === 'revision' ? { revision: 2 } : {}),
+        ...(dimension === 'key revision' ? { keyRevision: 2 } : {}) },
+      dimension === 'generation' ? 2 : 1, dimension === 'workspace' ? 'beta' : 'alpha',
+      dimension === 'caller' ? 'other-caller' : 'caller', 101, base.capability,
+    )
+    const original = await mintGitHubInstallationToken({ ...base, authorityIdentity: first.authorityIdentity })
+    const other = await mintGitHubInstallationToken({ ...base, authorityIdentity: changed.authorityIdentity })
+    expect(other.token).not.toBe(original.token)
+    expect((await mintGitHubInstallationToken({ ...base, authorityIdentity: first.authorityIdentity })).token).toBe(original.token)
+    expect(calls).toBe(2)
+    expect(changed.quotaKey).toBe(first.quotaKey)
+  },
+)
+
+it('requires an explicit valid local namespace for caching while allowing uncached minting', async () => {
+  const fetcher = vi.fn(async () => Response.json(response()))
+  const base = await request(fetcher)
+  for (const authorityIdentity of [undefined, '', 'not-a-digest', { toString: () => 'c'.repeat(64) } as unknown as string])
+    await expect(mintGitHubInstallationToken({ ...base, cache: true, authorityIdentity })).rejects.toMatchObject({ code: 'validation' })
+  expect(fetcher).not.toHaveBeenCalled()
+  expect((await mintGitHubInstallationToken({ ...base, cache: false, authorityIdentity: undefined })).token).toBe('synthetic-token')
+})
+
+it('does not accept a warm token for a substituted provider account', async () => {
+  const fetcher = vi.fn(async () => Response.json(response()))
+  const base = { ...(await request(fetcher)), cache: true }
+  await mintGitHubInstallationToken(base)
+  await expect(mintGitHubInstallationToken({ ...base, accountId: 51 })).rejects.toMatchObject({ code: 'denied' })
+  expect(fetcher).toHaveBeenCalledTimes(2)
+})
+
+it('does not coalesce pending mints across local namespaces', async () => {
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  let calls = 0
+  const base = { ...(await request(async () => {
+    const sequence = ++calls
+    await gate
+    return Response.json(response({ token: 'synthetic-pending-' + sequence }))
+  })), cache: true }
+  const pending = [mintGitHubInstallationToken(base), mintGitHubInstallationToken({ ...base, authorityIdentity: 'b'.repeat(64) })]
+  try { await vi.waitFor(() => expect(calls).toBe(2)) }
+  finally { release(); await Promise.allSettled(pending) }
+  const results = await Promise.all(pending)
+  expect(results[0]!.token).not.toBe(results[1]!.token)
+})
+
+it('evicts only the selected local namespace', async () => {
+  let calls = 0
+  const base = { ...(await request(async () => Response.json(response({ token: 'synthetic-evict-' + ++calls })))), cache: true }
+  await mintGitHubInstallationToken(base)
+  const other = { ...base, authorityIdentity: 'b'.repeat(64) }
+  const kept = await mintGitHubInstallationToken(other)
+  evictGitHubInstallationToken(base)
+  expect((await mintGitHubInstallationToken(other)).token).toBe(kept.token)
+  await mintGitHubInstallationToken(base)
+  expect(calls).toBe(3)
+})
+
+it('reuses one namespace for a repository set presented in a different order', async () => {
+  const other = { ...repo, id: 102, full_name: 'example/other' }
+  const fetcher = vi.fn(async () => Response.json(response({ repositories: [repo, other] })))
+  const base = { ...(await request(fetcher)), cache: true }
+  const repositories = [...base.repositories, { id: other.id, fullName: other.full_name, private: true, ownerId: 50 }]
+  const first = await mintGitHubInstallationToken({ ...base, repositories })
+  const reordered = await mintGitHubInstallationToken({ ...base, repositories: [...repositories].reverse() })
+  expect(reordered.token).toBe(first.token)
+  expect(fetcher).toHaveBeenCalledTimes(1)
 })

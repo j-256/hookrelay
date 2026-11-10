@@ -141,7 +141,10 @@ export type GitHubInstallationVerification = {
   signal?: AbortSignal
   onProviderRequest?: () => void
 }
-export type GitHubTokenRequest = GitHubInstallationVerification & { cache?: boolean | 'refresh' }
+export type GitHubTokenRequest = GitHubInstallationVerification & {
+  cache?: boolean | 'refresh'
+  authorityIdentity?: string
+}
 export type GitHubInstallationObservation = {
   appId: number
   installationId: number
@@ -198,6 +201,9 @@ const scopeSchema = z.object({
 })
 const requiredPermission = (capability: GitHubHookCapability) =>
   capability === 'repository-hooks-write' ? ('write' as const) : ('read' as const)
+export function githubHookPermissions(capability: GitHubHookCapability): GitHubInstallationToken['permissions'] {
+  return { repository_hooks: requiredPermission(capability) }
+}
 async function validate(input: GitHubInstallationVerification) {
   if (
     !scopeSchema.safeParse(input).success ||
@@ -236,7 +242,7 @@ async function request(input: GitHubInstallationVerification, token: boolean) {
           ? {
               body: JSON.stringify({
                 repository_ids: input.repositories.map((row) => row.id).sort((a, b) => a - b),
-                permissions: { repository_hooks: requiredPermission(input.capability) },
+                permissions: githubHookPermissions(input.capability),
               }),
             }
           : {}),
@@ -287,8 +293,10 @@ export function evictGitHubInstallationToken(input: GitHubTokenRequest) {
 }
 function cacheKey(input: GitHubTokenRequest) {
   return JSON.stringify([
+    input.authorityIdentity,
     input.appId,
     input.installationId,
+    input.accountId,
     input.fingerprint,
     input.capability,
     input.repositories
@@ -300,6 +308,10 @@ export async function mintGitHubInstallationToken(
   input: GitHubTokenRequest,
 ): Promise<GitHubInstallationToken> {
   await validate(input)
+  if (input.cache !== false && (
+    typeof input.authorityIdentity !== 'string' || !/^[a-f0-9]{64}$/.test(input.authorityIdentity)
+  ))
+    throw new GitHubAuthError('validation')
   const fetcher = input.fetch ?? fetch
   let cache = caches.get(fetcher)
   if (!cache) {
@@ -361,7 +373,7 @@ export async function mintGitHubInstallationToken(
       token: value.token,
       expiresAt: expiry,
       repositoryIds: input.repositories.map((row) => row.id),
-      permissions: { repository_hooks: requiredPermission(input.capability) },
+      permissions: githubHookPermissions(input.capability),
     }
   }
   const pending = mint()
