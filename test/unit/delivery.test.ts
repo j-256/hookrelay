@@ -12,6 +12,7 @@ import {
   enqueuePendingDeliveries,
   handleDeadLetterBatch,
   handleDeliveryBatch,
+  handleQueueBatch,
   prepareDeliveries,
   redriveDelivery,
   retryDelaySeconds,
@@ -151,6 +152,56 @@ beforeEach(async () => {
 })
 
 describe('durable delivery', () => {
+  it.each([
+    ['default names', DELIVERY_QUEUE_NAME, DELIVERY_DLQ_NAME, {}],
+    ['configured names', 'isolated-delivery', 'isolated-dead-letter', {
+      DELIVERY_QUEUE_NAME: 'isolated-delivery', DELIVERY_DLQ_NAME: 'isolated-dead-letter',
+    }],
+  ])('dispatches delivery and dead-letter batches with %s', async (_label, primaryName, deadLetterName, names) => {
+    const queue = recordingQueue()
+    const base = withQueue(queue.binding)
+    const testEnv = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property in names) return names[property as keyof typeof names]
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    await prepareDeliveries(testEnv, EVENT_ID, [SINK_NAME])
+    const primary = createMessageBatch(primaryName, [
+      { id: 'primary-custom', timestamp: new Date(), attempts: 1, body: queue.messages[0]! },
+    ])
+    await handleQueueBatch(primary, testEnv)
+    expect(await deliveryRow()).toMatchObject({ status: 'delivered', attempts: 1 })
+    expect(sendSpy).toHaveBeenCalledOnce()
+
+    await env.EVENTS_DB.prepare("UPDATE deliveries SET status='retrying' WHERE event_id=? AND sink_name=?")
+      .bind(EVENT_ID, SINK_NAME).run()
+    const deadLetter = createMessageBatch(deadLetterName, [
+      { id: 'dead-custom', timestamp: new Date(), attempts: 1, body: queue.messages[0]! },
+    ])
+    await handleQueueBatch(deadLetter, testEnv)
+    expect(await deliveryRow()).toMatchObject({ status: 'exhausted', attempts: 1 })
+  })
+
+  it('retries an unrelated queue with a bounded delay without dispatching', async () => {
+    const queue = recordingQueue()
+    const base = withQueue(queue.binding)
+    const testEnv = new Proxy(base, {
+      get(target, property, receiver) {
+        if (property === 'DELIVERY_QUEUE_NAME') return 'isolated-delivery'
+        if (property === 'DELIVERY_DLQ_NAME') return 'isolated-dead-letter'
+        return Reflect.get(target, property, receiver)
+      },
+    })
+    await prepareDeliveries(testEnv, EVENT_ID, [SINK_NAME])
+    const batch = deliveryBatch(queue.messages[0]!)
+    const retry = vi.spyOn(batch, 'retryAll')
+    await handleQueueBatch(batch, testEnv)
+    expect(retry).toHaveBeenCalledWith({ delaySeconds: 60 })
+    expect(sendSpy).not.toHaveBeenCalled()
+    expect(await deliveryRow()).toMatchObject({ status: 'queued', attempts: 0 })
+  })
+
   it('creates one delivery row and one small queue message per sink', async () => {
     const queue = recordingQueue()
     const result = await prepareDeliveries(withQueue(queue.binding), EVENT_ID, [SINK_NAME])

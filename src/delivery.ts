@@ -19,6 +19,7 @@ const OUTBOX_BATCH_SIZE = 100
 const PROCESSING_LEASE_SECONDS = 60
 const RETRY_BASE_SECONDS = 30
 const RETRY_MAX_SECONDS = 3600
+const UNKNOWN_QUEUE_RETRY_SECONDS = 60
 
 interface DeliveryRow {
   event_id: string
@@ -620,16 +621,16 @@ export async function handleDeadLetterBatch(batch: MessageBatch<unknown>, env: E
 }
 
 export async function handleQueueBatch(batch: MessageBatch<unknown>, env: Env): Promise<void> {
-  if (batch.queue === DELIVERY_QUEUE_NAME) {
+  if (batch.queue === (env.DELIVERY_QUEUE_NAME ?? DELIVERY_QUEUE_NAME)) {
     await handleDeliveryBatch(batch, env)
     return
   }
-  if (batch.queue === DELIVERY_DLQ_NAME) {
+  if (batch.queue === (env.DELIVERY_DLQ_NAME ?? DELIVERY_DLQ_NAME)) {
     await handleDeadLetterBatch(batch, env)
     return
   }
   console.log(JSON.stringify({ level: 'error', msg: 'delivery.queue.unknown', queue: batch.queue }))
-  batch.retryAll()
+  batch.retryAll({ delaySeconds: UNKNOWN_QUEUE_RETRY_SECONDS })
 }
 
 export async function redriveDelivery(

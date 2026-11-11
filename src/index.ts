@@ -34,6 +34,8 @@ export interface Env {
   EVENTS_DB: D1Database
   EVENTS_RAW: R2Bucket
   DELIVERY_QUEUE: Queue<DeliveryMessage>
+  DELIVERY_QUEUE_NAME?: string
+  DELIVERY_DLQ_NAME?: string
   HOOK_SOURCE_RATE_LIMITER: RateLimit
   HOOK_SUBSCRIPTION_RATE_LIMITER: RateLimit
   HOOK_RATE_LIMIT_SIGNAL: RateLimit
