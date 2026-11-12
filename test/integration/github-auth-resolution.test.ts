@@ -224,3 +224,39 @@ it('never accepts a speculative mint under another observation after losing auth
   expect(warm.token).not.toBe('synthetic-resolver-app-1')
   expect(f.counts).toEqual({ mints: 3, verifications: 2 })
 })
+
+it('retains safe token-scope failure metadata in authority diagnostics', async () => {
+  const f = await appFixture()
+  const diagnostics: GitHubAuthDiagnostic[] = []
+  const normal = f.input.fetch!
+  const input = {
+    ...f.input,
+    diagnostic: (event: GitHubAuthDiagnostic) => diagnostics.push(event),
+    fetch: (async (url, init) => new URL(String(url)).pathname.endsWith('/access_tokens')
+      ? new Response('private-provider-body-canary', { status: 422 })
+      : normal(url, init)) as typeof fetch,
+  }
+  await expect(resolveGitHubAuth(input)).rejects.toMatchObject({ code: 'denied' })
+  expect(diagnostics).toEqual([expect.objectContaining({
+    outcome: 'denied', providerStage: 'installation_token', providerStatus: 422,
+  })])
+  expect(JSON.stringify(diagnostics)).not.toMatch(/private-provider-body-canary|synthetic-resolution|PRIVATE KEY/)
+})
+
+it('preserves token-mint throttle context with the effective persisted cooldown', async () => {
+  const f = await appFixture()
+  const diagnostics: GitHubAuthDiagnostic[] = []
+  const normal = f.input.fetch!
+  const input = {
+    ...f.input,
+    diagnostic: (event: GitHubAuthDiagnostic) => diagnostics.push(event),
+    fetch: (async (url, init) => new URL(String(url)).pathname.endsWith('/access_tokens')
+      ? new Response('private-provider-body-canary', { status: 403, headers: { 'retry-after': '30' } })
+      : normal(url, init)) as typeof fetch,
+  }
+  const error = await resolveGitHubAuth(input).catch(error => error)
+  const cooldown = await query<{ retry_at: number }>({ sql: 'SELECT retry_at FROM github_auth_cooldowns', params: [] })
+  expect(error).toMatchObject({ code: 'rate_limited', retryAt: cooldown[0]!.retry_at, providerStage: 'installation_token', providerStatus: 403 })
+  expect(diagnostics[0]).toMatchObject({ outcome: 'rate_limited', retryAt: cooldown[0]!.retry_at, providerStage: 'installation_token', providerStatus: 403 })
+  expect(JSON.stringify(diagnostics)).not.toContain('private-provider-body-canary')
+})

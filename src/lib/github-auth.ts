@@ -70,6 +70,8 @@ export type GitHubAuthDiagnostic = {
   providerRequests: number
   d1Requests: number
   retryAt: number | null
+  providerStage?: GitHubAuthError['providerStage']
+  providerStatus?: number
 }
 export type GitHubAuthResolveInput = {
   diagnostic?: (event: GitHubAuthDiagnostic) => void
@@ -113,6 +115,7 @@ export async function resolveGitHubAuth(input: GitHubAuthResolveInput): Promise<
   }
   let outcome: GitHubAuthDiagnostic['outcome'] = 'unavailable'
   let retryAt: number | null = null
+  let providerError: GitHubAuthError | undefined
   const countedQuery: ConfigurationQuery = async <Row>(statement: ConfigurationStatement) => {
     stats.d1Requests++
     return input.query<Row>(statement)
@@ -137,6 +140,7 @@ export async function resolveGitHubAuth(input: GitHubAuthResolveInput): Promise<
     if (error instanceof GitHubAuthError) {
       outcome = error.code
       retryAt = error.retryAt
+      providerError = error
     }
     throw error
   } finally {
@@ -159,6 +163,7 @@ export async function resolveGitHubAuth(input: GitHubAuthResolveInput): Promise<
         durationMs: Math.max(0, Date.now() - started),
         ...stats,
         retryAt,
+        ...(providerError ? { providerStage: providerError.providerStage, providerStatus: providerError.providerStatus } : {}),
       })
     } catch {}
   }
@@ -330,7 +335,7 @@ async function resolveGitHubAuthLease(
         error.retryAt ?? clock() + GITHUB_APP_LIMITS.AUTHORITY_AGE_MS,
         clock(),
       )
-      reportedError = new GitHubAuthError('rate_limited', retryAt)
+      reportedError = new GitHubAuthError('rate_limited', retryAt, error.providerStage, error.providerStatus)
     }
     if (fresh) await invalidateGitHubAuthAuthority(input.query, descriptor.id)
     if (reportedError instanceof GitHubAuthError) throw reportedError

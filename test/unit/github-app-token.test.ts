@@ -305,3 +305,10 @@ it('reuses one namespace for a repository set presented in a different order', a
   expect(reordered.token).toBe(first.token)
   expect(fetcher).toHaveBeenCalledTimes(1)
 })
+
+it('reports rejected installation-token scope with safe provider context and actionable recovery', async () => {
+  const base = await request(async () => new Response('private-provider-body-canary', {status:422}));
+  await expect(mintGitHubInstallationToken(base)).rejects.toMatchObject({code:'denied',providerStage:'installation_token',providerStatus:422,message:expect.stringContaining('repository selection and App permissions')});
+  await expect(verifyGitHubInstallation(base)).rejects.toMatchObject({code:'unavailable',providerStage:'installation',providerStatus:422});
+  try { await mintGitHubInstallationToken(base) } catch(error) { expect(String(error)).not.toMatch(/private-provider-body-canary|revoked/) }
+});

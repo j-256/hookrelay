@@ -136,6 +136,7 @@ async function fixture(mode: 'app' | 'token' | 'gh', routing: 'active' | 'legacy
     if (options?.input) {
       expect(JSON.parse(options.input).config.secret).toBe('synthetic-hook-secret')
     }
+    if (args.includes('--include') && args.some(arg => arg.includes('/deliveries?'))) return 'HTTP/2.0 200 OK\r\n\r\n[]'
     return method === 'POST' && !args.some((arg) => arg.endsWith('/pings'))
       ? JSON.stringify(hook)
       : method === 'PATCH'
@@ -715,4 +716,66 @@ it('keeps an unknown effect blocked across a reviewed repository rename by numer
   expect(recovered.observation).toBe('present')
   expect(attempts).toBe(1)
   expect(verifiedPing).toBe(true)
+})
+
+it('uses bounded cursor pagination for delivery history without page parameters', async () => {
+ const f=await fixture('app','active');const normal=f.fetcher.getMockImplementation()!;const cursors:(string|null)[]=[];
+ f.fetcher.mockImplementation(async (input,init)=>{
+  const url=new URL(String(input));if(!url.pathname.endsWith('/deliveries'))return normal(input,init);
+  expect(url.searchParams.has('page')).toBe(false);const cursor=url.searchParams.get('cursor');cursors.push(cursor);
+  return Response.json(cursor?[{id:2}]:[{id:1}],cursor?{}:{headers:{link:'<https://api.github.com/repos/owner/repo/hooks/10/deliveries?per_page=100&cursor=opaque_123>; rel="next"'}});
+ });
+ expect(await f.auth.transport.request({operation:'deliveries',repo:effect.repo,hookId:10})).toEqual([{id:1},{id:2}]);expect(cursors).toEqual([null,'opaque_123']);
+});
+it.each([
+ 'https://other.invalid/repos/owner/repo/hooks/10/deliveries?cursor=next',
+ 'https://api.github.com/repos/other/repo/hooks/10/deliveries?cursor=next',
+ 'https://api.github.com/repos/owner/repo/hooks/11/deliveries?cursor=next',
+ 'https://api.github.com/repos/owner/repo/hooks/10/deliveries?page=2',
+ 'https://api.github.com/repos/owner/repo/hooks/10/deliveries?cursor=next&private=value',
+])('rejects untrusted delivery pagination without sending another hook request: %s',async(next)=>{
+ const f=await fixture('app','active');const normal=f.fetcher.getMockImplementation()!;let requests=0;
+ f.fetcher.mockImplementation(async(input,init)=>{if(new URL(String(input)).pathname.endsWith('/deliveries')){requests++;return Response.json([{id:1}],{headers:{link:'<'+next+'>; rel="next"'}})}return normal(input,init)});
+ await expect(f.auth.transport.request({operation:'deliveries',repo:effect.repo,hookId:10})).rejects.toMatchObject({code:'unavailable'});expect(requests).toBe(1);
+});
+it('rejects repeated delivery cursors instead of looping or returning partial history',async()=>{
+ const f=await fixture('app','active');const normal=f.fetcher.getMockImplementation()!;let requests=0;
+ f.fetcher.mockImplementation(async(input,init)=>{if(new URL(String(input)).pathname.endsWith('/deliveries')){requests++;return Response.json([{id:requests}],{headers:{link:'<https://api.github.com/repos/owner/repo/hooks/10/deliveries?cursor=repeated>; rel="next"'}})}return normal(input,init)});
+ await expect(f.auth.transport.request({operation:'deliveries',repo:effect.repo,hookId:10})).rejects.toMatchObject({code:'unavailable'});expect(requests).toBe(2);
+});
+it('retains safe token-scope diagnostics on a journaled write rejected before dispatch',async()=>{
+ const f=await fixture('app','active');await f.auth.verifyRepositoryAuthority!(effect.repo);const normal=f.fetcher.getMockImplementation()!;let dispatched=0;
+ f.fetcher.mockImplementation(async(input,init)=>{const path=new URL(String(input)).pathname;if(path.endsWith('/access_tokens'))return new Response('private-provider-body-canary',{status:422});if(path.endsWith('/pings'))dispatched++;return normal(input,init)});
+ await expect(f.auth.transport.request({operation:'ping',repo:effect.repo,hookId:10})).rejects.toMatchObject({code:'denied',operationId:expect.any(String),providerStage:'installation_token',providerStatus:422,message:expect.stringContaining('repository selection and App permissions')});expect(dispatched).toBe(0);
+ const rows=await query<{state:string;provider_status:number|null;error_code:string}>({sql:'SELECT state,provider_status,error_code FROM github_hook_operations',params:[]});expect(rows).toEqual([{state:'rejected',provider_status:null,error_code:'denied'}]);
+});
+
+it('uses the same validated cursor traversal in explicit gh mode',async()=>{
+ const f=await fixture('gh','active');const cursors:(string|null)[]=[];
+ f.runner.mockImplementation(async(_command,args)=>{const path=args[args.indexOf('--method')+2]!;const url=new URL(path,'https://api.github.com/');cursors.push(url.searchParams.get('cursor'));expect(args).toContain('--include');expect(url.searchParams.has('page')).toBe(false);return url.searchParams.has('cursor')?'HTTP/2.0 200 OK\r\n\r\n[{"id":2}]':'HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repos/owner/repo/hooks/10/deliveries?cursor=opaque>; rel="next"\r\n\r\n[{"id":1}]'});
+ expect(await f.auth.transport.request({operation:'deliveries',repo:effect.repo,hookId:10})).toEqual([{id:1},{id:2}]);expect(cursors).toEqual([null,'opaque']);
+});
+it('refuses cursor history beyond its page budget without returning partial results',async()=>{
+ const f=await fixture('app','active');const normal=f.fetcher.getMockImplementation()!;let requests=0;
+ f.fetcher.mockImplementation(async(input,init)=>{if(new URL(String(input)).pathname.endsWith('/deliveries')){requests++;return Response.json([{id:requests}],{headers:{link:'<https://api.github.com/repos/owner/repo/hooks/10/deliveries?cursor=page_'+requests+'>; rel="next"'}})}return normal(input,init)});
+ await expect(f.auth.transport.request({operation:'deliveries',repo:effect.repo,hookId:10})).rejects.toMatchObject({code:'unavailable'});expect(requests).toBe(3);
+});
+
+it('uses the remaining overall gh deadline and refuses late page results', async () => {
+  const f = await fixture('gh', 'active')
+  let elapsed = 0
+  const clock = vi.spyOn(performance, 'now').mockImplementation(() => elapsed)
+  const timeouts: number[] = []
+  f.runner.mockImplementation(async (_command, args, options) => {
+    timeouts.push((options as { timeoutMs: number }).timeoutMs)
+    const cursor = new URL(args[args.indexOf('--method') + 2]!, 'https://api.github.com/').searchParams.get('cursor')
+    elapsed += cursor ? 4000 : 5000
+    return cursor
+      ? 'HTTP/2.0 200 OK\r\n\r\n[{"id":2}]'
+      : 'HTTP/2.0 200 OK\r\nLink: <https://api.github.com/repos/owner/repo/hooks/10/deliveries?cursor=opaque>; rel="next"\r\n\r\n[{"id":1}]'
+  })
+  try {
+    await expect(f.auth.transport.request({ operation: 'deliveries', repo: effect.repo, hookId: 10 })).rejects.toMatchObject({ code: 'unavailable' })
+    expect(timeouts).toEqual([8000, 3000])
+  } finally { clock.mockRestore() }
 })
