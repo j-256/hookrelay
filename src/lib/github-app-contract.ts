@@ -34,9 +34,10 @@ export type GitHubAuthFence = {
 export type GitHubAuthLease = {
   token: string; authorityIdentity: string; quotaKey: string; validUntil: number; generation: number; fence: GitHubAuthFence
 }
+export type GitHubAuthProviderStage = 'installation' | 'installation_token'
 export class GitHubAuthError extends Error {
-  constructor(readonly code: 'validation' | 'conflict' | 'denied' | 'unavailable' | 'rate_limited' | 'not_sent' | 'indeterminate', readonly retryAt: number | null = null) {
-    super('GitHub authentication ' + code + '; inspect the selected authority and reconcile uncertain operations before retrying')
+  constructor(readonly code: 'validation' | 'conflict' | 'denied' | 'unavailable' | 'rate_limited' | 'not_sent' | 'indeterminate', readonly retryAt: number | null = null, readonly providerStage?: GitHubAuthProviderStage, readonly providerStatus?: number) {
+    super(providerStage === 'installation_token' && providerStatus === 422 ? 'GitHub rejected the requested installation token scope; check repository selection and App permissions before preparing a new review' : 'GitHub authentication ' + code + '; inspect the selected authority and reconcile uncertain operations before retrying')
   }
 }
 

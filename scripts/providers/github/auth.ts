@@ -30,7 +30,8 @@ import {
   type GitHubAppRecoveryFile,
 } from './app-private-file'
 
-const HOOK_TRANSPORT_LIMITS = Object.freeze({ PAGES: 3, PAGE_SIZE: 100, PENDING: 1000 })
+const GITHUB_API_ORIGIN = 'https://api.github.com'
+const HOOK_TRANSPORT_LIMITS = Object.freeze({ PAGES: 3, PAGE_SIZE: 100, PENDING: 1000, LINK_CHARACTERS: 8192, CURSOR_CHARACTERS: 2048 })
 const repo = z
   .string()
   .max(201)
@@ -133,8 +134,10 @@ export class GitHubHookOperationError extends GitHubAuthError {
     code: GitHubAuthError['code'],
     readonly operationId: string,
     retryAt: number | null = null,
+    providerStage?: GitHubAuthError['providerStage'],
+    providerStatus?: number,
   ) {
-    super(code, retryAt)
+    super(code, retryAt, providerStage, providerStatus)
     this.message +=
       '; inspect operator operation ' +
       operationId +
@@ -191,7 +194,42 @@ function canonicalReceiverTarget(value: string) {
   const url = new URL(value)
   return url.origin + url.pathname.replace(/\/$/, '') + url.search
 }
-function operation(input: z.output<typeof requestSchema>, page = 1) {
+function deliveryCursor(link: string | null, repo: string, hookId: number): string | null {
+  if (!link) return null
+  if (link.length > HOOK_TRANSPORT_LIMITS.LINK_CHARACTERS) throw new GitHubAuthError('unavailable')
+  let next: string | null = null
+  for (const part of link.split(/,\s*(?=<)/)) {
+    const match = /^\s*<([^>]+)>;\s*rel="([^"]+)"\s*$/.exec(part)
+    if (!match) throw new GitHubAuthError('unavailable')
+    if (!match[2]!.split(' ').includes('next')) continue
+    if (next !== null) throw new GitHubAuthError('unavailable')
+    const url = new URL(match[1]!, GITHUB_API_ORIGIN)
+    if (url.origin !== GITHUB_API_ORIGIN || url.username || url.password || url.hash ||
+      url.pathname !== `/repos/${repo}/hooks/${hookId}/deliveries` ||
+      [...url.searchParams.keys()].some(key => !['cursor', 'per_page'].includes(key)) ||
+      url.searchParams.getAll('cursor').length !== 1 || url.searchParams.getAll('per_page').length > 1 ||
+      (url.searchParams.has('per_page') && url.searchParams.get('per_page') !== String(HOOK_TRANSPORT_LIMITS.PAGE_SIZE)))
+      throw new GitHubAuthError('unavailable')
+    const cursor = url.searchParams.get('cursor')!
+    if (!cursor || cursor.length > HOOK_TRANSPORT_LIMITS.CURSOR_CHARACTERS || /[\x00-\x20\x7f]/.test(cursor))
+      throw new GitHubAuthError('unavailable')
+    next = cursor
+  }
+  return next
+}
+
+function deliveryPage(output: string) {
+  const boundary = /\r?\n\r?\n/.exec(output)
+  if (!boundary || boundary.index > HOOK_TRANSPORT_LIMITS.LINK_CHARACTERS)
+    throw new GitHubAuthError('unavailable')
+  const headers = output.slice(0, boundary.index).split(/\r?\n/)
+  if (!/^HTTP\/[\d.]+\s+200(?:\s|$)/.test(headers[0] ?? '')) throw new GitHubAuthError('unavailable')
+  const links = headers.slice(1).filter(line => /^link:/i.test(line))
+  if (links.length > 1) throw new GitHubAuthError('unavailable')
+  return { value: JSON.parse(output.slice(boundary.index + boundary[0].length)) as unknown, link: links[0]?.slice(5).trim() ?? null }
+}
+
+function operation(input: z.output<typeof requestSchema>, page = 1, cursor: string | null = null) {
   const path = `repos/${input.repo}`
   switch (input.operation) {
     case 'repository':
@@ -206,7 +244,8 @@ function operation(input: z.output<typeof requestSchema>, page = 1) {
         method: 'GET',
         path:
           path +
-          `/hooks/${input.hookId}/deliveries?per_page=${HOOK_TRANSPORT_LIMITS.PAGE_SIZE}&page=${page}`,
+          `/hooks/${input.hookId}/deliveries?per_page=${HOOK_TRANSPORT_LIMITS.PAGE_SIZE}` +
+          (cursor === null ? '' : '&cursor=' + encodeURIComponent(cursor)),
       }
     case 'delete':
       return { method: 'DELETE', path: path + `/hooks/${input.hookId}` }
@@ -354,6 +393,7 @@ export async function resolveOperatorGitHubAuth(
       write || (requested.operation === 'repository' && requested.intent === 'manage')
         ? 'repository-hooks-write'
         : 'repository-hooks-read'
+    const deadline = performance.now() + GITHUB_APP_LIMITS.REQUEST_MS
     const signal = AbortSignal.timeout(GITHUB_APP_LIMITS.REQUEST_MS)
     let operationId: string | null = null
     let dispatched = false
@@ -361,6 +401,8 @@ export async function resolveOperatorGitHubAuth(
     let providerStatus: number | null = null
     let current: GitHubAuthLease | null = null
     const pages: unknown[] = []
+    let cursor: string | null = null
+    const seenCursors = new Set<string>()
     try {
       if (query && captured) {
         current = await lease(requested.repo, capability, 'read', signal)
@@ -426,9 +468,11 @@ export async function resolveOperatorGitHubAuth(
         }
       }
       for (let page = 1; page <= HOOK_TRANSPORT_LIMITS.PAGES; page++) {
-        const target = operation(requested, page)
+        if (signal.aborted || performance.now() >= deadline) throw new GitHubAuthError('unavailable')
+        const target = operation(requested, page, cursor)
         const serialized = 'body' in target ? JSON.stringify(target.body) : undefined
         let value: unknown
+        let nextCursor: string | null = null
         if (options.mode === 'gh') {
           const output = await runner(
             'gh',
@@ -443,24 +487,30 @@ export async function resolveOperatorGitHubAuth(
               '--method',
               target.method,
               target.path,
+              ...(requested.operation === 'deliveries' ? ['--include'] : []),
               ...(serialized ? ['--input', '-'] : []),
             ],
             {
               input: serialized,
               captureStdout: true,
               privateInput: true,
-              timeoutMs: GITHUB_APP_LIMITS.REQUEST_MS,
+              timeoutMs: Math.max(1, Math.ceil(deadline - performance.now())),
               maxOutputBytes: GITHUB_APP_LIMITS.RESPONSE_BYTES,
             },
           )
-          value = output ? (JSON.parse(output) as unknown) : null
+          if (signal.aborted || performance.now() >= deadline) throw new GitHubAuthError('unavailable')
+          if (requested.operation === 'deliveries') {
+            const result = deliveryPage(output)
+            value = result.value
+            nextCursor = deliveryCursor(result.link, requested.repo, requested.hookId)
+          } else value = output ? (JSON.parse(output) as unknown) : null
         } else {
           if (page > 1) current = await lease(requested.repo, capability, 'read', signal)
           if (!current) throw new GitHubAuthError('unavailable')
           const send = async (credential: GitHubAuthLease) =>
             fetchGitHubWithDeadline(
               fetcher,
-              'https://api.github.com/' + target.path,
+              GITHUB_API_ORIGIN + '/' + target.path,
               {
                 method: target.method,
                 redirect: 'manual',
@@ -521,6 +571,8 @@ export async function resolveOperatorGitHubAuth(
               ? null
               : await readGitHubAppJson(response, signal)
           if (value === null) void response.body?.cancel().catch(() => {})
+          if (requested.operation === 'deliveries')
+            nextCursor = deliveryCursor(response.headers.get('link'), requested.repo, requested.hookId)
           if (!write) await assertGitHubAuthFence(query!, current.fence)
           if (requested.operation === 'repository') {
             const observed = z
@@ -547,6 +599,16 @@ export async function resolveOperatorGitHubAuth(
         if (requested.operation === 'list' || requested.operation === 'deliveries') {
           const rows = z.array(z.unknown()).max(HOOK_TRANSPORT_LIMITS.PAGE_SIZE).parse(value)
           pages.push(...rows)
+          if (requested.operation === 'deliveries') {
+            if (nextCursor !== null) {
+              if (seenCursors.has(nextCursor) || page === HOOK_TRANSPORT_LIMITS.PAGES)
+                throw new GitHubAuthError('unavailable')
+              seenCursors.add(nextCursor)
+              cursor = nextCursor
+              continue
+            }
+            return pages
+          }
           if (rows.length === HOOK_TRANSPORT_LIMITS.PAGE_SIZE) {
             if (page === HOOK_TRANSPORT_LIMITS.PAGES) throw new GitHubAuthError('unavailable')
             continue
@@ -607,6 +669,8 @@ export async function resolveOperatorGitHubAuth(
           code,
           operationId,
           error instanceof GitHubAuthError ? error.retryAt : null,
+          error instanceof GitHubAuthError ? error.providerStage : undefined,
+          error instanceof GitHubAuthError ? error.providerStatus : undefined,
         )
       if (error instanceof GitHubAuthError) throw error
       throw new GitHubAuthError(options.mode === 'gh' && write ? 'indeterminate' : code)

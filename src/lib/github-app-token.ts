@@ -212,6 +212,7 @@ async function validate(input: GitHubInstallationVerification) {
     throw new GitHubAuthError('validation')
 }
 async function request(input: GitHubInstallationVerification, token: boolean) {
+  const providerStage = token ? 'installation_token' : 'installation'
   const budget = Math.min(LIMITS.REQUEST_MS, input.remainingBudgetMs?.() ?? LIMITS.REQUEST_MS)
   if (!Number.isFinite(budget) || budget <= 0) throw new GitHubAuthError('not_sent')
   const timeout = AbortSignal.timeout(Math.max(1, Math.floor(budget)))
@@ -251,13 +252,13 @@ async function request(input: GitHubInstallationVerification, token: boolean) {
     )
     if (!response.ok) void response.body?.cancel().catch(() => {})
     const retryAt = githubRetryAt(response, (input.now ?? Date.now)())
-    if (retryAt !== null) throw new GitHubAuthError('rate_limited', retryAt)
-    if ([401, 403, 404].includes(response.status)) throw new GitHubAuthError('denied')
-    if (!response.ok || response.status >= 300) throw new GitHubAuthError('unavailable')
+    if (retryAt !== null) throw new GitHubAuthError('rate_limited', retryAt, providerStage, response.status)
+    if ([401, 403, 404].includes(response.status) || (token && response.status === 422)) throw new GitHubAuthError('denied', null, providerStage, response.status)
+    if (!response.ok || response.status >= 300) throw new GitHubAuthError('unavailable', null, providerStage, response.status)
     return await readGitHubAppJson(response, signal)
   } catch (error) {
     if (error instanceof GitHubAuthError) throw error
-    throw new GitHubAuthError('unavailable')
+    throw new GitHubAuthError('unavailable', null, providerStage)
   }
 }
 export async function verifyGitHubInstallation(
