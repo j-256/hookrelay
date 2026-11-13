@@ -40,7 +40,7 @@ export async function readConfiguration(env: Env, principal: ManagementPrincipal
   }
 }
 
-export async function readConfigurationSubscription(env: Env, resourceId: string) {
+export async function readConfigurationSubscription(env: Env, resourceId: string, includeRetired = false) {
   const query = configurationQuery(env.EVENTS_DB)
   const state = await activeState(query)
   const entry = await subscription(query, resourceId)
@@ -48,11 +48,11 @@ export async function readConfigurationSubscription(env: Env, resourceId: string
   if (observed.authorityId !== state.authorityId || observed.revision !== state.revision || observed.mode !== state.mode) {
     throw new ConfigurationError('conflict', 'Configuration changed; refresh the subscription')
   }
-  return { ...state, ...readSubscriptionPolicy(entry), observedAt: new Date().toISOString() }
+  return { ...state, ...readSubscriptionPolicy(entry), ...(includeRetired ? { retired: Boolean(entry.retired) } : {}), observedAt: new Date().toISOString() }
 }
 
 export async function readConfigurationPage(
-  env: Env, kind: 'subscriptions' | 'sinks', input: { cursor: string | null; revision: number },
+  env: Env, kind: 'subscriptions' | 'sinks', input: { cursor: string | null; revision: number }, includeRetired = false,
 ) {
   const query = configurationQuery(env.EVENTS_DB)
   const state = await activeState(query)
@@ -69,7 +69,7 @@ export async function readConfigurationPage(
   }
   const candidates = rows.slice(0, CONFIGURATION_LIMITS.PAGE_SIZE)
   const items = candidates.map(entry => {
-    if (kind === 'subscriptions') return readSubscriptionPolicy(entry)
+    if (kind === 'subscriptions') return { ...readSubscriptionPolicy(entry), ...(includeRetired ? { retired: Boolean(entry.retired) } : {}) }
     try {
       const value = JSON.parse(entry.value) as Record<string, unknown>
       return { resourceId: entry.resourceId, name: policyName.parse(entry.key.slice('sink:'.length)), type: policyName.parse(value.type), retired: Boolean(entry.retired) }
@@ -139,6 +139,7 @@ export async function planConfigurationPolicy(env: Env, principal: ManagementPri
   }
   const entry = await subscription(query, input.resourceId)
   const before = readSubscriptionPolicy(entry)
+  if (entry.retired && input.policy.enabled) throw new ConfigurationError('conflict', 'Restore the subscription before enabling it')
   if (canonicalConfiguration(before.policy) === canonicalConfiguration(input.policy)) {
     throw new ConfigurationError('validation', 'The subscription policy is unchanged')
   }
@@ -149,6 +150,9 @@ export async function planConfigurationPolicy(env: Env, principal: ManagementPri
   })
   if (destinations.length !== input.policy.sinks.length || (input.policy.enabled && destinations.some(entry => entry.retired))) {
     throw new ConfigurationError('validation', 'Select existing, non-retired destinations before enabling the subscription')
+  }
+  if (destinations.some(entry => entry.retired && !before.policy.sinks.includes(entry.name))) {
+    throw new ConfigurationError('validation', 'Retired destinations cannot be newly selected')
   }
   const createdAt = new Date().toISOString()
   const expiresAt = new Date(Math.min(Date.now() + CONFIGURATION_LIMITS.REVIEW_TTL_MS, Date.parse(principal.expiresAt))).toISOString()
@@ -214,6 +218,7 @@ export async function pruneConfigurationReviews(env: Env): Promise<void> {
       SELECT id FROM configuration_receipts AS receipt WHERE accepted_at < ?
         AND NOT EXISTS (SELECT 1 FROM configuration_policy_reviews WHERE id = receipt.id)
         AND NOT EXISTS (SELECT 1 FROM github_setup_reviews WHERE id = receipt.id)
+        AND NOT EXISTS (SELECT 1 FROM lifecycle_reviews WHERE id = receipt.id)
       ORDER BY accepted_at LIMIT ?
     )`, params: [cutoff, CONFIGURATION_LIMITS.PRUNE_BATCH],
   })

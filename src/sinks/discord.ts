@@ -95,7 +95,7 @@ const sink: Sink<Config> = {
         },
       ],
     }
-    await postJson(url, payload, { fetch: fetchFn })
+    await postJson(url, payload, { fetch: fetchFn, redirect: 'manual', errorLabel: 'notification destination', includeResponseBody: false })
   },
 }
 

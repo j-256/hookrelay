@@ -3,7 +3,7 @@ import {
   CONFIGURATION_LIMITS, CONFIGURATION_MODE, ConfigurationError, acceptConfigurationChange,
   authorityIdSchema, canonicalConfiguration, configurationAliasSchema, configurationDigest,
   configurationEntrySchema, readConfigurationAliases, readConfigurationEntries,
-  readConfigurationReceipt, readConfigurationState, validateConfigurationChange,
+  readConfigurationReceipt, readConfigurationState, validateConfigurationChange, validateConfigurationLifecycle,
   type ConfigurationChange, type ConfigurationEntry, type ConfigurationQuery,
   type ValidatedConfigurationChange,
 } from '../src/configuration/authority'
@@ -115,6 +115,7 @@ export async function reviewConfigurationImport(query: ConfigurationQuery, input
   if (candidate.authorityId !== before.authorityId || candidate.revision !== before.revision) {
     throw new ConfigurationError('conflict', 'The import baseline is stale; export the latest revision and reconcile the draft explicitly')
   }
+  validateConfigurationLifecycle(candidate.entries, before.entries, candidate.aliases)
   const byId = new Map(candidate.entries.map(entry => [entry.resourceId, entry]))
   if (byId.size !== candidate.entries.length || byId.size !== before.entries.length) {
     throw new ConfigurationError('validation', 'Imports cannot create or retire resources; staged lifecycle workflows are required')

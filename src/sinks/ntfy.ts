@@ -37,7 +37,7 @@ const sink: Sink<Config> = {
     }
     if (config.tokenEnv) headers.Authorization = `Bearer ${readSecret(env, config.tokenEnv)}`
     if (event.url) headers.Click = event.url
-    await postRaw(url, event.body, { headers, fetch: fetchFn })
+    await postRaw(url, event.body, { headers, fetch: fetchFn, redirect: 'manual', errorLabel: 'notification destination', includeResponseBody: false })
   },
 }
 

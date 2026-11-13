@@ -109,6 +109,7 @@ test('guided local preparation survives lost staging, deployment and hook acknow
       stages: 0,
       deploys: 0,
       creates: 0,
+      deletes: 0,
       lostHook: true,
       pinged: false,
     }
@@ -166,6 +167,7 @@ test('guided local preparation survives lost staging, deployment and hook acknow
               ]
             : [],
         )
+      if(path==='/repos/example/repository/hooks/42' && init?.method==='DELETE') { state.deletes++;return new Response(null,{status:204}) }
       assert.equal(path, '/repos/example/repository/hooks')
       if (init?.method === 'POST') {
         state.creates++
@@ -282,6 +284,12 @@ test('guided local preparation survives lost staging, deployment and hook acknow
     assert.equal(recovered.observation, 'present')
     assert.equal(state.creates, 1)
     assert.equal(state.pinged, true)
+    const pendingId=crypto.randomUUID()
+    db.prepare("INSERT INTO github_hook_operations(id,descriptor_id,workspace_id,repository_id,operation,hook_id,request_hash,target_hash,auth_fence_json,state,created_at,updated_at) VALUES (?,'another-credential','alpha',101,'update',42,?,?,'{}','indeterminate',?,?)")
+      .run(pendingId,'a'.repeat(64),'b'.repeat(64),Date.now(),Date.now())
+    await assert.rejects(auth.transport.request({operation:'delete',repo:'example/repository',hookId:42}),{code:'indeterminate'})
+    assert.equal(state.deletes,0)
+    db.prepare('DELETE FROM github_hook_operations WHERE id=?').run(pendingId)
     const publicState = JSON.stringify({ plan, receipt, operation, recovered })
     for (const canary of [
       'PRIVATE KEY',

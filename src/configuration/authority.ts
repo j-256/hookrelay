@@ -216,6 +216,36 @@ export async function readConfigurationReceipt(query: ConfigurationQuery, operat
   return receipt
 }
 
+export function validateConfigurationLifecycle(entries: ConfigurationEntry[], before: ConfigurationEntry[], aliases: ConfigurationAlias[] = []): void {
+  const byId = new Map(entries.map(entry => [entry.resourceId, entry]))
+  const previous = new Map(before.map(entry => [entry.resourceId, entry]))
+  function destination(name: string) {
+    return entries.find(entry => entry.namespace === 'SINKS' && entry.key === `sink:${name}`) ??
+      byId.get(aliases.find(alias => alias.namespace === 'SINKS' && alias.key === `sink:${name}`)?.resourceId ?? '')
+  }
+  for (const entry of entries) {
+    if (entry.namespace !== 'SUBS') continue
+    const value = JSON.parse(entry.value) as Record<string, unknown>
+    if (entry.key === OPERATIONS_CONFIG_KEY && Array.isArray(value.sinks)) {
+      if (value.sinks.some(name => typeof name !== 'string' || !destination(name) || destination(name)!.retired)) {
+        throw new ConfigurationError('validation', 'Operational alerts require existing, non-retired destinations')
+      }
+    }
+    if (!entry.key.startsWith(SUBSCRIPTION_KEY_PREFIX)) continue
+    if (entry.retired && value.enabled) throw new ConfigurationError('validation', 'Retired subscriptions must remain disabled until restored')
+    if (!Array.isArray(value.sinks)) continue
+    const old = previous.get(entry.resourceId)
+    const oldSinks: unknown = old ? (JSON.parse(old.value) as Record<string, unknown>).sinks : []
+    for (const name of value.sinks) {
+      if (typeof name !== 'string') throw new ConfigurationError('validation', 'Subscription destinations are invalid')
+      const sink = destination(name)
+      if (!sink || (sink.retired && (value.enabled || !Array.isArray(oldSinks) || !oldSinks.includes(name)))) {
+        throw new ConfigurationError('validation', 'Subscriptions require existing destinations and cannot newly select retired destinations')
+      }
+    }
+  }
+}
+
 export async function acceptConfigurationChange(query: ConfigurationQuery, input: ConfigurationChange): Promise<ConfigurationReceipt> {
   const change = validateConfigurationChange(input)
   const inputHash = await configurationDigest(change)
@@ -284,6 +314,7 @@ export async function acceptConfigurationChange(query: ConfigurationQuery, input
       projectedEntries.size + projectedAliases.size > CONFIGURATION_LIMITS.ENTRIES || totalBytes > CONFIGURATION_LIMITS.CHANGE_BYTES) {
     throw new ConfigurationError('validation', 'The change exceeds the configuration inventory bound')
   }
+  validateConfigurationLifecycle([...projectedEntries.values()], change.kind === 'migration' ? [...projectedEntries.values()] : entries, [...projectedAliases.values()])
   const payload = canonicalConfiguration({ ...change, inputHash })
   await query({
     sql: `UPDATE configuration_authority
