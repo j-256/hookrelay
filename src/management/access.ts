@@ -26,22 +26,31 @@ function equalHash(left: string, right: string): boolean {
   return different === 0
 }
 
+export function readManagementCredentials(env: Env): ManagementPrincipal[] {
+  function catalog(raw: string | undefined) {
+    if (!raw || raw.length > MANAGEMENT_LIMITS.CREDENTIAL_BYTES) throw new Error()
+    const values = z.array(credentialSchema).min(1).max(20).parse(JSON.parse(raw))
+    if (new Set(values.map(value => value.id)).size !== values.length ||
+        new Set(values.map(value => value.tokenHash)).size !== values.length) throw new Error()
+    return values
+  }
+  let primary: ManagementPrincipal[]
+  try { primary = catalog(env.MANAGEMENT_CREDENTIALS) } catch {
+    throw new ManagementError('unconfigured', 503, 'Management credentials are not configured correctly')
+  }
+  let additional: ManagementPrincipal[] = []
+  try {
+    if (env.MANAGEMENT_CREDENTIALS_ADDITIONAL) additional = catalog(env.MANAGEMENT_CREDENTIALS_ADDITIONAL)
+  } catch { return primary }
+  return [...primary, ...additional.filter(value => !primary.some(existing =>
+    existing.id === value.id || equalHash(existing.tokenHash, value.tokenHash)))]
+}
+
 export async function authenticateManagement(request: Request, env: Env): Promise<ManagementPrincipal> {
   const authorization = request.headers.get('authorization') ?? ''
   const match = /^Bearer (hkr_[A-Za-z0-9_-]{43})$/.exec(authorization)
   if (!match) throw new ManagementError('unauthorized', 401, 'A management credential is required')
-  const raw = env.MANAGEMENT_CREDENTIALS
-  if (!raw || raw.length > MANAGEMENT_LIMITS.CREDENTIAL_BYTES) {
-    throw new ManagementError('unconfigured', 503, 'Management credentials are not configured')
-  }
-  let credentials: ManagementPrincipal[]
-  try {
-    credentials = z.array(credentialSchema).min(1).max(20).parse(JSON.parse(raw))
-    if (new Set(credentials.map(value => value.id)).size !== credentials.length ||
-        new Set(credentials.map(value => value.tokenHash)).size !== credentials.length) throw new Error()
-  } catch {
-    throw new ManagementError('unconfigured', 503, 'Management credentials are not configured correctly')
-  }
+  const credentials = readManagementCredentials(env)
   const digest = await managementTokenHash(match[1]!)
   const principal = credentials.find(value => equalHash(value.tokenHash, digest))
   if (!principal || Date.parse(principal.expiresAt) <= Date.now()) {
@@ -95,10 +104,7 @@ export function assertCurrentManagementGrant(env:Env,principal:ManagementPrincip
   else authorizeManagement(principal,workspaceId)
   let current:ManagementPrincipal|undefined
   try {
-    const raw = env.MANAGEMENT_CREDENTIALS
-    if (!raw || raw.length > MANAGEMENT_LIMITS.CREDENTIAL_BYTES) throw new Error()
-    const credentials = z.array(credentialSchema).min(1).max(20).parse(JSON.parse(raw))
-    if (new Set(credentials.map(item => item.id)).size !== credentials.length || new Set(credentials.map(item => item.tokenHash)).size !== credentials.length) throw new Error()
+    const credentials = readManagementCredentials(env)
     current = credentials.find(item => item.id === principal.id && item.revision === principal.revision && equalHash(item.tokenHash,principal.tokenHash))
   } catch { throw new ManagementError('unconfigured',503,'Management authorization is unavailable') }
   if (!current) throw new ManagementError('unauthorized',401,'Management authorization changed')

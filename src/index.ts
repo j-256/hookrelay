@@ -42,6 +42,7 @@ export interface Env {
   CF_ACCESS_TEAM_DOMAIN: string
   CF_ACCESS_AUD: string
   MANAGEMENT_CREDENTIALS?: string
+  MANAGEMENT_CREDENTIALS_ADDITIONAL?: string
   HOOK_SETUP_KEY?: string
   CF_VERSION_METADATA?: { id: string; tag: string; timestamp: string }
   GITHUB_AUTH_MODE?: string
