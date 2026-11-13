@@ -74,3 +74,28 @@ export async function openHandoffBundle(env: Environment, binding: HandoffBindin
     return bundleFor(binding, JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(plaintext)))
   } catch { throw new HandoffUnavailableError() } finally { plaintext?.fill(0) }
 }
+
+export async function sealProtectedValue(env: Environment, purpose: string, binding: unknown, value: unknown): Promise<EncryptedHandoff> {
+  let plaintext: Uint8Array | undefined
+  try {
+    const selected = await key(env)
+    plaintext = encoder.encode(JSON.stringify(value))
+    if (plaintext.length > LIMITS.PAYLOAD_BYTES) throw new HandoffUnavailableError()
+    const nonce = crypto.getRandomValues(new Uint8Array(LIMITS.NONCE_BYTES))
+    const additionalData = encoder.encode(JSON.stringify({ purpose, keyId: selected.id, binding }))
+    const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv: nonce, additionalData, tagLength: LIMITS.TAG_BITS }, selected.key, plaintext))
+    return { keyId: selected.id, nonce: encode(nonce), ciphertext: encode(ciphertext) }
+  } catch { throw new HandoffUnavailableError() } finally { plaintext?.fill(0) }
+}
+export async function openProtectedValue(env: Environment, purpose: string, binding: unknown, value: unknown): Promise<unknown> {
+  let plaintext: Uint8Array | undefined
+  try {
+    const saved = encryptedHandoffSchema.parse(value)
+    const selected = await key(env, saved.keyId)
+    const nonce = decode(saved.nonce, LIMITS.NONCE_BYTES)
+    if (nonce.length !== LIMITS.NONCE_BYTES) throw new HandoffUnavailableError()
+    const additionalData = encoder.encode(JSON.stringify({ purpose, keyId: selected.id, binding }))
+    plaintext = new Uint8Array(await crypto.subtle.decrypt({ name: 'AES-GCM', iv: nonce, additionalData, tagLength: LIMITS.TAG_BITS }, selected.key, decode(saved.ciphertext, LIMITS.PAYLOAD_BYTES + LIMITS.TAG_BITS / 8)))
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(plaintext)) as unknown
+  } catch { throw new HandoffUnavailableError() } finally { plaintext?.fill(0) }
+}

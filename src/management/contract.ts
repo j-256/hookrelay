@@ -3,6 +3,7 @@ import { authorityIdSchema } from '../configuration/authority'
 import { subscriptionPolicySchema } from '../configuration/policy'
 import { githubSetupEvents, githubSetupRepository } from '../lib/github-setup'
 import { resolutionInput, signalPageInput } from '../operational-review'
+import { lifecycleInputs } from './lifecycle-contract'
 import { handoffInputs } from './github-handoff-contract'
 
 export const MANAGEMENT_PATH = '/admin/api/v1'
@@ -31,6 +32,7 @@ export const deliveryCursor = z.object({
 }).strict()
 export const managementInputs = {
   ...handoffInputs,
+  ...lifecycleInputs,
   snapshot: context,
   signals: context.extend(signalPageInput.shape).strict(),
   resolution_plan: context.extend(resolutionInput.shape).strict(),

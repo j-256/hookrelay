@@ -1,3 +1,4 @@
+import { resolveDestination } from './lib/destination-custody'
 import { getSink } from './sinks'
 import { readRuntimeConfiguration } from './configuration/authority'
 import type { Env } from './index'
@@ -45,20 +46,33 @@ export async function dispatchSink(
   if (!sink) return { ok: false, errMsg: `unregistered sink type: ${cfg.type}` }
 
   // Strip `type` discriminator before validating; sink schemas are .strict() and don't expect it
-  const { type: _type, ...sinkConfig } = cfg
+  let deliveryEnv = env
+  let sinkConfig: Record<string, unknown>
+  try {
+    if (cfg.custody) {
+      const resolved = await resolveDestination(env, cfg.type, cfg.custody)
+      sinkConfig = resolved.config
+      deliveryEnv = new Proxy(env, { get(target, name, receiver) {
+        return typeof name === 'string' && name in resolved.secrets ? resolved.secrets[name] : Reflect.get(target, name, receiver)
+      } })
+    } else {
+      const { type: _type, ...config } = cfg
+      sinkConfig = config
+    }
+  } catch { return { ok: false, errMsg: 'destination custody is unavailable' } }
   const parsed = sink.configSchema.safeParse(sinkConfig)
   if (!parsed.success) {
     return { ok: false, errMsg: `sink config invalid: ${parsed.error.message}` }
   }
 
   try {
-    await sink.send(event, parsed.data, env, context)
+    await sink.send(event, parsed.data, deliveryEnv, context)
     return { ok: true }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)
     return {
       ok: false,
-      errMsg: msg,
+      errMsg: cfg.custody ? 'destination delivery failed' : msg,
       retryAfterSeconds: err instanceof HttpError ? err.retryAfterSeconds : undefined,
     }
   }

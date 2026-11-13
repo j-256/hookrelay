@@ -1,0 +1,5 @@
+CREATE INDEX github_hook_operations_repository_hook
+ON github_hook_operations(repository_id,hook_id,state);
+
+CREATE INDEX github_hook_operations_repository_target
+ON github_hook_operations(repository_id,target_hash,state);

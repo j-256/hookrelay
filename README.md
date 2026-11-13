@@ -443,6 +443,8 @@ The Access-protected `/admin/health` page shows delivery totals, the oldest acti
 
 ## Scoped management
 
+[Reviewed lifecycle management](docs/lifecycle-management.md) adds encrypted destination custody, subscription retirement/restoration, and explicit adoption, update, and deletion of owned upstream hooks, with protected input and durable recovery.
+
 The [scoped management API](docs/management.md) provides a versioned, credential-restricted contract for operator clients, including dashboard backends, CLI tools and MCP services: bounded redacted reads, exact-state retry reviews, and durable reconciliation receipts. Its separately granted [GitHub setup flow](docs/github-setup.md) lets any authorized client create reviewed subscriptions and install their upstream webhooks using the same provider configuration authority. Maintainer HQ is one integration of this shared contract. Raw-event access remains separate.
 
 ## Retention

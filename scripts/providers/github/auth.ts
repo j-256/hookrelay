@@ -1,3 +1,4 @@
+import { canonicalReceiverTarget, githubDeliveryCursor as deliveryCursor, GITHUB_HOOK_LIMITS as HOOK_TRANSPORT_LIMITS } from '../../../src/lib/github-hook-protocol'
 import { z } from 'zod'
 import { configurationDigest, type ConfigurationQuery } from '../../../src/configuration/authority'
 import {
@@ -31,7 +32,7 @@ import {
 } from './app-private-file'
 
 const GITHUB_API_ORIGIN = 'https://api.github.com'
-const HOOK_TRANSPORT_LIMITS = Object.freeze({ PAGES: 3, PAGE_SIZE: 100, PENDING: 1000, LINK_CHARACTERS: 8192, CURSOR_CHARACTERS: 2048 })
+
 const repo = z
   .string()
   .max(201)
@@ -190,33 +191,6 @@ export function extractOperatorGitHubAuthArgs(argv: readonly string[]) {
 }
 export const OPERATOR_GITHUB_AUTH_USAGE =
   '--github-auth app|token|gh; App/token also require --github-descriptor <id>, --github-workspace <id>, --github-credential-file <protected-file>'
-function canonicalReceiverTarget(value: string) {
-  const url = new URL(value)
-  return url.origin + url.pathname.replace(/\/$/, '') + url.search
-}
-function deliveryCursor(link: string | null, repo: string, hookId: number): string | null {
-  if (!link) return null
-  if (link.length > HOOK_TRANSPORT_LIMITS.LINK_CHARACTERS) throw new GitHubAuthError('unavailable')
-  let next: string | null = null
-  for (const part of link.split(/,\s*(?=<)/)) {
-    const match = /^\s*<([^>]+)>;\s*rel="([^"]+)"\s*$/.exec(part)
-    if (!match) throw new GitHubAuthError('unavailable')
-    if (!match[2]!.split(' ').includes('next')) continue
-    if (next !== null) throw new GitHubAuthError('unavailable')
-    const url = new URL(match[1]!, GITHUB_API_ORIGIN)
-    if (url.origin !== GITHUB_API_ORIGIN || url.username || url.password || url.hash ||
-      url.pathname !== `/repos/${repo}/hooks/${hookId}/deliveries` ||
-      [...url.searchParams.keys()].some(key => !['cursor', 'per_page'].includes(key)) ||
-      url.searchParams.getAll('cursor').length !== 1 || url.searchParams.getAll('per_page').length > 1 ||
-      (url.searchParams.has('per_page') && url.searchParams.get('per_page') !== String(HOOK_TRANSPORT_LIMITS.PAGE_SIZE)))
-      throw new GitHubAuthError('unavailable')
-    const cursor = url.searchParams.get('cursor')!
-    if (!cursor || cursor.length > HOOK_TRANSPORT_LIMITS.CURSOR_CHARACTERS || /[\x00-\x20\x7f]/.test(cursor))
-      throw new GitHubAuthError('unavailable')
-    next = cursor
-  }
-  return next
-}
 
 function deliveryPage(output: string) {
   const boundary = /\r?\n\r?\n/.exec(output)
@@ -422,7 +396,7 @@ export async function resolveOperatorGitHubAuth(
             query,
             `INSERT INTO github_hook_operations(id,descriptor_id,workspace_id,repository_id,operation,hook_id,request_hash,target_hash,auth_fence_json,state,created_at,updated_at)
             SELECT ?,?,?,?,?,?,?,?,?,'prepared',?,? WHERE (SELECT count(*) FROM github_hook_operations WHERE descriptor_id=? AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id))<?
-            AND (?='ping' OR NOT EXISTS(SELECT 1 FROM github_hook_operations WHERE descriptor_id=? AND repository_id=? AND target_hash=? AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id))) RETURNING id`,
+            AND (?='ping' OR NOT EXISTS(SELECT 1 FROM github_hook_operations WHERE repository_id=? AND (target_hash=? OR (? IS NOT NULL AND hook_id=?)) AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id))) RETURNING id`,
             [
               operationId,
               captured.id,
@@ -438,17 +412,18 @@ export async function resolveOperatorGitHubAuth(
               captured.id,
               HOOK_TRANSPORT_LIMITS.PENDING,
               requested.operation,
-              captured.id,
               current.fence.repositoryId,
               targetHash,
+              'hookId' in requested ? requested.hookId : null,
+              'hookId' in requested ? requested.hookId : null,
             ],
           )
           if (!inserted.length) {
             operationId = null
             const [pending] = await githubAuthQuery<{ id: string }>(
               query,
-              "SELECT id FROM github_hook_operations WHERE descriptor_id=? AND repository_id=? AND target_hash=? AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id) ORDER BY created_at LIMIT 1",
-              [captured.id, current.fence.repositoryId, targetHash],
+              "SELECT id FROM github_hook_operations WHERE repository_id=? AND (target_hash=? OR (? IS NOT NULL AND hook_id=?)) AND state IN ('prepared','submitting','indeterminate') AND NOT EXISTS(SELECT 1 FROM github_hook_operation_reconciliations WHERE operation_id=github_hook_operations.id) ORDER BY created_at LIMIT 1",
+              [current.fence.repositoryId, targetHash, 'hookId' in requested ? requested.hookId : null, 'hookId' in requested ? requested.hookId : null],
             )
             if (pending) throw new GitHubHookOperationError('indeterminate', pending.id)
             throw new GitHubAuthError('unavailable')

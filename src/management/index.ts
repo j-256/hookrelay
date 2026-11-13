@@ -1,3 +1,4 @@
+import { readLifecycleConfiguration, planLifecycle, getLifecycle, applyLifecycle } from './lifecycle'
 import { GitHubAuthError } from '../lib/github-app-contract'
 import { readGitHubAuthStatus } from './github-auth'
 import { readGitHubSetupConfiguration, planGitHubSetup, applyGitHubSetup, getGitHubSetup, readGitHubSetupStatus } from './github-setup'
@@ -31,6 +32,12 @@ export async function handleManagement(request: Request, env: Env): Promise<Resp
     authorizeManagement(principal, context.workspaceId, ['retry_plan', 'retry_apply'].includes(envelope.command))
     let result: unknown
     switch (envelope.command) {
+      case 'lifecycle_subscriptions': result = await readConfigurationPage(env, 'subscriptions', managementInputs.lifecycle_subscriptions.parse(envelope.input), true); break
+      case 'lifecycle_subscription': result = await readConfigurationSubscription(env, managementInputs.lifecycle_subscription.parse(envelope.input).resourceId, true); break
+      case 'lifecycle_configuration': result = await readLifecycleConfiguration(env, principal, context); break
+      case 'lifecycle_plan': result = await planLifecycle(env, principal, managementInputs.lifecycle_plan.parse(envelope.input)); break
+      case 'lifecycle_get': result = await getLifecycle(env, principal, managementInputs.lifecycle_get.parse(envelope.input)); break
+      case 'lifecycle_apply': result = await applyLifecycle(env, principal, managementInputs.lifecycle_apply.parse(envelope.input)); break
       case 'github_handoff_configuration': result = await readHandoffConfiguration(env, principal); break
       case 'github_handoff_repository': result = await readHandoffRepository(env, envelope.input); break
       case 'github_handoff_plan': result = await planHandoff(env, principal, envelope.input); break

@@ -1,3 +1,5 @@
+import { handleLifecycleInput, pruneLifecycleHistory } from './management/lifecycle'
+import { LIFECYCLE_INPUT_PATH } from './management/lifecycle-contract'
 import { handleGitHubAppKeyVerification, GITHUB_APP_KEY_VERIFICATION_PATH } from './management/github-app-key-verification'
 import { pruneGitHubAuthHistory } from './configuration/github-auth'
 import { configurationQuery } from './configuration/authority'
@@ -61,6 +63,7 @@ export default {
     const url = new URL(request.url)
     if (url.pathname === GITHUB_APP_KEY_VERIFICATION_PATH) return handleGitHubAppKeyVerification(request, env)
     if (url.pathname === HANDOFF_PRIVATE_PATH) return handleHandoffPrivate(request, env)
+    if (url.pathname.startsWith(LIFECYCLE_INPUT_PATH)) return handleLifecycleInput(request, env)
     if (url.pathname === MANAGEMENT_PATH) {
       return handleManagement(request, env)
     }
@@ -149,6 +152,7 @@ export default {
       await pruneGitHubSetupReviews(env)
       await pruneGitHubAuthHistory(configurationQuery(env.EVENTS_DB))
       await pruneHandoffHistory(env)
+      await pruneLifecycleHistory(env)
       await pruneConfigurationReviews(env)
     } catch {
       console.log(JSON.stringify({ level: 'warn', msg: 'management.receipts.prune_deferred' }))
