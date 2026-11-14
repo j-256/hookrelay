@@ -20,6 +20,7 @@ export const MANAGEMENT_LIMITS = Object.freeze({
   PRUNE_BATCH: 100,
   CREDENTIAL_BYTES: 32768,
 })
+export const GITHUB_INVENTORY_LIMITS = Object.freeze({ PAGE_SIZE: 25, MAX_PAGE: 100, EVENTS: 100, EVENT_NAME_CHARACTERS: 80 })
 export const DELIVERY_STATES = [
   'pending', 'queued', 'processing', 'retrying', 'delivered', 'filtered', 'exhausted',
 ] as const
@@ -65,6 +66,10 @@ export const managementInputs = {
   configuration_policy_apply: context.extend({ planId: z.uuid() }).strict(),
   configuration_policy_get: context.extend({ planId: z.uuid() }).strict(),
   github_auth_status: context,
+  github_repository_hooks: context.extend({
+    repository: githubSetupRepository,
+    page: z.number().int().min(1).max(GITHUB_INVENTORY_LIMITS.MAX_PAGE).default(1),
+  }).strict(),
   github_setup_configuration: context,
   github_setup_plan: context.extend({
     planId: z.uuid(), authorityId: authorityIdSchema, revision: z.number().int().nonnegative(),

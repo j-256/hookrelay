@@ -15,6 +15,7 @@ import { readSecret } from '../lib/secret'
 import { assertCurrentManagementGrant, authorizeProvision, type ManagementPrincipal } from './access'
 import { createRuntimeGitHubAuthentication, type RuntimeGitHubAuthentication } from './github-auth'
 import type { ManagementContext } from './contract'
+import { GITHUB_INVENTORY_LIMITS, managementInputs } from './contract'
 import { lifecycleInputs, type LifecycleInput } from './lifecycle-contract'
 import type { LifecycleRow } from './lifecycle'
 const conflict=()=>new ConfigurationError('conflict','Owned hook or authority changed; retain the original review and review again')
@@ -60,6 +61,35 @@ async function repository(auth:RuntimeGitHubAuthentication,name:string) {
   const observed=z.object({id:z.number().int().positive().safe(),full_name:z.string(),owner:z.object({id:z.number().int().positive().safe()}),private:z.boolean()}).parse(await request(auth,name,''))
   if(observed.full_name!==name || (auth.initial && observed.id!==auth.initial.fence.repositoryId)) throw new GitHubAuthError('denied')
   return observed.id
+}
+export async function readGitHubRepositoryHooks(env: Env, principal: ManagementPrincipal, input: unknown) {
+  const fields = managementInputs.github_repository_hooks.parse(input)
+  try {
+    const auth = await createRuntimeGitHubAuthentication(env, principal, fields, fields.repository, false)
+    const repositoryId = await repository(auth, fields.repository)
+    const metadata = githubRepositoryHookSchema.pick({ id: true, active: true }).extend({
+      events: z.array(z.string().max(GITHUB_INVENTORY_LIMITS.EVENT_NAME_CHARACTERS).regex(/^(?:[a-z][a-z0-9_-]*|\*)$/)).max(GITHUB_INVENTORY_LIMITS.EVENTS),
+    })
+    const items = z.array(metadata).max(GITHUB_INVENTORY_LIMITS.PAGE_SIZE).parse(
+      await request(auth, fields.repository, `/hooks?per_page=${GITHUB_INVENTORY_LIMITS.PAGE_SIZE}&page=${fields.page}`),
+    )
+    if (new Set(items.map(item => item.id)).size !== items.length) throw new GitHubAuthError('unavailable')
+    await auth.assert()
+    const full = items.length === GITHUB_INVENTORY_LIMITS.PAGE_SIZE
+    const limited = full && fields.page === GITHUB_INVENTORY_LIMITS.MAX_PAGE
+    return {
+      repository: fields.repository,
+      repositoryId,
+      items,
+      page: fields.page,
+      nextPage: full && !limited ? fields.page + 1 : null,
+      limited,
+      observedAt: timestamp(),
+    }
+  } catch (error) {
+    if (error instanceof z.ZodError) throw new GitHubAuthError('unavailable')
+    throw error
+  }
 }
 async function verifyReceiver(env:Env,entry:ConfigurationEntry,hook:Hook) {
   const sub=JSON.parse(entry.value) as Subscription
