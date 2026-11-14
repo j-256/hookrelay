@@ -386,3 +386,20 @@ it('separates route and signature secrets by resource and rejects repository dot
   }
   expect(requests).toEqual([])
 })
+
+
+it('exposes bounded webhook inventory through the authenticated read-only management contract', async () => {
+  capabilities = ['read']
+  let malformed = false
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    expect(init?.method).toBe('GET')
+    return Response.json(new URL(String(url)).pathname === '/repos/owner/repo' ? { id: 12, full_name: 'owner/repo', owner: { id: 13 }, private: false } : [{ id: 42, active: true, events: ['push'], config: { url: 'https://private.example/hidden' }, ...(malformed ? { id: 0 } : {}) }])
+  })
+  expect(await result('github_repository_hooks', { repository: 'owner/repo' })).toMatchObject({ repositoryId: 12, items: [{ id: 42, active: true, events: ['push'] }], page: 1, nextPage: null, limited: false })
+  expect((await call('github_repository_hooks', { repository: 'owner/repo', workspaceId: 'foreign' })).status).toBe(404)
+  expect((await call('github_repository_hooks', { repository: 'owner/repo', page: 101 })).status).toBe(400)
+  malformed = true
+  const failed = await call('github_repository_hooks', { repository: 'owner/repo' })
+  expect(failed.status).toBe(503)
+  expect(await failed.text()).not.toContain('https://private.example/hidden')
+})

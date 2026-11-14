@@ -11,6 +11,7 @@ import {
   getGitHubSetup,
   readGitHubSetupStatus,
 } from '../../src/management/github-setup'
+import { readGitHubRepositoryHooks } from '../../src/management/lifecycle-github'
 import { githubAppKeyFingerprint } from '../../src/lib/github-app-token'
 import { resolveGitHubAuth } from '../../src/lib/github-auth'
 import type { Env } from '../../src/index'
@@ -146,6 +147,7 @@ beforeEach(async () => {
         repositories: [{ id: 101, full_name: 'owner/repo', private: true, owner: { id: 50 } }],
       })
     }
+    if (url.pathname === '/repos/owner/repo') return Response.json({ id: 101, full_name: 'owner/repo', owner: { id: 50 }, private: true })
     expect(url.pathname).toBe('/repos/owner/repo/hooks')
     expect(init?.headers).toBeTruthy()
     if (init?.method === 'POST') {
@@ -566,4 +568,85 @@ it('uses a read-only token for read capability inherited from a write grant', as
     fetch: fetcher,
   })
   expect(lease.fence.capability).toBe('repository-hooks-read')
+})
+
+
+describe('read-only repository webhook inventory', () => {
+  const readPrincipal = { ...principal, capabilities: ['read'] as ['read'] }
+  const inventory = (page = 1, repository = 'owner/repo') => readGitHubRepositoryHooks(runtime, readPrincipal, { ...context, repository, page })
+  beforeEach(async () => { await app(); localGrant = false })
+  it('reads live App metadata without provision authority, URLs, credentials, or hook writes', async () => {
+    hooks = [{ id: 321, active: true, events: ['push'], config: { url: 'https://hooks.example/hook/github/private-route-canary', secret: 'private-signature-canary', content_type: 'json', insecure_ssl: '0' } }]
+    const value = await inventory()
+    expect(value).toMatchObject({ repository: 'owner/repo', repositoryId: 101, page: 1, items: [{ id: 321, active: true, events: ['push'] }], nextPage: null, limited: false })
+    expect(JSON.stringify(value)).not.toMatch(/private-route|private-signature|config|synthetic-app-token|PRIVATE KEY/)
+    expect(creates).toBe(0)
+    const calls = vi.mocked(fetch).mock.calls
+    expect(calls.filter(([url]) => String(url).includes('/repos/')).every(([, init]) => !init?.method || init.method === 'GET')).toBe(true)
+    expect(calls.filter(([url]) => String(url).endsWith('/access_tokens')).map(([, init]) => JSON.parse(String(init?.body)).permissions)).toEqual([{ repository_hooks: 'read' }])
+  })
+  it('paginates conservatively and reports a full capped page as limited', async () => {
+    hooks = Array.from({ length: 25 }, (_, i) => ({ id: i + 1, active: true, events: ['push'] }))
+    expect(await inventory(2)).toMatchObject({ page: 2, nextPage: 3, limited: false })
+    expect(await inventory(100)).toMatchObject({ page: 100, nextPage: null, limited: true })
+    expect(vi.mocked(fetch).mock.calls.some(([url]) => String(url).endsWith('/hooks?per_page=25&page=2'))).toBe(true)
+  })
+  it('refuses outside-scope repositories and invalid pages before contacting GitHub', async () => {
+    await expect(inventory(1, 'owner/other')).rejects.toMatchObject({ code: 'denied' })
+    await expect(inventory(0)).rejects.toThrow()
+    expect(vi.mocked(fetch).mock.calls).toHaveLength(0)
+  })
+  it('rejects malformed and duplicate metadata rather than returning an empty list', async () => {
+    hooks = [{ id: 1, active: true, events: ['push'] }, { id: 1, active: true, events: ['push'] }]
+    await expect(inventory()).rejects.toThrow()
+    hooks = [{ id: 0, active: true, events: ['push'] }]
+    await expect(inventory()).rejects.toThrow()
+    hooks = [{ id: 2, active: true, events: ['https://private.example/receiver'] }]
+    await expect(inventory()).rejects.toThrow()
+  })
+  it('checks numeric repository identity and current authority after the read', async () => {
+    const normal = vi.mocked(fetch).getMockImplementation()!
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (new URL(String(url)).pathname === '/repos/owner/repo') return Response.json({ id: 999, full_name: 'owner/repo', owner: { id: 50 }, private: true })
+      return normal(url, init)
+    })
+    await expect(inventory()).rejects.toMatchObject({ code: 'denied' })
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (new URL(String(url)).pathname === '/repos/owner/repo/hooks') {
+        await env.EVENTS_DB.prepare('UPDATE github_auth_descriptors SET revision=revision+1').run()
+      }
+      return normal(url, init)
+    })
+    await expect(inventory()).rejects.toThrow()
+  })
+  it('renews an expired App token once and preserves denied and unavailable outcomes', async () => {
+    const normal = vi.mocked(fetch).getMockImplementation()!
+    let status = 401
+    let hookReads = 0
+    vi.mocked(fetch).mockImplementation(async (url, init) => {
+      if (new URL(String(url)).pathname === '/repos/owner/repo/hooks' && (status !== 401 || hookReads++ === 0)) return Response.json({}, { status })
+      return normal(url, init)
+    })
+    expect((await inventory()).items).toEqual([])
+    expect(minted).toBe(2)
+    status = 403
+    await expect(inventory()).rejects.toMatchObject({ code: 'denied' })
+    status = 503
+    await expect(inventory()).rejects.toMatchObject({ code: 'unavailable' })
+  })
+})
+
+
+it('refuses repository inventory after a management read grant is revoked during the response', async () => {
+  await app()
+  let revoked = false
+  const original = runtime
+  runtime = new Proxy(original, { get(target, key, receiver) { return key === 'MANAGEMENT_CREDENTIALS' && revoked ? '[]' : Reflect.get(target, key, receiver) } })
+  const normal = vi.mocked(fetch).getMockImplementation()!
+  vi.mocked(fetch).mockImplementation(async (url, init) => {
+    const response = await normal(url, init)
+    if (new URL(String(url)).pathname === '/repos/owner/repo/hooks') revoked = true
+    return response
+  })
+  await expect(readGitHubRepositoryHooks(runtime, principal, { ...context, repository: 'owner/repo' })).rejects.toThrow()
 })
