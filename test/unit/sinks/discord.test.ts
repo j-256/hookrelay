@@ -29,7 +29,7 @@ const deliveryContext = {
 
 async function renderedDescription(
   body: string,
-  options: { url?: string } = { url: baseEvent.url },
+  options: { url?: string; summary?: string } = { url: baseEvent.url },
 ): Promise<string> {
   let description = ''
   const fetchMock = vi.fn(async (_input: Request | string, init?: RequestInit) => {
@@ -37,7 +37,7 @@ async function renderedDescription(
     description = parsed.embeds[0].description
     return new Response(null, { status: 204 })
   }) as unknown as typeof fetch
-  await discord.send({ ...baseEvent, body, url: options.url }, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)
+  await discord.send({ ...baseEvent, body, ...options, url: options.url }, { urlEnv: URL_ENV }, env, deliveryContext, fetchMock)
   return description
 }
 
@@ -104,6 +104,68 @@ describe('discord sink', () => {
       '',
       '@dependabot ignore <dependency name>',
     ].join('\n'))
+  })
+
+  it('renders structured JSON as indented code with its closing brace intact', async () => {
+    const value = { state: 'problem', targetUrl: 'https://example.com/' }
+    const description = await renderedDescription(JSON.stringify(value))
+    expect(description).toBe('```json\n{\n  "state": "problem",\n  "targetUrl": "https://example.com/"\n}\n```')
+    expect(JSON.parse(description.slice('```json\n'.length, -'\n```'.length))).toEqual(value)
+    expect(description).not.toContain('%7D')
+  })
+
+  it('prefers a supplied summary over the original structured body', async () => {
+    const body = '{"state":"problem","targetUrl":"https://example.com/"}'
+    const summary = 'The expected content was missing.\n\nTarget: https://example.com/'
+    expect(await renderedDescription(body, { summary })).toBe(summary)
+  })
+
+  it('preserves numeric tokens and duplicate keys without a serialization round trip', async () => {
+    const body = '{"large":9007199254740993,"huge":1e400,"negativeZero":-0,"key":1,"key":2}'
+    const description = await renderedDescription(body)
+    expect(description).toBe([
+      '```json', '{', '  "large": 9007199254740993,', '  "huge": 1e400,',
+      '  "negativeZero": -0,', '  "key": 1,', '  "key": 2', '}', '```',
+    ].join('\n'))
+  })
+
+  it('bounds deeply nested JSON without failing delivery', async () => {
+    const body = '['.repeat(10000) + '0' + ']'.repeat(10000)
+    const description = await renderedDescription(body)
+    expect(description.length).toBeLessThanOrEqual(4096)
+    expect(description.startsWith('```json\n[')).toBe(true)
+    expect(description).toContain('\n```\n\n*Content truncated*')
+  })
+
+  it('preserves JSON arrays and strings containing HTML, backticks, and Unicode', async () => {
+    const value = [{ text: '<p>keep</p><!--visible--><br>\n```\n@everyone \u{1F680}', '`key`': 'https://example.com/' }]
+    const description = await renderedDescription(JSON.stringify(value))
+    expect(description.startsWith('```json\n[')).toBe(true)
+    expect(description.endsWith(']\n```')).toBe(true)
+    expect(description.match(/```/g)).toHaveLength(2)
+    expect(JSON.parse(description.slice('```json\n'.length, -'\n```'.length))).toEqual(value)
+  })
+
+  it('keeps plain summaries and malformed JSON on the text path', async () => {
+    const summary = 'The endpoint returned HTTP 200, but expected content was missing.\n\nTarget: https://example.com/'
+    expect(await renderedDescription(summary)).toBe(summary)
+    for (const body of ['{"invalid":}', '[] extra', 'null', '42', '"text"']) {
+      expect(await renderedDescription(body)).toBe(body)
+    }
+  })
+
+  it('closes truncated JSON fences and puts the continuation notice outside the block', async () => {
+    const body = JSON.stringify({ text: '\u{1F680}'.repeat(3000) })
+    for (const options of [{ url: baseEvent.url }, {}]) {
+      const description = await renderedDescription(body, options)
+      expect(description.length).toBeLessThanOrEqual(4096)
+      expect(description.startsWith('```json\n')).toBe(true)
+      expect(description.match(/```/g)).toHaveLength(2)
+      expect(description).toContain('\n```\n\n*Content truncated')
+      expect(description).not.toMatch(/[\uD800-\uDBFF]\n```/)
+      expect(description.endsWith('*Content truncated*')).toBe(true)
+      expect(description).not.toContain('open the title')
+    }
   })
 
   it('does not let removed HTML comments form another comment delimiter', async () => {

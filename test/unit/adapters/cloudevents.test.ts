@@ -5,6 +5,7 @@ import cloudevents, {
   normalizedCloudEventId,
 } from '../../../src/adapters/cloudevents'
 import { hmacSha256Hex } from '../../../src/lib/hmac'
+import { webhookEnvelope } from '../../../src/sinks/webhook'
 import type { Subscription } from '../../../src/types'
 
 const SECRET_ENV = 'HMAC_CLOUDEVENTS_TEST'
@@ -94,6 +95,30 @@ describe('CloudEvents adapter authentication', () => {
 })
 
 describe('CloudEvents adapter normalization', () => {
+  it('prefers a human-readable summary while preserving structured raw data', async () => {
+    const value = envelope({ summary: 'The endpoint returned HTTP 200, but expected content was missing.\n\nState: Problem' })
+    const signed = await signedRequest(value)
+    const event = await cloudevents.parse(signed.request, signed.raw, subscription)
+    expect(event).toHaveProperty('summary', value.summary)
+    expect(event.body).toBe('{"orderId":42,"state":"created"}')
+    expect(event.raw).toEqual(value)
+    expect((event.raw as Record<string, unknown>).data).toEqual({ orderId: 42, state: 'created' })
+    const forwarded = await webhookEnvelope(event, {
+      eventId: 'cloudevents:example', sinkName: 'example', generation: 1, attempt: 1,
+    })
+    expect((forwarded.data as Record<string, unknown>).body).toBe(event.body)
+    expect(JSON.parse((forwarded.data as { body: string }).body)).toEqual(value.data)
+  })
+
+  it('falls back to data for blank or non-string summaries', async () => {
+    for (const summary of ['', ' \n ', null, 42, { text: 'invalid extension type' }]) {
+      const signed = await signedRequest(envelope({ summary }))
+      const event = await cloudevents.parse(signed.request, signed.raw, subscription)
+      expect(event.body).toBe('{"orderId":42,"state":"created"}')
+      expect(event).not.toHaveProperty('summary')
+    }
+  })
+
   it('normalizes required attributes, extensions, and compact JSON data', async () => {
     const signed = await signedRequest(envelope())
     const event = await cloudevents.parse(signed.request, signed.raw, subscription)

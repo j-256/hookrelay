@@ -23,6 +23,7 @@ interface StructuredCloudEvent {
   time?: string
   subject?: string
   title?: string
+  summary?: string
   severity?: string
   url?: string
   data?: unknown
@@ -119,6 +120,7 @@ const adapter: Adapter = {
     const title = nonEmptyString(envelope.title)
       ?? nonEmptyString(envelope.subject)
       ?? type
+    const summary = nonEmptyString(envelope.summary)
     return {
       source: CLOUDEVENTS_SOURCE,
       subName: sub.name,
@@ -129,6 +131,7 @@ const adapter: Adapter = {
         : new Date().toISOString(),
       title,
       body: dataBody(envelope),
+      ...(summary ? { summary } : {}),
       ...(url ? { url } : {}),
       severity: normalizedSeverity(envelope.severity),
       raw: envelope,

@@ -16,6 +16,7 @@ export interface NormalizedEvent {
   timestamp: string
   title: string
   body: string
+  summary?: string
   url?: string
   severity?: Severity
   shouldDeliver?: boolean
