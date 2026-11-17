@@ -15,6 +15,10 @@ const COLOR: Record<Severity, number> = {
 
 const DISCORD_DESCRIPTION_LIMIT = 4096
 const DISCORD_TITLE_LIMIT = 256
+const JSON_INDENT_SPACES = 2
+const JSON_BLOCK_OPEN = '```json\n'
+const JSON_BLOCK_CLOSE = '\n```'
+const JSON_TOKEN_PATTERN = /"(?:\\[\s\S]|[^"\\])*"|[{}[\],:]|[^\s{}[\],:]+/g
 const DESCRIPTION_TRUNCATED = '\n\n*Content truncated*'
 const DESCRIPTION_TRUNCATED_WITH_URL = '\n\n*Content truncated; open the title for the full event*'
 const TRUNCATION_BOUNDARY_MINIMUM_RATIO = 0.75
@@ -55,11 +59,11 @@ function normalizeDescription(s: string): string {
     .trim()
 }
 
-function truncateDescription(s: string, hasUrl: boolean): string {
-  if (s.length <= DISCORD_DESCRIPTION_LIMIT) return s
+function truncateDescription(s: string, hasUrl: boolean, maximum = DISCORD_DESCRIPTION_LIMIT): string {
+  if (s.length <= maximum) return s
 
   const suffix = hasUrl ? DESCRIPTION_TRUNCATED_WITH_URL : DESCRIPTION_TRUNCATED
-  const available = DISCORD_DESCRIPTION_LIMIT - suffix.length
+  const available = maximum - suffix.length
   const candidate = s.slice(0, available)
   const minimumBoundary = Math.floor(available * TRUNCATION_BOUNDARY_MINIMUM_RATIO)
   const lineBoundary = candidate.lastIndexOf('\n')
@@ -74,6 +78,54 @@ function truncateDescription(s: string, hasUrl: boolean): string {
   return `${prefix}${suffix}`
 }
 
+function prettyJson(body: string): string {
+  const maximum = DISCORD_DESCRIPTION_LIMIT + 1
+  let output = ''
+  let depth = 0
+  let previous = ''
+  const append = (value: string) => {
+    output += value.slice(0, maximum - output.length)
+  }
+  const newline = () => append(`\n${' '.repeat(depth * JSON_INDENT_SPACES)}`)
+  for (const [token] of body.matchAll(JSON_TOKEN_PATTERN)) {
+    if (output.length === maximum) break
+    if (token === '}' || token === ']') {
+      depth -= 1
+      if (previous !== '{' && previous !== '[') newline()
+      append(token)
+    } else if (token === ',') {
+      append(token)
+      newline()
+    } else if (token === ':') {
+      append(': ')
+    } else {
+      if (previous === '{' || previous === '[') newline()
+      append(token.replace(/`/g, '\\u0060'))
+      if (token === '{' || token === '[') depth += 1
+    }
+    previous = token
+  }
+  return output
+}
+
+function jsonDescription(body: string): string | undefined {
+  let value: unknown
+  try {
+    value = JSON.parse(body)
+  } catch {
+    return undefined
+  }
+  if (typeof value !== 'object' || value === null) return undefined
+  const json = prettyJson(body)
+  const maximum = DISCORD_DESCRIPTION_LIMIT - JSON_BLOCK_OPEN.length - JSON_BLOCK_CLOSE.length
+  if (json.length <= maximum) return `${JSON_BLOCK_OPEN}${json}${JSON_BLOCK_CLOSE}`
+
+  const truncated = truncateDescription(json, false, maximum)
+  const suffix = DESCRIPTION_TRUNCATED
+  const prefix = truncated.slice(0, -suffix.length)
+  return `${JSON_BLOCK_OPEN}${prefix}${JSON_BLOCK_CLOSE}${suffix}`
+}
+
 const sink: Sink<Config> = {
   type: 'discord',
   configSchema,
@@ -81,7 +133,10 @@ const sink: Sink<Config> = {
   async send(event: NormalizedEvent, config: Config, env: Env, _context, fetchFn?: typeof fetch) {
     const url = readSecret(env, config.urlEnv)
     const color = COLOR[event.severity ?? 'info']
-    const description = truncateDescription(normalizeDescription(event.body), event.url !== undefined)
+    const hasUrl = event.url !== undefined
+    const body = event.summary ?? event.body
+    const description = jsonDescription(body)
+      ?? truncateDescription(normalizeDescription(body), hasUrl)
     const payload = {
       username: 'hookrelay',
       embeds: [
