@@ -46,7 +46,7 @@
     "tsx": "^4.23.15",
     "typescript": "^7.0.2",
     "vitest": "^4.1.12",
-    "wrangler": "^4.159.0",
+    "wrangler": "^4.163.0",
     "zod": "^4.6.7"
   },
   "dependencies": {
